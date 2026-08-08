@@ -53,6 +53,16 @@ GEN3_B1_SUBJECT = "proof: reapply Gate-B nudge component gen3 login shell"
 GEN3_B2_SUBJECT = "proof: reapply Gate-B usage component gen3 login shell"
 GEN3_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen3 login shell"
 
+GEN4_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen4 bash references"
+GEN4_B1_SUBJECT = "proof: reapply Gate-B nudge component gen4 bash references"
+GEN4_B2_SUBJECT = "proof: reapply Gate-B usage component gen4 bash references"
+GEN4_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen4 bash references"
+
+GEN5_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen5 release smoke CI marker"
+GEN5_B1_SUBJECT = "proof: reapply Gate-B nudge component gen5 release smoke CI marker"
+GEN5_B2_SUBJECT = "proof: reapply Gate-B usage component gen5 release smoke CI marker"
+GEN5_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen5 release smoke CI marker"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -191,6 +201,34 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset({"tests/test_context_guard_kit.py"}),
     ),
+    Generation(
+        name="gen4",
+        bless_subject=GEN4_BLESS_SUBJECT,
+        b1_subject=GEN4_B1_SUBJECT,
+        b2_subject=GEN4_B2_SUBJECT,
+        shared_subject=GEN4_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=SHARED_INTEGRATION_PATHS,
+    ),
+    Generation(
+        name="gen5",
+        bless_subject=GEN5_BLESS_SUBJECT,
+        b1_subject=GEN5_B1_SUBJECT,
+        b2_subject=GEN5_B2_SUBJECT,
+        shared_subject=GEN5_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(
+            {"scripts/release_smoke.py", "tests/test_context_guard_kit.py"}
+        ),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -202,6 +240,8 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "b7cd908dcf516350ba0ac41f9db0043bc19ef5805550acb0a6667a51af6cd62b",
     "77f3117dff264c2fac25ea338af7d7cda6ff66c28e01aa479390e1109e9db7e2",
     "6a70a0217c89ed0c06767c95197449323fc62a1d22fda5c4639e83688e2da19f",
+    "5cce305d7ed8b55f8f9300dc5a449fc36a555cb014516e5f81205ac950ddac33",
+    "0d2009b33050312910525ec47d62d9bb12c0a625358dd6337b6b6b39c7dbab06",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 

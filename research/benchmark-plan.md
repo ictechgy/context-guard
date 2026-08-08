@@ -174,3 +174,85 @@ sample size/promotion 정책은 별도 consensus 결정이 필요하다.
 ## 8. Experimental radar 연계
 
 `experimental-token-reduction-radar.md`의 learned, multimodal, self-hosted lane은 이 문서의 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting 원칙을 통과하기 전까지 hosted API token/cost 절감 주장으로 승격하지 않는다. image-context 평가 프로파일이 `ready_for_bounded_pilot_review`에 도달하더라도 이 승격 게이트는 그대로 유지된다.
+
+## 9. Additive v2 three-arm study surface
+
+`bench/token-savings-12task/study-plan-v2.json` is a separate, versioned plan;
+the frozen v1 plan and report remain unchanged. Its three arms are exactly
+`host_unmodified`, `legacy_trim`, and `bash_reference_v1`. For every task and
+repetition, a frozen SplitMix64 seed creates a complete three-arm block order.
+The task, not an individual attempt, is the sampling unit. Valid unfavorable
+attempts remain in the accounting history; retries do not replace them. Token,
+human-correction, and retrieval burdens are each summed across every retained
+attempt in an arm-unit. If any attempt lacks a finite non-negative correction
+or retrieval value, that effect is unavailable and its gate fails closed.
+
+The only preregistered product contrast is `host_unmodified` versus
+`bash_reference_v1`. `legacy_trim` versus `bash_reference_v1` is diagnostic and
+cannot grant or block that product result. Binary outcomes use exact
+task-cluster sign-permutation inference; token, correction, and retrieval
+effects use task-cluster intervals. A run-level analysis or an all-success
+degenerate bootstrap is not sufficient for a non-inferiority result.
+
+The plan fixes its NI margin, task count, corpus/checker/task-order bindings,
+retry/missing-data/exclusion/contamination/stopping rules, model and CLI version
+fields, and quality/failure/correction/retrieval/shifted-cost gates before data
+collection. The fixed 12-task corpus has no independent effect-size/variance
+model, so it makes no 80% power claim and is always descriptive rather than
+claim-ready. Every report therefore fixes `descriptive_only=true`,
+`claim_allowed=false`, and `claim=null`. Offline and fake rehearsal data are not
+provider evidence; unavailable observers and backend/model revisions remain
+unavailable. The corpus binding remains the SHA-256 of the exact canonical
+`tasks.json` bytes. The checker binding is the domain-separated
+`contextguard.bench.v2.checker-binding.v1` hash of the ordered list of relative
+filename, byte size, and per-file SHA-256 records, so names and file boundaries
+cannot be exchanged while preserving the binding. The ordered IDs derived from that
+corpus are additionally bound by
+`contextguard.bench.v2.corpus-task-order.v1`, preventing a manifest from
+retaining the real corpus hash while substituting fabricated task identities.
+
+### Executable lifecycle
+
+`prepare` validates the exact canonical candidate-manifest hash, both npm
+tarballs' size/SHA-256/SRI, and the checksum document, then performs exactly one
+`npm install --offline --ignore-scripts --no-audit --fund=false --package-lock=false`.
+Any npm-generated hidden `.package-lock.json` regular file is removed before the
+overlay is accepted; the remaining paths must be exactly the two tarball trees
+plus every declared `.bin` link. Candidate code
+is never imported by the runner. The installed `node_modules` inventory and all
+216 initial/retry run IDs are bound into the private manifest. Prepare also runs
+local `claude --version`/`--help` probes without making a model request and binds
+the exact native executable, runner and runner-Python bytes, task fixture and
+checker bytes, fixed PATH/locale, and the Python interpreter used by the hook.
+Script CLI launchers are rejected because a launcher-tree hash cannot prove an
+external runtime closure. The bound native artifact and trusted host OS are the
+client-side boundary; backend/model revisions remain explicitly unavailable.
+
+Each attempt receives a cold physical copy at `workspace/node_modules`. Safe
+internal relative npm symlinks are preserved; regular files must have different
+inodes from the staged install. `host_unmodified` has no ContextGuard Bash hook;
+the other arms use `PreToolUse(Bash)` with the workspace-local rewrite command,
+and only `bash_reference_v1` adds `--bash-reference-v1`.
+
+The lifecycle is explicitly `prepare -> canary -> run -> resume -> analyze`,
+using the same exact `--claude-bin` for every action. `canary` makes two visible,
+discarded provider calls before any analytic reservation. Each hook arm must use
+Bash to create a bound marker, produce a successful host-emitted `PreToolUse`
+lifecycle, keep the candidate overlay unchanged, and pass the private checker.
+Canary calls/tokens never enter attempts, effects, or record counts, and a
+reserved/launched canary identity is never replayed. `run`, `resume`, and
+`analyze` only revalidate the canonical canary evidence.
+
+Analytic hook requirements remain empty by design: stochastic Bash choice stays
+inside the intention-to-treat sample instead of silently filtering treatment
+runs. Every hook lifecycle that is observed must still be registered, complete,
+and successful.
+
+`run` executes all 108 initials and exactly the retries whose initials ended in
+a valid bound-checker task failure. A failed retry never stops later schedule
+entries. `launch_reserved` is persisted before process creation and resume
+never replays a reserved or launched identity. `resume` and `analyze` revalidate
+the exact attempt schema plus raw stream, receipt, artifact index, terminal
+usage, bound checker result, and overlay inventory. Provider-declared success is
+ignored. Infrastructure-invalid or recovered attempts are refused for effects,
+and absent correction/retrieval/shifted-cost observers remain null/unavailable.

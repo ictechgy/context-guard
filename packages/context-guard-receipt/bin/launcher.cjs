@@ -14,6 +14,9 @@ const PYTHON_ISOLATION_FLAGS = [
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_PACKAGE_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_CHILD_STREAM_BYTES = 2 * 1024 * 1024;
+const MAX_BROKER_PROTOCOL_BYTES = 8 * 1024;
+const BASH_REFERENCE_BROKER_READY = 'READY contextguard-bash-reference-broker/v1\n';
+const BASH_REFERENCE_BROKER_TOKEN = '--private-bash-reference-broker-v1';
 const PROBE_TIMEOUT_MILLISECONDS = 5000;
 const INTERRUPT_GRACE_MILLISECONDS = 2500;
 const INTERRUPT_KILL_WAIT_MILLISECONDS = 750;
@@ -42,6 +45,7 @@ const EXPECTED_FILES = [
   'python/context_guard_receipt/expansion.py',
   'python/context_guard_receipt/identity.py',
   'python/context_guard_receipt/mcp.py',
+  'python/context_guard_receipt/merged_capture.py',
   'python/context_guard_receipt/protection.py',
   'python/context_guard_receipt/receipts.py',
   'python/context_guard_receipt/reference_expiry.py',
@@ -100,32 +104,33 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': 'c81eb58dd370b4e4e3a80f4201c4b5d5fea00760e73b9d4c12c1a80074102256',
+  'README.md': 'b075742abc57962a5c10c9edcc41c67a16947a2ddd13fb64fb97e7c4d27e57e7',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
-  'package.json': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf',
+  'package.json': 'daf789323e9b194943b7222bd0bf112432460afe0174d0a3363cbadbbd37c475',
   'python/context_guard_receipt/__init__.py': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6',
   'python/context_guard_receipt/assembly.py': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea',
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',
   'python/context_guard_receipt/bootstrap.py': 'fa846a8968c5199618ab68a86424c0cb88c32250291faf3ac37f26d14d4b018e',
   'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
-  'python/context_guard_receipt/cli.py': 'fecda41fb025152809dabbd884013da9f22f5acd1a576faf334b940425cadcf2',
+  'python/context_guard_receipt/cli.py': 'e93c8970a1f06cff4511e62c1e6d7803f94d083239b159a2839da7e8ca3a0bb9',
   'python/context_guard_receipt/cli_io.py': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf',
   'python/context_guard_receipt/contracts.py': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e',
   'python/context_guard_receipt/diagnostic_ledger.py': '3cc7865709c273b72136c48b1026ed5cd2830ea1bf76da4e424da08ccc13499d',
   'python/context_guard_receipt/diagnostics.py': '9a95f511b639091d0aacef69c0d4a311ad81e5a97299ab45ddc7fc23579e0e52',
   'python/context_guard_receipt/evidence_pack.py': '3fb5540dcee31cd6ded4883e4f4c99fb89ee17c2484f3e2ee33ebe741454d0f8',
   'python/context_guard_receipt/execution_twin.py': '510239b13c37ef15dcc838222b07ada49877e5540c351a51a121983b1fe031af',
-  'python/context_guard_receipt/expansion.py': '5885030a1dec6fa16cd15a6046f5e413a5b74560b0a13bbbcbbc75a4aeacb444',
+  'python/context_guard_receipt/expansion.py': '9b848e555f05a621665c6b167a49e5d8085ffc9c6906f040f43fd2a87e981f2b',
   'python/context_guard_receipt/identity.py': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c',
   'python/context_guard_receipt/mcp.py': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2',
+  'python/context_guard_receipt/merged_capture.py': 'a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',
-  'python/context_guard_receipt/reference_expiry.py': 'ffe455b394750540ebe75cf4b907ac94c04393227e37cf355c24aaad2e3f4794',
+  'python/context_guard_receipt/reference_expiry.py': '2445292456776d5fcbf789f75a71781d64f12865958249d192cfc5a5ff27f2f6',
   'python/context_guard_receipt/router.py': '22b395d0a8a0522fcc9b12c1b12493e90aafb9e374937725a2bdaf223188529c',
   'python/context_guard_receipt/runner.py': '2193f7ae1032990b2ff5d954bd97ea6de67d58a9eb2cf395e939b25593a79cf8',
   'python/context_guard_receipt/sanitizer.py': 'ddf7d4d81dbb73156fa2274c7adf06475c4688b1e08341835aff4eeb81a72fc8',
-  'python/context_guard_receipt/store.py': '2916c4496665c67176ed5561a9853025dcbe57bb24eda7d6d87b3261853b99b1',
+  'python/context_guard_receipt/store.py': '6bf5f033ebc1cfaf72dbfa685ed4ce3339dfe0af53b88bab726ed0847767e8ed',
   'python/context_guard_receipt/tool_schemas.py': 'f84a8bc2f2232250dfe0782aaddf35c9842720f4815c6d2d8e4bd95757546bbc',
   'schemas/assembly-receipt.schema.json': '05ab76b261ca18ed8d165cb4e43395006e7196fdeccb53603c3ed77ca3bdfe88',
   'schemas/blueprint-descriptor.schema.json': '4424c2c482dc8d4184f1bd7ac6e1e45ad4ee36ee97da13e75b0986b2da8c9b09',
@@ -151,7 +156,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'schemas/shadow-firewall-report.schema.json': '016a0d7320b9dc8c444f7488fdcd8bd33752fcfd27c1e906741972b9de50d04c',
   'schemas/source-identity.schema.json': 'c20007a9a03e8168feb7b413e035e1d3ef2cdad23a7c404dc25014a03411b047',
   'schemas/store-commit.schema.json': 'e078e14eade2395772936ecd8ec8a9add8b4a71ea45a1b6935645a83a46147ad',
-  'schemas/store-metadata.schema.json': '60d36e2b6d07ba9c78b6916183c75d40aa3301dfcd453fcbafdf8e91282dbea7',
+  'schemas/store-metadata.schema.json': 'be6a83707fa541436e5930e444cfc6431d618ef65f561718a5ed66bf42f447db',
   'schemas/tool-schema-bundle.schema.json': 'bebb1d2ef79cfd76a870f6be554f7e1708e5015912885adc720ab3bc9495428d',
   'schemas/tool-schema-catalog-reference.schema.json': '306109a80512c6c6685bfcc00592fd81961030c459115717775ead6d79e8b4e7',
   'schemas/tool-schema-descriptor.schema.json': '1ebf3da9f7e81fc7de2eb9c19769011e6dbb590323a17a1febb2def9c85d3c87',
@@ -710,6 +715,93 @@ function runtimeSelectionCurrent(selection) {
   return observed !== null && sameRuntimeSnapshot(selection.snapshot, observed);
 }
 
+function privateBrokerInvocation(kind, argv) {
+  if (kind !== 'receipt' || argv.length !== 11
+      || argv[0] !== BASH_REFERENCE_BROKER_TOKEN
+      || argv[1] !== '--capture-fd'
+      || argv[3] !== '--transaction-id'
+      || argv[5] !== '--root'
+      || argv[7] !== '--state-dir'
+      || argv[9] !== '--disclosure-days'
+      || argv[10] !== '7'
+      || !/^[0-9a-f]{64}$/.test(argv[4])) {
+    return null;
+  }
+  const captureFd = Number(argv[2]);
+  if (!/^[1-9][0-9]*$/.test(argv[2])
+      || !Number.isSafeInteger(captureFd)
+      || captureFd < 3
+      || captureFd > 1048575) {
+    return null;
+  }
+  for (const candidate of [argv[6], argv[8]]) {
+    if (typeof candidate !== 'string' || candidate.length === 0
+        || candidate.includes('\0') || !path.isAbsolute(candidate)
+        || path.normalize(candidate) !== candidate) {
+      return null;
+    }
+  }
+  try {
+    const metadata = fs.fstatSync(captureFd);
+    if (!metadata.isFile()
+        || metadata.uid !== process.geteuid()
+        || (metadata.mode & 0o777) !== 0o600
+        || metadata.nlink !== 0
+        || metadata.size !== 0) {
+      return null;
+    }
+  } catch (_) {
+    return null;
+  }
+  return Object.freeze({
+    captureFd,
+    pythonArgv: Object.freeze([
+      BASH_REFERENCE_BROKER_TOKEN,
+      '--transaction-id', argv[4],
+      '--root', argv[6],
+      '--state-dir', argv[8],
+      '--disclosure-days', '7',
+    ]),
+    transactionId: argv[4],
+  });
+}
+
+function validPrivateBrokerProtocol(raw, transactionId) {
+  let textValue;
+  try {
+    textValue = raw.toString('utf8');
+    if (!Buffer.from(textValue, 'utf8').equals(raw)) return false;
+  } catch (_) {
+    return false;
+  }
+  if (textValue === BASH_REFERENCE_BROKER_READY) return true;
+  if (!textValue.startsWith(BASH_REFERENCE_BROKER_READY + 'FINAL ')
+      || !textValue.endsWith('\n')) {
+    return false;
+  }
+  const finalText = textValue.slice(
+    (BASH_REFERENCE_BROKER_READY + 'FINAL ').length,
+    -1,
+  );
+  let result;
+  try {
+    result = JSON.parse(finalText);
+  } catch (_) {
+    return false;
+  }
+  return result !== null
+    && typeof result === 'object'
+    && !Array.isArray(result)
+    && `${stableJson(result)}\n` === `${finalText}\n`
+    && result.actionable === true
+    && result.status === 'registered'
+    && result.transaction_id === transactionId
+    && Number.isSafeInteger(result.expires_at_unix_ms)
+    && result.expires_at_unix_ms >= 0
+    && typeof result.reference === 'string'
+    && result.reference.length > 0;
+}
+
 function resolvePython() {
   const explicit = process.env[PYTHON_ENV];
   if (typeof explicit === 'string' && explicit.length > 0) {
@@ -1052,6 +1144,115 @@ function monitorStreamingMcp(child, signalController) {
   return undefined;
 }
 
+function monitorPrivateBroker(child, invocation, signalController) {
+  if (child.stdin === null || child.stdout === null || child.stderr === null) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {
+      // The failed launch may already have terminated.
+    }
+    signalController.remove();
+    return launcherError('runtime_unavailable', 69);
+  }
+  let protocolChunks = [];
+  let protocolBytes = 0;
+  let runtimeFailure = false;
+  let completed = false;
+  let childCloseOutcome = null;
+  let interrupted = null;
+
+  const failClosed = () => {
+    if (runtimeFailure || completed) return;
+    runtimeFailure = true;
+    protocolChunks = [];
+    protocolBytes = 0;
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {
+      // A concurrently closed broker needs no further cleanup.
+    }
+  };
+  child.stdout.on('data', (chunk) => {
+    if (runtimeFailure || interrupted !== null) return;
+    if (!Buffer.isBuffer(chunk)
+        || protocolBytes + chunk.length > MAX_BROKER_PROTOCOL_BYTES) {
+      failClosed();
+      return;
+    }
+    protocolChunks.push(chunk);
+    protocolBytes += chunk.length;
+    try {
+      if (!process.stdout.write(chunk)) {
+        child.stdout.pause();
+        process.stdout.once('drain', () => child.stdout.resume());
+      }
+    } catch (_) {
+      failClosed();
+    }
+  });
+  child.stdout.on('error', failClosed);
+  child.stderr.on('data', failClosed);
+  child.stderr.on('error', failClosed);
+  child.on('error', failClosed);
+  child.stdin.on('error', failClosed);
+  process.stdout.once('error', failClosed);
+  process.stdin.pipe(child.stdin);
+
+  const interrupt = (signalName, signalNumber) => {
+    if (completed) return;
+    if (interrupted !== null) {
+      interrupted.escalationRequired = true;
+      try {
+        child.kill('SIGKILL');
+      } catch (_) {
+        // Repeated interruption is only an escalation request.
+      }
+      return;
+    }
+    interrupted = { escalationRequired: false, signalNumber };
+    protocolChunks = [];
+    protocolBytes = 0;
+    void (async () => {
+      const escalationRequired = await stopInterruptedChild(
+        child,
+        signalName,
+        () => childCloseOutcome !== null,
+      );
+      completed = true;
+      signalController.remove();
+      const expectedStatus = 128 + signalNumber;
+      const confirmedCleanup = !escalationRequired
+        && !interrupted.escalationRequired
+        && childCloseOutcome !== null
+        && ((childCloseOutcome.status === expectedStatus
+          && childCloseOutcome.signal === null)
+          || (childCloseOutcome.status === null
+            && childCloseOutcome.signal === signalName));
+      process.exitCode = confirmedCleanup
+        ? expectedStatus
+        : launcherError('cleanup_unconfirmed', 69);
+    })();
+  };
+  child.on('close', (status, childSignal) => {
+    childCloseOutcome = { signal: childSignal, status };
+    if (interrupted !== null || completed) return;
+    completed = true;
+    signalController.remove();
+    process.stdout.removeListener('error', failClosed);
+    const protocol = Buffer.concat(protocolChunks, protocolBytes);
+    protocolChunks = [];
+    protocolBytes = 0;
+    if (runtimeFailure || childSignal !== null || status !== 0
+        || !validPrivateBrokerProtocol(protocol, invocation.transactionId)) {
+      process.exitCode = launcherError('runtime_unavailable', 69);
+      return;
+    }
+    process.exitCode = 0;
+  });
+  signalController.bind(interrupt);
+  return undefined;
+}
+
 function launch(kind, argv, entryFilename) {
   const packageRoot = path.dirname(path.dirname(fs.realpathSync(entryFilename)));
   if (!validatePackage(packageRoot)) {
@@ -1110,15 +1311,23 @@ async function continueLaunch(kind, argv, runtime, bootstrap, signalController) 
     return;
   }
   if (finishQueuedSignals(signalController)) return;
+  const privateBroker = privateBrokerInvocation(kind, argv);
   let child;
   try {
     child = childProcess.spawn(
       runtime.executablePath,
-      [...PYTHON_ISOLATION_FLAGS, bootstrap, kind, ...argv],
+      [
+        ...PYTHON_ISOLATION_FLAGS,
+        bootstrap,
+        kind,
+        ...(privateBroker === null ? argv : privateBroker.pythonArgv),
+      ],
       {
-        stdio: kind === 'mcp'
-          ? ['inherit', 'inherit', 'pipe']
-          : ['inherit', 'pipe', 'pipe'],
+        stdio: privateBroker !== null
+          ? ['pipe', 'pipe', 'pipe', privateBroker.captureFd]
+          : (kind === 'mcp'
+            ? ['inherit', 'inherit', 'pipe']
+            : ['inherit', 'pipe', 'pipe']),
         windowsHide: true,
       },
     );
@@ -1132,6 +1341,13 @@ async function continueLaunch(kind, argv, runtime, bootstrap, signalController) 
   }
   if (kind === 'mcp') {
     const immediateExitCode = monitorStreamingMcp(child, signalController);
+    if (Number.isInteger(immediateExitCode)) process.exitCode = immediateExitCode;
+    return;
+  }
+  if (privateBroker !== null) {
+    const immediateExitCode = monitorPrivateBroker(
+      child, privateBroker, signalController,
+    );
     if (Number.isInteger(immediateExitCode)) process.exitCode = immediateExitCode;
     return;
   }

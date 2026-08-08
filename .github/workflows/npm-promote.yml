@@ -1,0 +1,196 @@
+name: Promote exact npm versions
+
+on:
+  workflow_dispatch:
+    inputs:
+      receipt_version:
+        description: "Previously published exact Receipt version"
+        required: true
+        type: string
+      root_version:
+        description: "Previously published exact root version"
+        required: true
+        type: string
+      dist_tag:
+        description: "Destination npm dist-tag"
+        required: true
+        type: choice
+        options:
+          - latest
+      confirm_promote:
+        description: "Confirm moving both package dist-tags without rebuilding"
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: npm-promote-${{ github.event.inputs.dist_tag }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      DIST_TAG: ${{ github.event.inputs.dist_tag }}
+      RECEIPT_VERSION: ${{ github.event.inputs.receipt_version }}
+      ROOT_VERSION: ${{ github.event.inputs.root_version }}
+    outputs:
+      previous_receipt_latest: ${{ steps.registry.outputs.previous_receipt_latest }}
+      previous_root_latest: ${{ steps.registry.outputs.previous_root_latest }}
+    steps:
+      - name: Refuse an unconfirmed or malformed promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.confirm_promote }}" != "true" ]; then
+            echo "::error::promotion requires confirm_promote=true"
+            exit 1
+          fi
+          test "$DIST_TAG" = "latest"
+          [[ "$RECEIPT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          [[ "$ROOT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+
+      - name: Set up Node for registry preflight
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Preflight exact next pair and capture rollback tags
+        id: registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RECEIPT_OBSERVED="$(npm view "@ictechgy/context-guard-receipt@$RECEIPT_VERSION" version --json)"
+          export ROOT_OBSERVED="$(npm view "@ictechgy/context-guard@$ROOT_VERSION" version --json)"
+          export RECEIPT_NEXT="$(npm view "@ictechgy/context-guard-receipt" dist-tags.next --json)"
+          export ROOT_NEXT="$(npm view "@ictechgy/context-guard" dist-tags.next --json)"
+          export RECEIPT_LATEST="$(npm view "@ictechgy/context-guard-receipt" dist-tags.latest --json)"
+          export ROOT_LATEST="$(npm view "@ictechgy/context-guard" dist-tags.latest --json)"
+          export ROOT_DEPENDENCIES="$(npm view "@ictechgy/context-guard@$ROOT_VERSION" dependencies --json)"
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version_re = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?")
+          receipt_version = os.environ["RECEIPT_VERSION"]
+          root_version = os.environ["ROOT_VERSION"]
+          values = {
+              name: json.loads(os.environ[name])
+              for name in (
+                  "RECEIPT_OBSERVED", "ROOT_OBSERVED", "RECEIPT_NEXT",
+                  "ROOT_NEXT", "RECEIPT_LATEST", "ROOT_LATEST",
+                  "ROOT_DEPENDENCIES",
+              )
+          }
+          if values["RECEIPT_OBSERVED"] != receipt_version or values["ROOT_OBSERVED"] != root_version:
+              raise SystemExit("exact promotion version is not published")
+          if values["RECEIPT_NEXT"] != receipt_version or values["ROOT_NEXT"] != root_version:
+              raise SystemExit("selected versions are not the reviewed next pair")
+          dependencies = values["ROOT_DEPENDENCIES"]
+          if (
+              not isinstance(dependencies, dict)
+              or dependencies.get("@ictechgy/context-guard-receipt") != receipt_version
+          ):
+              raise SystemExit("exact Receipt dependency mismatch")
+          previous_receipt = values["RECEIPT_LATEST"]
+          previous_root = values["ROOT_LATEST"]
+          if (
+              not isinstance(previous_receipt, str)
+              or version_re.fullmatch(previous_receipt) is None
+              or not isinstance(previous_root, str)
+              or version_re.fullmatch(previous_root) is None
+          ):
+              raise SystemExit("previous latest tags are unavailable for rollback")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"previous_receipt_latest={previous_receipt}\n")
+              output.write(f"previous_root_latest={previous_root}\n")
+          PY
+
+  promote-pair:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: npm-pair-promote
+    permissions:
+      contents: read
+    env:
+      DIST_TAG: ${{ github.event.inputs.dist_tag }}
+      PREVIOUS_RECEIPT_VERSION: ${{ needs.preflight.outputs.previous_receipt_latest }}
+      PREVIOUS_ROOT_VERSION: ${{ needs.preflight.outputs.previous_root_latest }}
+      RECEIPT_VERSION: ${{ github.event.inputs.receipt_version }}
+      ROOT_VERSION: ${{ github.event.inputs.root_version }}
+    steps:
+      - name: Set up Node for authenticated pair promotion
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Promote the exact pair with in-process compensation
+        shell: bash
+        env:
+          RECEIPT_AUTH_TOKEN: ${{ secrets.NPM_RECEIPT_PROMOTION_TOKEN }}
+          ROOT_AUTH_TOKEN: ${{ secrets.NPM_ROOT_PROMOTION_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          : "${RECEIPT_AUTH_TOKEN:?pair-promotion Receipt credential is required}"
+          : "${ROOT_AUTH_TOKEN:?pair-promotion root credential is required}"
+
+          receipt_maybe_changed=false
+          root_maybe_changed=false
+          completed=false
+
+          compensate() {
+            status=$?
+            trap - EXIT INT TERM
+            if [ "$completed" = true ]; then
+              exit "$status"
+            fi
+            set +e
+            rollback_failed=0
+            if [ "$root_maybe_changed" = true ]; then
+              NODE_AUTH_TOKEN="$ROOT_AUTH_TOKEN" timeout 120 npm dist-tag add \
+                "@ictechgy/context-guard@$PREVIOUS_ROOT_VERSION" "$DIST_TAG" \
+                || rollback_failed=1
+            fi
+            if [ "$receipt_maybe_changed" = true ]; then
+              NODE_AUTH_TOKEN="$RECEIPT_AUTH_TOKEN" timeout 120 npm dist-tag add \
+                "@ictechgy/context-guard-receipt@$PREVIOUS_RECEIPT_VERSION" "$DIST_TAG" \
+                || rollback_failed=1
+            fi
+            if [ "$rollback_failed" -ne 0 ]; then
+              echo "::error::pair promotion failed and automatic compensation was incomplete"
+            fi
+            if [ "$status" -eq 0 ]; then
+              status=1
+            fi
+            exit "$status"
+          }
+          trap compensate EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          receipt_maybe_changed=true
+          NODE_AUTH_TOKEN="$RECEIPT_AUTH_TOKEN" timeout 120 npm dist-tag add \
+            "@ictechgy/context-guard-receipt@$RECEIPT_VERSION" "$DIST_TAG"
+          root_maybe_changed=true
+          NODE_AUTH_TOKEN="$ROOT_AUTH_TOKEN" timeout 120 npm dist-tag add \
+            "@ictechgy/context-guard@$ROOT_VERSION" "$DIST_TAG"
+
+          receipt_latest="$(npm view "@ictechgy/context-guard-receipt" "dist-tags.$DIST_TAG" --json)"
+          root_latest="$(npm view "@ictechgy/context-guard" "dist-tags.$DIST_TAG" --json)"
+          test "$receipt_latest" = "\"$RECEIPT_VERSION\""
+          test "$root_latest" = "\"$ROOT_VERSION\""
+
+          completed=true
+          trap - EXIT INT TERM

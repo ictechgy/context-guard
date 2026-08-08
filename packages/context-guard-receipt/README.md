@@ -19,6 +19,9 @@ context-guard-receipt inspect twin --experimental-twin --input <file|-> --root <
 context-guard-receipt inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <1..256>]
 context-guard-receipt inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>
 context-guard-receipt inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <1..256>]
+context-guard-receipt import merged-capture --spool <absolute> --transaction-id <64-lowercase-hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]
+context-guard-receipt recover merged-capture --transaction-id <64-lowercase-hex> --root <absolute> --state-dir <absolute>
+context-guard-receipt inspect merged-capture-import --root <absolute> --state-dir <absolute>
 ```
 
 Package and entry-point discovery are explicit and local. For a separate local
@@ -27,11 +30,15 @@ project, then invoke the two installed binaries directly:
 
 ```text
 npm pack --ignore-scripts
-npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.1.0.tgz
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.0.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
 ```
+
+Any downgrade to `0.1.x` is an external package-manager/release gate requiring
+an independently retained immutable published artifact. This package does not
+simulate or reconstruct an older release from the `0.2.0` runtime tree.
 
 The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or
@@ -82,8 +89,8 @@ cannot roll back the committed advisory row.
 
 There is no default durable location: every durable workflow names an absolute
 `--state-dir`. The local capability store is `store-v1` beneath that directory
-and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and 1 MiB per
-artifact. Diagnostics, the experimental twin, and the experimental
+and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and ordinarily
+1 MiB per artifact. Diagnostics, the experimental twin, and the experimental
 reference-expiry registry use separate `auxiliary-v1` compartments with their
 own quotas and never turn a local receipt into host, provider, or network
 evidence.
@@ -153,6 +160,42 @@ accepting independently validated immutable tool-schema snapshots. Active
 lookups persist a per-reference clock high-water; a backward clock observation
 terminally expires that reference, and multi-reference inspection publishes
 due transitions as one bounded batch.
+
+`import merged-capture` is the runner-free adapter for one already completed,
+owner-only (`0600`), no-follow regular spool of at most 10,000,000
+bytes. It verifies canonical sanitized UTF-8 without sanitizing again, streams the exact bytes into
+`COMMAND_CAPTURE_BYTES`, and assigns the sole subject domain
+`contextguard-receipt/command-capture-merged-sanitized/v1`. Merged-import store
+initialization opts into that protocol-specific single-artifact ceiling while
+ordinary store initialization retains its 1 MiB default. The first merged import
+atomically upgrades an exact default-limit store in place; custom limit profiles
+remain refused. The optional
+`--disclosure-days` consent marker accepts only `7`; the protocol records one
+absolute deadline exactly 604,800,000 milliseconds after issuance and never
+extends it on retry, recovery, disablement, rollback, or revocation.
+
+Import recovery is transaction-scoped. A lowercase 64-hex random transaction
+id deterministically re-derives the same store capability, while the
+authenticated `reference-expiry-v1/import-transactions-v1` journal stores no
+handle, spool path, payload, or command/content hash. Authority is emitted only
+after read-back validation and idempotent expiry registration. A prepared
+transaction with no artifact is abandoned; an uncertain committed artifact is
+recovered in place and never duplicated. Aggregate inspection exposes only
+counts and pending bytes. At most 32 transactions and 32 MiB of artifact bytes
+may remain pending; artifacts are never automatically deleted. Expansion of
+this merged subject requires a positive active registry record and returns the
+exact merged bytes. Legacy canonical CGRF command captures remain readable and
+do not acquire a registration requirement.
+
+The Bash integration does not use the public pathname import above. Its private
+broker accepts only an inherited anonymous regular descriptor (`0600`, current
+effective uid, link count zero), announces readiness only after repository and
+state preparation, and then accepts exactly one `COMMIT` or `ABORT`. `COMMIT`
+uses retained store, expiry, and journal descriptors; it performs no later Git,
+Node, Python, or package-path execution. Same-process recovery is attempted once
+for the selected transaction before one bounded canonical final result. Broker
+preparation may initialize these axes even when the eventual sanitized output
+is below the root wrapper's 8,192-byte disclosure threshold.
 
 Reference expiry is also experimental local administration, not deletion or
 provider enforcement. It changes only a compact registry record. The reserved

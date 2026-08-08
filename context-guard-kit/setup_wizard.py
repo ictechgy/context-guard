@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,16 @@ HELPER_REWRITE_BASH = "context-guard-rewrite-bash"
 HELPER_GUARD_READ = "context-guard-guard-read"
 HELPER_FAILED_NUDGE = "context-guard-failed-nudge"
 HELPER_DIET = "context-guard-diet"
+ROOT_PACKAGE_NAME = "@ictechgy/context-guard"
+RECEIPT_PACKAGE_NAME = "@ictechgy/context-guard-receipt"
+_BASH_REFERENCE_UNAVAILABLE = (
+    "bash_reference_v1 reference unavailable"
+)
+_BASH_REFERENCE_RECOVERY = (
+    "repair or reinstall the exact paired npm packages in the target project, "
+    "ensure a trusted system Node interpreter is available, then rerun setup"
+)
+BASH_REFERENCE_POLICY_MAX_BYTES = 512 * 1024
 HELPER_EQUIVALENT_BASENAMES = {
     "context-guard-rewrite-bash": {
         "context-guard-rewrite-bash",
@@ -111,6 +122,8 @@ class Choices:
     denies: bool = True
     statusline: bool = True
     bash_hook: bool = True
+    # Provider-visible receipt handles are an explicit, default-off choice.
+    bash_reference_v1: bool = False
     read_guard: bool = True
     model_defaults: bool = True
     # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — recommended setup 기본 ON.
@@ -1978,11 +1991,113 @@ def statusline_setting(*, allow_path_fallback: bool = False) -> dict[str, str]:
     return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline_merged.sh", shell="bash", allow_path_fallback=allow_path_fallback)}
 
 
-def bash_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
+def bash_hook_setting(*, allow_path_fallback: bool = False, bash_reference_v1: bool = False) -> dict[str, Any]:
+    command = helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", allow_path_fallback=allow_path_fallback)
+    if bash_reference_v1:
+        command = f"{command} --bash-reference-v1"
     return {
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", allow_path_fallback=allow_path_fallback)}],
+        "hooks": [{"type": "command", "command": command}],
     }
+
+
+def load_bash_reference_policy() -> object | None:
+    """Load only the package-local runtime policy, never an import from PATH."""
+    path = Path(__file__).resolve().parent / "bash_reference_policy.py"
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOCTTY", 0)
+    )
+    if not hasattr(os, "O_NOFOLLOW"):
+        return None
+    flags |= os.O_NOFOLLOW
+    fd = -1
+    try:
+        fd = os.open(path, flags)
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size > BASH_REFERENCE_POLICY_MAX_BYTES
+        ):
+            return None
+        source = os.read(fd, BASH_REFERENCE_POLICY_MAX_BYTES + 1)
+        if len(source) > BASH_REFERENCE_POLICY_MAX_BYTES:
+            return None
+        source_text = source.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    module_name = f"_context_guard_setup_reference_policy_{os.getpid()}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    sys.modules[module_name] = module
+    try:
+        exec(compile(source_text, str(path), "exec"), module.__dict__)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        return None
+    return module
+
+
+def bash_reference_adapter_readiness(root: Path) -> tuple[bool, str]:
+    """Return the runtime adapter verdict for the effective setup project."""
+    policy = load_bash_reference_policy()
+    discover = getattr(policy, "discover_adapter", None)
+    if policy is None:
+        return False, "receipt_policy_unavailable"
+    if not callable(discover):
+        return False, "receipt_policy_invalid"
+    try:
+        discovered = discover(root)
+    except Exception:
+        return False, "receipt_policy_load_failed"
+    if not isinstance(discovered, tuple) or len(discovered) != 2:
+        return False, "receipt_policy_invalid"
+    adapter, reason = discovered
+    adapter_methods = ("start_broker", "query_reference")
+    if (
+        adapter is not None
+        and reason == "receipt_adapter_available"
+        and all(callable(getattr(adapter, name, None)) for name in adapter_methods)
+    ):
+        return True, reason
+    if adapter is not None and reason == "receipt_adapter_available":
+        return False, "receipt_adapter_invalid"
+    if not isinstance(reason, str) or re.fullmatch(r"[a-z0-9_]{1,96}", reason) is None:
+        return False, "receipt_policy_invalid"
+    return False, reason
+
+
+def bash_reference_unavailable_message(reason: str) -> str:
+    return (
+        f"{_BASH_REFERENCE_UNAVAILABLE}: reason={reason}; requires an exact paired npm install "
+        f"of {ROOT_PACKAGE_NAME} and {RECEIPT_PACKAGE_NAME}; "
+        f"recovery={_BASH_REFERENCE_RECOVERY}; ordinary Bash trimming remains enabled"
+    )
+
+
+def disable_unavailable_bash_reference(
+    choices: Choices,
+    warnings: list[str],
+    *,
+    root: Path,
+) -> list[str]:
+    """Fail closed without removing the ordinary Bash trimming choice."""
+    if not choices.bash_reference_v1:
+        return []
+    available, reason = bash_reference_adapter_readiness(root)
+    if available:
+        return []
+    choices.bash_reference_v1 = False
+    warning = bash_reference_unavailable_message(reason)
+    warnings.append(warning)
+    return [warning]
 
 
 def read_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
@@ -2440,7 +2555,28 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     choices = choices_from_args(args)
-    actions = apply_choices(settings, choices, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False))) if claude_targeted else []
+    reference_actions = disable_unavailable_bash_reference(
+        choices,
+        warnings,
+        root=root,
+    )
+    if reference_actions:
+        checks.append(doctor_check(
+            "bash-reference-distribution",
+            "warning",
+            "medium",
+            reference_actions[0],
+            next_action=_BASH_REFERENCE_RECOVERY + ".",
+        ))
+    actions = reference_actions + (
+        apply_choices(
+            settings,
+            choices,
+            allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)),
+        )
+        if claude_targeted
+        else []
+    )
     changed = (settings != original) if claude_targeted else False
     if changed:
         checks.append(doctor_check(
@@ -2609,9 +2745,16 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
             migrate_env_read_denies=choices.read_guard,
         )
     if choices.bash_hook:
-        bash_hook = bash_hook_setting(allow_path_fallback=allow_path_fallback)
+        bash_hook = bash_hook_setting(
+            allow_path_fallback=allow_path_fallback,
+            bash_reference_v1=choices.bash_reference_v1,
+        )
         bash_command = bash_hook["hooks"][0]["command"]
         ensure_pre_tool_hook(settings, bash_hook, bash_command, "Bash trim/sanitize", actions)
+        if choices.bash_reference_v1:
+            actions.append(
+                "enabled bash_reference_v1: a scoped 7-day bearer handle may appear in Claude/provider-visible transcripts"
+            )
     if choices.read_guard:
         read_hook = read_hook_setting(allow_path_fallback=allow_path_fallback)
         read_command = read_hook["hooks"][0]["command"]
@@ -3004,6 +3147,10 @@ def interactive_choices(defaults: Choices) -> Choices:
         denies=prompt_bool("Add deny rules for bulky/sensitive paths?", defaults.denies),
         statusline=prompt_bool("Enable token/cost statusline?", defaults.statusline),
         bash_hook=prompt_bool("Enable Bash output trim + grep/diff sanitizer hook?", defaults.bash_hook),
+        bash_reference_v1=prompt_bool(
+            "Enable optional Bash receipt references? 7-day scoped bearer handles are visible to Claude/provider transcripts",
+            defaults.bash_reference_v1,
+        ),
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
@@ -3019,6 +3166,7 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         denies=not args.no_denies,
         statusline=not args.no_statusline,
         bash_hook=not args.no_bash_hook,
+        bash_reference_v1=getattr(args, "bash_reference_v1", False),
         read_guard=not args.no_read_guard,
         model_defaults=not args.no_model_defaults,
         failed_attempt_nudge=(
@@ -3327,7 +3475,20 @@ def run(args: argparse.Namespace) -> SetupResult:
     if interactive:
         choices = interactive_choices(choices)
 
-    actions = apply_choices(settings, choices, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False))) if claude_targeted else []
+    reference_actions = disable_unavailable_bash_reference(
+        choices,
+        warnings,
+        root=root,
+    )
+    actions = reference_actions + (
+        apply_choices(
+            settings,
+            choices,
+            allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)),
+        )
+        if claude_targeted
+        else []
+    )
     changed = (settings != original) if claude_targeted else False
 
     apply_requested = bool(args.yes and not args.dry_run and not args.plan)
@@ -3481,6 +3642,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-denies", action="store_true", help="skip recommended permissions.deny rules")
     parser.add_argument("--no-statusline", action="store_true", help="skip token statusline")
     parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
+    reference_group = parser.add_mutually_exclusive_group()
+    reference_group.add_argument(
+        "--bash-reference-v1",
+        action="store_true",
+        help="opt in to 7-day scoped receipt references in the Bash hook; handles are provider-visible",
+    )
+    reference_group.add_argument(
+        "--no-bash-reference-v1",
+        dest="bash_reference_v1",
+        action="store_false",
+        help="disable/remove the optional Bash receipt-reference hook flag (default)",
+    )
+    parser.set_defaults(bash_reference_v1=False)
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
     parser.add_argument("--no-diet-scan", action="store_true", help="skip the read-only diet scan summary after applying setup")

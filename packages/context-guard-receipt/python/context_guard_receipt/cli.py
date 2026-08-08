@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import secrets
 import sys
 import time
 from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import BinaryIO
 
 from . import runner
 from .assembly import (
@@ -25,7 +28,12 @@ from .canonical import (
     parse_canonical_json_bytes,
 )
 from .cli_io import CliIOError, read_descriptor, write_receipt, write_stdout
-from .contracts import canonical_json, evidence_boundary, response
+from .contracts import (
+    RESPONSE_SCHEMA_VERSION,
+    canonical_json,
+    evidence_boundary,
+    response,
+)
 from .diagnostics import DiagnosticsError, analyze_request, parse_diagnostics_request
 from .diagnostic_ledger import (
     DiagnosticLedger,
@@ -44,7 +52,7 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  import merged-capture --spool <absolute> --transaction-id <64hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]\n  recover merged-capture --transaction-id <64hex> --root <absolute> --state-dir <absolute>\n  inspect merged-capture-import --root <absolute> --state-dir <absolute>\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Merged-capture import accepts only a completed private canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nRun the bounded local stdio MCP surface for one fixed repository root. Capabilities are process-local and expire when the process exits. No registration, provider, model, credential, or network access is performed.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -66,6 +74,7 @@ INSPECT_TARGETS = frozenset(
         "diagnostic-ledger",
         "twin",
         "reference-expiry",
+        "merged-capture-import",
         "lease",
         "state",
     }
@@ -74,6 +83,29 @@ _RUN_MAX_TIMEOUT_SECONDS = 300
 _RUN_MAX_CAPTURE_BYTES = 900_000
 _TWIN_REQUEST_MAX_BYTES = 64 * 1024
 _REFERENCE_EXPIRY_REQUEST_MAX_BYTES = 4096
+_BASH_REFERENCE_BROKER_READY = (
+    b"READY contextguard-bash-reference-broker/v1\n"
+)
+_BASH_REFERENCE_BROKER_FINAL_MAX_BYTES = 4096
+_BASH_REFERENCE_QUERY_SCHEMA_VERSION = (
+    "contextguard-receipt-bash-reference-query/v1"
+)
+_BASH_REFERENCE_QUERY_MAX_PAYLOAD_BYTES = 20_000
+_BASH_REFERENCE_QUERY_MAX_RESPONSE_BYTES = 28_000
+_BASH_REFERENCE_QUERY_JSON_LIMITS = JSONLimits(
+    max_document_bytes=_BASH_REFERENCE_QUERY_MAX_RESPONSE_BYTES,
+    max_depth=4,
+    max_total_values=32,
+    max_object_members=8,
+    max_string_bytes=27_000,
+)
+_BASH_REFERENCE_STATE_DIRECTORY_PREFIX = ".context-guard-receipt-state-"
+_BASH_REFERENCE_STATE_SELECTOR_DOMAIN = (
+    b"contextguard/bash-reference-state-selector/v1\0"
+)
+_CAPABILITY_ALPHABET = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
 
 
 def emit_error(operation: str, status: str, reason: str, code: int) -> int:
@@ -100,6 +132,53 @@ def _is_positive_integer(value: str) -> bool:
         return int(value, 10) > 0 and str(int(value, 10)) == value
     except ValueError:
         return False
+
+
+def _is_capability_handle(value: object) -> bool:
+    return bool(
+        type(value) is str
+        and len(value) == 49
+        and value.startswith("cgr1p_")
+        and all(character in _CAPABILITY_ALPHABET for character in value[6:])
+    )
+
+
+def _is_nonnegative_decimal(value: object) -> bool:
+    return bool(
+        type(value) is str
+        and bool(value)
+        and len(value) <= 20
+        and (value == "0" or (value[0] in "123456789" and value.isascii() and value.isdecimal()))
+    )
+
+
+def _bash_reference_state_directory(repository_root: str) -> str | None:
+    """Derive the private sibling used by the verified npm adapter."""
+
+    if not _is_absolute(repository_root):
+        return None
+    root = Path(repository_root)
+    try:
+        if os.path.realpath(repository_root) != repository_root or root.is_symlink():
+            return None
+        status = root.lstat()
+        if not root.is_dir():
+            return None
+    except OSError:
+        return None
+    selector = hashlib.sha256()
+    selector.update(_BASH_REFERENCE_STATE_SELECTOR_DOMAIN)
+    for field in (
+        os.fsencode(repository_root),
+        str(status.st_dev).encode("ascii"),
+        str(status.st_ino).encode("ascii"),
+    ):
+        selector.update(len(field).to_bytes(8, "big"))
+        selector.update(field)
+    return str(
+        root.parent
+        / f"{_BASH_REFERENCE_STATE_DIRECTORY_PREFIX}{selector.hexdigest()}"
+    )
 
 
 def _parse_options(
@@ -229,10 +308,58 @@ def _valid_expand(arguments: Sequence[str]) -> bool:
     return seen is not None and {"--root", "--state-dir"}.issubset(seen)
 
 
+def _is_transaction_id(value: str) -> bool:
+    return bool(
+        len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _valid_import(arguments: Sequence[str]) -> bool:
+    if not arguments or arguments[0] != "merged-capture":
+        return False
+    seen = _parse_options(
+        arguments[1:],
+        values={
+            "--spool": _is_absolute,
+            "--transaction-id": _is_transaction_id,
+            "--root": _is_absolute,
+            "--state-dir": _is_absolute,
+            "--disclosure-days": lambda value: value == "7",
+        },
+    )
+    return seen is not None and {
+        "--spool",
+        "--transaction-id",
+        "--root",
+        "--state-dir",
+    }.issubset(seen)
+
+
+def _valid_recover(arguments: Sequence[str]) -> bool:
+    if not arguments or arguments[0] != "merged-capture":
+        return False
+    seen = _parse_options(
+        arguments[1:],
+        values={
+            "--transaction-id": _is_transaction_id,
+            "--root": _is_absolute,
+            "--state-dir": _is_absolute,
+        },
+    )
+    return seen == frozenset({"--transaction-id", "--root", "--state-dir"})
+
+
 def _valid_inspect(arguments: Sequence[str]) -> bool:
     if not arguments or arguments[0] not in INSPECT_TARGETS:
         return False
     target = arguments[0]
+    if target == "merged-capture-import":
+        seen = _parse_options(
+            arguments[1:],
+            values={"--root": _is_absolute, "--state-dir": _is_absolute},
+        )
+        return seen == frozenset({"--root", "--state-dir"})
     if target == "firewall":
         seen = _parse_options(
             arguments[1:], values={"--input": _is_file_argument}
@@ -446,6 +573,21 @@ class _LazyResolutionStore:
             return True
         except Exception:
             return True
+
+    def is_reference_active(self, handle: str) -> bool:
+        """Require a positive active registry record for merged imports only."""
+
+        try:
+            from .merged_capture import is_registered_reference
+
+            return is_registered_reference(
+                handle=handle,
+                state_dir=self.state_dir,
+                repository_root=self.repository_root,
+                observed_at_unix_ms=time.time_ns() // 1_000_000,
+            )
+        except Exception:
+            return False
 
 
 def _emit_payload(
@@ -1034,8 +1176,259 @@ def _inspect_reference_expiry(arguments: Sequence[str]) -> int:
     return _write_reference_expiry_payload(payload)
 
 
+def _write_merged_import_result(result: dict[str, object]) -> int:
+    import_result = {
+        key: result[key]
+        for key in (
+            "actionable",
+            "expires_at_unix_ms",
+            "reason",
+            "reference",
+            "status",
+            "transaction_id",
+        )
+    }
+    envelope = {
+        "evidence_boundary": evidence_boundary(),
+        "import_result": import_result,
+        "operation": "import_merged_capture",
+        "schema_version": RESPONSE_SCHEMA_VERSION,
+        "status": "ok",
+    }
+    try:
+        write_stdout(canonical_json_bytes(envelope))
+    except Exception:
+        return emit_error(
+            "import_merged_capture", "error", "delivery_failed", 74
+        )
+    return 0
+
+
+def _run_bash_reference_broker(
+    arguments: Sequence[str],
+    *,
+    capture_fd: int = 3,
+    control: BinaryIO | None = None,
+    output: BinaryIO | None = None,
+) -> int:
+    """Run the exact private, single-transaction descriptor protocol."""
+
+    arguments = tuple(arguments)
+    if (
+        len(arguments) != 8
+        or arguments[0] != "--transaction-id"
+        or arguments[2] != "--root"
+        or arguments[4] != "--state-dir"
+        or arguments[6:] != ("--disclosure-days", "7")
+    ):
+        return 64
+    transaction_id = arguments[1]
+    repository_root = arguments[3]
+    state_dir = arguments[5]
+    control_stream = sys.stdin.buffer if control is None else control
+    output_stream = sys.stdout.buffer if output is None else output
+    try:
+        # Importing this module eagerly loads the complete merged-capture store,
+        # expiry, identity, canonicalization, and contract dependency graph.
+        from .merged_capture import MergedCaptureError, prepare_broker
+
+        prepared = prepare_broker(
+            capture_fd=capture_fd,
+            transaction_id=transaction_id,
+            repository_root=repository_root,
+            state_dir=state_dir,
+            disclosure_days=7,
+        )
+    except Exception:
+        return 74
+    try:
+        output_stream.write(_BASH_REFERENCE_BROKER_READY)
+        output_stream.flush()
+        command = control_stream.readline(8)
+        if command not in {b"COMMIT\n", b"ABORT\n"}:
+            return 65
+        if control_stream.read(1) != b"":
+            return 65
+        if command == b"ABORT\n":
+            return 0
+        try:
+            result = prepared.commit()
+        except MergedCaptureError:
+            return 74
+        payload = b"FINAL " + canonical_json_bytes(result)
+        if len(payload) > _BASH_REFERENCE_BROKER_FINAL_MAX_BYTES:
+            return 74
+        output_stream.write(payload)
+        output_stream.flush()
+        return 0
+    except (OSError, ValueError):
+        return 74
+    finally:
+        prepared.close()
+
+
+def _run_bash_reference_query(arguments: Sequence[str]) -> int:
+    """Return one exact bounded UTF-8 page for a live merged capability."""
+
+    operation = "query_bash_reference"
+    arguments = tuple(arguments)
+    if (
+        len(arguments) != 7
+        or arguments[1] != "--root"
+        or arguments[3] != "--state-dir"
+        or arguments[5] != "--offset"
+        or not _is_capability_handle(arguments[0])
+        or not _is_nonnegative_decimal(arguments[6])
+    ):
+        return emit_error(operation, "error", "usage", 64)
+    handle, repository_root, state_dir = arguments[0], arguments[2], arguments[4]
+    expected_state_dir = _bash_reference_state_directory(repository_root)
+    if (
+        expected_state_dir is None
+        or not _is_absolute(state_dir)
+        or state_dir != expected_state_dir
+    ):
+        return emit_error(operation, "refused", "capability_rejected", 65)
+    offset = int(arguments[6], 10)
+    backend = _LazyResolutionStore(
+        state_dir=state_dir,
+        repository_root=repository_root,
+    )
+    try:
+        result = expand_capability(
+            handle,
+            root=repository_root,
+            store=backend,
+        )
+    except Exception:
+        return emit_error(operation, "refused", "capability_rejected", 65)
+    if (
+        result.disposition is not ExpansionDisposition.EXACT
+        or not backend.is_reference_active(handle)
+    ):
+        return emit_error(operation, "refused", "capability_rejected", 65)
+    payload = result.output_bytes
+    try:
+        payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return emit_error(operation, "refused", "artifact_invalid", 65)
+    total_bytes = len(payload)
+    if (
+        offset > total_bytes
+        or (
+            0 < offset < total_bytes
+            and payload[offset] & 0xC0 == 0x80
+        )
+    ):
+        return emit_error(operation, "refused", "offset_rejected", 65)
+    next_offset = min(total_bytes, offset + _BASH_REFERENCE_QUERY_MAX_PAYLOAD_BYTES)
+    while (
+        next_offset > offset
+        and next_offset < total_bytes
+        and payload[next_offset] & 0xC0 == 0x80
+    ):
+        next_offset -= 1
+    page = payload[offset:next_offset]
+    response_payload = {
+        "next_offset": next_offset,
+        "offset": offset,
+        "payload_b64u": base64.urlsafe_b64encode(page).rstrip(b"=").decode("ascii"),
+        "request": {"offset": offset, "reference": handle},
+        "schema_version": _BASH_REFERENCE_QUERY_SCHEMA_VERSION,
+        "status": "exact",
+        "total_bytes": total_bytes,
+    }
+    try:
+        encoded = canonical_json_bytes(
+            response_payload, limits=_BASH_REFERENCE_QUERY_JSON_LIMITS
+        )
+        if len(encoded) > _BASH_REFERENCE_QUERY_MAX_RESPONSE_BYTES:
+            raise ValueError("reference response exceeds fixed bound")
+        write_stdout(encoded)
+    except Exception:
+        return emit_error(operation, "error", "delivery_failed", 74)
+    return 0
+
+
+def _merged_import_error(
+    error: object, *, operation: str = "import_merged_capture"
+) -> int:
+    code = getattr(getattr(error, "code", None), "value", "state_unavailable")
+    refused = {
+        "invalid_argument",
+        "deadline_overflow",
+        "unsafe_spool",
+        "spool_too_large",
+        "noncanonical_spool",
+        "transaction_not_found",
+        "transaction_abandoned",
+        "transaction_conflict",
+        "transaction_quota_exceeded",
+        "pending_quota_exceeded",
+        "pending_bytes_quota_exceeded",
+        "artifact_missing",
+        "artifact_invalid",
+        "reference_inaccessible",
+    }
+    if code in refused:
+        return emit_error(operation, "refused", code, 65)
+    return emit_error(operation, "error", code, 74)
+
+
+def _import_merged_capture(arguments: Sequence[str], *, recovery: bool) -> int:
+    options = _option_values(arguments[1:], flags=frozenset())
+    try:
+        from .merged_capture import MergedCaptureError, publish, recover
+
+        if recovery:
+            result = recover(
+                transaction_id=options["--transaction-id"],
+                repository_root=options["--root"],
+                state_dir=options["--state-dir"],
+            )
+        else:
+            result = publish(
+                spool_path=options["--spool"],
+                transaction_id=options["--transaction-id"],
+                repository_root=options["--root"],
+                state_dir=options["--state-dir"],
+                disclosure_days=int(str(options.get("--disclosure-days", "7")), 10),
+            )
+    except MergedCaptureError as error:
+        return _merged_import_error(error)
+    except Exception:
+        return emit_error(
+            "import_merged_capture", "error", "internal_failure", 70
+        )
+    return _write_merged_import_result(result)
+
+
+def _inspect_merged_capture(arguments: Sequence[str]) -> int:
+    options = _option_values(arguments[1:], flags=frozenset())
+    try:
+        from .merged_capture import MergedCaptureError, inspect
+
+        result = inspect(
+            repository_root=options["--root"], state_dir=options["--state-dir"]
+        )
+        write_stdout(canonical_json_bytes(result))
+    except MergedCaptureError as error:
+        return _merged_import_error(
+            error, operation="inspect_merged_capture_import"
+        )
+    except Exception:
+        return emit_error(
+            "inspect_merged_capture_import", "error", "internal_failure", 70
+        )
+    return 0
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
+    if arguments and arguments[0] == "--private-bash-reference-broker-v1":
+        return _run_bash_reference_broker(arguments[1:])
+    if arguments and arguments[0] == "--private-bash-reference-query-v1":
+        return _run_bash_reference_query(arguments[1:])
     if arguments == ("--help",):
         print(HELP, end="")
         return 0
@@ -1048,6 +1441,10 @@ def receipt_main(arguments: Sequence[str]) -> int:
         return _run(arguments[1:])
     if arguments and arguments[0] == "expand" and _valid_expand(arguments[1:]):
         return _expand(arguments[1:])
+    if arguments and arguments[0] == "import" and _valid_import(arguments[1:]):
+        return _import_merged_capture(arguments[1:], recovery=False)
+    if arguments and arguments[0] == "recover" and _valid_recover(arguments[1:]):
+        return _import_merged_capture(arguments[1:], recovery=True)
     if arguments and arguments[0] == "inspect" and _valid_inspect(arguments[1:]):
         if arguments[1] in {"diagnostics", "firewall"}:
             options = _option_values(arguments[2:], flags=frozenset())
@@ -1071,6 +1468,8 @@ def receipt_main(arguments: Sequence[str]) -> int:
                     69,
                 )
             return _inspect_reference_expiry(arguments[2:])
+        if arguments[1] == "merged-capture-import":
+            return _inspect_merged_capture(arguments[1:])
         operation = f"inspect_{arguments[1].replace('-', '_')}"
         return emit_error(operation, "unavailable", "feature_not_available", 69)
     return emit_error("cli", "error", "usage", 64)

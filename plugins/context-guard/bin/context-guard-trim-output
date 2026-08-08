@@ -16,6 +16,7 @@ import os
 from pathlib import Path, PurePosixPath
 import queue
 import re
+import secrets
 import shlex
 import signal
 import stat
@@ -38,11 +39,20 @@ MAX_TIMEOUT_SECONDS = 86_400
 TIMEOUT_EXIT_CODE = 124
 DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES = 10_000_000
 MAX_ARTIFACT_RECEIPT_MAX_BYTES = 100_000_000
+# Frozen merged-capture v1 boundary. Keep independent from the legacy
+# --artifact-max-bytes option so that mode-specific flags cannot drift it.
+BASH_REFERENCE_MAX_SANITIZED_BYTES = 10_000_000
+BASH_REFERENCE_MIN_SANITIZED_BYTES = 8_192
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
 COMMAND_MAX_UNTERMINATED_LINE_CHARS = 4_096
 RAW_TRUNCATION_REDACTION_HOLDBACK_CHARS = 1_024
 MAX_DYNAMIC_SIBLING_MODULE_BYTES = 2_000_000
 MAX_HOOK_INPUT_BYTES = 16 * 1024 * 1024
+BASH_REFERENCE_QUERY_MAX_PAYLOAD_BYTES = 20_000
+BASH_REFERENCE_HANDLE_RE = re.compile(r"^cgr1p_[A-Za-z0-9_-]{43}$", re.ASCII)
+BASH_REFERENCE_COMMAND_PREFIX = "./node_modules/.bin/context-guard reference "
+BASH_REFERENCE_BUDGET_PROBE = "cgr1p_" + "A" * 43
+DIGEST_CAP_MARKER = "[context-guard-kit] digest capped by --max-chars.\n"
 
 
 class HookInputError(ValueError):
@@ -439,32 +449,63 @@ def store_sanitized_artifact_receipt(
 
 
 class SanitizedArtifactCapture:
-    def __init__(self, *, enabled: bool, max_bytes: int) -> None:
+    def __init__(self, *, enabled: bool, max_bytes: int, reference_spool: bool = False) -> None:
         self.enabled = enabled
         self.max_bytes = max_bytes
+        self.reference_spool = reference_spool
         self.bytes = 0
         self.overflow = False
         self.error: str | None = None
         self._file: BinaryIO | None = None
+        if self.enabled and self.reference_spool:
+            self._ensure_file()
 
     def _ensure_file(self) -> BinaryIO | None:
         if self._file is not None:
             return self._file
         try:
-            self._file = tempfile.TemporaryFile("w+b")
+            self._file = tempfile.TemporaryFile("w+b", buffering=0)
+            if self.reference_spool:
+                os.fchmod(self._file.fileno(), 0o600)
+                status = os.fstat(self._file.fileno())
+                if (
+                    not stat.S_ISREG(status.st_mode)
+                    or status.st_uid != os.geteuid()
+                    or stat.S_IMODE(status.st_mode) != 0o600
+                    or status.st_nlink != 0
+                ):
+                    raise OSError("anonymous capture invariant unavailable")
         except OSError as exc:
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except OSError:
+                    pass
+                self._file = None
             self._record_error(exc)
             return None
         return self._file
 
     def _record_error(self, exc: OSError) -> None:
         if self.error is None:
-            self.error = f"{exc.__class__.__name__}: {exc}"
+            self.error = (
+                "capture_io_failed"
+                if self.reference_spool
+                else f"{exc.__class__.__name__}: {exc}"
+            )
 
     def add(self, sanitized_line: str) -> None:
         if not self.enabled or self.overflow or self.error:
             return
-        encoded = sanitized_line.encode("utf-8", errors="replace")
+        try:
+            encoded = sanitized_line.encode(
+                "utf-8",
+                errors="strict" if self.reference_spool else "replace",
+            )
+        except UnicodeEncodeError:
+            self.error = "capture_encoding_failed"
+            self.close()
+            return
         source_bytes = len(encoded)
         if self.bytes + source_bytes > self.max_bytes:
             self.overflow = True
@@ -482,6 +523,8 @@ class SanitizedArtifactCapture:
         self.bytes += source_bytes
 
     def text(self) -> str:
+        if self.reference_spool:
+            return ""
         if self._file is None:
             return ""
         try:
@@ -492,6 +535,12 @@ class SanitizedArtifactCapture:
             self._record_error(exc)
             self.close()
             return ""
+
+    def descriptor(self) -> int:
+        """Return the live anonymous reference descriptor without a pathname."""
+        if not self.reference_spool or self._file is None or self.error:
+            raise OSError("receipt capture descriptor unavailable")
+        return self._file.fileno()
 
     def close(self) -> None:
         target = self._file
@@ -507,6 +556,49 @@ class SanitizedArtifactCapture:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def abort_bash_reference_broker(broker: object | None) -> None:
+    if broker is None:
+        return
+    try:
+        abort = getattr(broker, "abort", None)
+        if callable(abort):
+            abort()
+    except Exception:
+        pass
+    finally:
+        try:
+            close = getattr(broker, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
+
+def commit_bash_reference_broker(broker: object | None) -> tuple[str | None, str]:
+    if broker is None:
+        return None, "receipt_broker_unavailable"
+    try:
+        result = broker.commit()  # type: ignore[attr-defined]
+        reference = getattr(result, "reference", None)
+        if (
+            getattr(result, "status", None) != "success"
+            or getattr(result, "actionable", False) is not True
+            or not isinstance(reference, str)
+            or BASH_REFERENCE_HANDLE_RE.fullmatch(reference) is None
+        ):
+            return None, str(
+                getattr(result, "reason_code", "receipt_broker_unavailable")
+            )
+        return reference, "reference_published"
+    except Exception:
+        return None, "receipt_broker_unavailable"
+    finally:
+        try:
+            broker.close()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 def unique_keep_order(lines: Iterable[str]) -> list[str]:
@@ -1162,7 +1254,86 @@ def compact_markdown_artifact_receipt(payload: dict[str, object], max_chars: int
     return ""
 
 
+def markdown_bash_reference_line(payload: dict[str, object]) -> str:
+    """Render the sole intentionally provider-visible Receipt value, if any."""
+    reference = payload.get("bash_reference")
+    if not isinstance(reference, dict) or reference.get("route") != "reference":
+        return ""
+    handle = reference.get("reference")
+    if (
+        not isinstance(handle, str)
+        or BASH_REFERENCE_HANDLE_RE.fullmatch(handle) is None
+    ):
+        return ""
+    command = BASH_REFERENCE_COMMAND_PREFIX + handle
+    if reference.get("retrieval_command") != command:
+        return ""
+    return f"- bash_reference (scoped disclosure: 7 days): `{command}`\n"
+
+
+def bash_reference_metadata(handle: str) -> dict[str, object] | None:
+    if BASH_REFERENCE_HANDLE_RE.fullmatch(handle) is None:
+        return None
+    return {
+        "mode": "bash_reference_v1",
+        "route": "reference",
+        "reference": handle,
+        "disclosure_days": 7,
+        "retrieval_command": BASH_REFERENCE_COMMAND_PREFIX + handle,
+    }
+
+
+def bash_reference_fits_digest_budget(digest: str, max_chars: int) -> bool:
+    """Preflight the smallest provider-visible serialization before commit."""
+
+    reference = bash_reference_metadata(BASH_REFERENCE_BUDGET_PROBE)
+    if reference is None or type(max_chars) is not int or max_chars < 1:
+        return False
+    if digest == "json":
+        minimum = json.dumps(
+            {"bash_reference": reference, "digest_capped": True},
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ) + "\n"
+        return len(minimum) <= max_chars
+    if digest == "markdown":
+        line = markdown_bash_reference_line({"bash_reference": reference})
+        return bool(line) and len(line) + len(DIGEST_CAP_MARKER) <= max_chars
+    return False
+
+
+def _sanitized_bash_reference_payload(
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Remove any reference object that cannot be rendered as static syntax."""
+
+    reference = payload.get("bash_reference")
+    if not isinstance(reference, dict) or reference.get("route") != "reference":
+        return payload
+    handle = reference.get("reference")
+    expected_command = (
+        BASH_REFERENCE_COMMAND_PREFIX + handle if isinstance(handle, str) else None
+    )
+    if (
+        not isinstance(handle, str)
+        or BASH_REFERENCE_HANDLE_RE.fullmatch(handle) is None
+        or reference.get("retrieval_command") != expected_command
+    ):
+        sanitized = dict(payload)
+        sanitized.pop("bash_reference", None)
+        return sanitized
+    return payload
+
+
 def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
+    payload = _sanitized_bash_reference_payload(payload)
+    if (
+        isinstance(payload.get("bash_reference"), dict)
+        and not bash_reference_fits_digest_budget("markdown", max_chars)
+    ):
+        payload = dict(payload)
+        payload.pop("bash_reference", None)
     raw_output = payload.get("raw_output", {})
     budget = payload.get("budget", {})
     lines: list[str] = []
@@ -1200,6 +1371,9 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
     if isinstance(artifact_receipt, dict):
         for line in markdown_artifact_receipt_lines(artifact_receipt):
             add(line, receipt=True)
+    bash_reference_line = markdown_bash_reference_line(payload)
+    if bash_reference_line:
+        add(bash_reference_line, receipt=True)
     failure_signature = payload.get("failure_signature")
     if isinstance(failure_signature, dict):
         add(
@@ -1245,10 +1419,14 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
     output, capped = cap_text(text, max_chars)
     if not capped:
         return output
-    marker = "[context-guard-kit] digest capped by --max-chars.\n"
+    marker = DIGEST_CAP_MARKER
     if max_chars <= len(marker):
         return marker[:max_chars]
     reserved_receipt = compact_markdown_artifact_receipt(payload, max_chars - len(marker))
+    if not reserved_receipt:
+        candidate = markdown_bash_reference_line(payload)
+        if len(candidate) <= max_chars - len(marker):
+            reserved_receipt = candidate
     if reserved_receipt:
         head_budget = max_chars - len(marker) - len(reserved_receipt)
         head = ""
@@ -1262,12 +1440,21 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
                 head = non_receipt_text[:keep].rstrip() + text_cap_marker
             if head and not head.endswith("\n"):
                 head += "\n"
-        return head + reserved_receipt + marker
-    output, _ = cap_text(text, max_chars - len(marker))
-    return output + marker
+        candidate = head + reserved_receipt + marker
+        return candidate if len(candidate) <= max_chars else reserved_receipt + marker
+    head_budget = max(0, max_chars - len(marker))
+    return text[:head_budget] + marker
 
 
 def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
+    payload = _sanitized_bash_reference_payload(payload)
+    if (
+        isinstance(payload.get("bash_reference"), dict)
+        and not bash_reference_fits_digest_budget("json", max_chars)
+    ):
+        payload = dict(payload)
+        payload.pop("bash_reference", None)
+
     def dumps(data: dict[str, object]) -> str:
         return json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
@@ -1292,7 +1479,10 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
             output = dumps(candidate)
             if len(output) <= max_chars:
                 return output
-        return dumps(candidates[-1])
+        for fallback in ("{}\n", "{}", "0"):
+            if len(fallback) <= max_chars:
+                return fallback
+        return ""
 
     def compact_artifact_receipt(*, include_exact_reexpand: bool) -> dict[str, object] | None:
         artifact_receipt = payload.get("artifact_receipt")
@@ -1413,8 +1603,7 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
     minimal_receipt = compact_artifact_receipt(include_exact_reexpand=False)
     tiny_receipt = tiny_artifact_receipt()
 
-    return first_fitting(
-        [
+    candidates = [
             attach_artifact_receipt(
                 {
                     "tool": payload.get("tool"),
@@ -1472,7 +1661,13 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
             ),
             {"digest_capped": True},
         ]
-    )
+    reference = payload.get("bash_reference")
+    if isinstance(reference, dict) and reference.get("route") == "reference":
+        candidates = [
+            {**candidate, "bash_reference": reference}
+            for candidate in candidates[:-1]
+        ] + [{"bash_reference": reference, "digest_capped": True}]
+    return first_fitting(candidates)
 
 
 _STREAM_END = object()
@@ -1691,7 +1886,109 @@ def process_group_id_for(proc: subprocess.Popen[str]) -> int | None:
         return proc.pid
 
 
+def _reference_offset(value: object) -> int | None:
+    if (
+        not isinstance(value, str)
+        or len(value) > 20
+        or not (value == "0" or re.fullmatch(r"[1-9][0-9]*", value, re.ASCII))
+    ):
+        return None
+    return int(value, 10)
+
+
+def run_bash_reference_query(
+    arguments: Iterable[str],
+    *,
+    output: BinaryIO | None = None,
+    error: BinaryIO | None = None,
+    cwd: Path | None = None,
+) -> int:
+    """Expand one bounded page through the verified package-local Receipt CLI."""
+
+    output_stream = sys.stdout.buffer if output is None else output
+    error_stream = sys.stderr.buffer if error is None else error
+    arguments = tuple(arguments)
+    help_text = (
+        "usage: context-guard reference <cgr1p handle> [--offset <decimal>]\n"
+        "Print at most 20,000 exact sanitized UTF-8 bytes from one live local "
+        "reference; use the stderr continuation offset for the next page.\n"
+    ).encode("ascii")
+    if arguments == ("--help",):
+        output_stream.write(help_text)
+        return 0
+    if len(arguments) not in {1, 3}:
+        error_stream.write(help_text)
+        return 2
+    handle = arguments[0]
+    if (
+        BASH_REFERENCE_HANDLE_RE.fullmatch(handle) is None
+        or (len(arguments) == 3 and arguments[1] != "--offset")
+    ):
+        error_stream.write(b"context-guard: invalid reference request\n")
+        return 2
+    offset = 0 if len(arguments) == 1 else _reference_offset(arguments[2])
+    if offset is None:
+        error_stream.write(b"context-guard: invalid reference request\n")
+        return 2
+    try:
+        root = (Path.cwd() if cwd is None else Path(cwd)).resolve(strict=True)
+        policy = load_adjacent_python_module(
+            Path(__file__).resolve().parent,
+            "bash_reference_policy.py",
+            module_prefix="context_guard_bash_reference_query",
+        )
+        discover = getattr(policy, "discover_adapter", None)
+        if policy is None or not callable(discover):
+            raise RuntimeError("reference policy unavailable")
+        discovered = discover(root)
+        if not isinstance(discovered, tuple) or len(discovered) != 2:
+            raise RuntimeError("reference adapter unavailable")
+        adapter, _reason = discovered
+        query = getattr(adapter, "query_reference", None)
+        if adapter is None or not callable(query):
+            raise RuntimeError("reference adapter unavailable")
+        result = query(
+            handle,
+            root=str(root),
+            offset=offset,
+            timeout_seconds=8,
+        )
+        payload = getattr(result, "payload", None)
+        result_offset = getattr(result, "offset", None)
+        next_offset = getattr(result, "next_offset", None)
+        total_bytes = getattr(result, "total_bytes", None)
+        if (
+            getattr(result, "status", None) != "success"
+            or getattr(result, "reference", None) != handle
+            or type(payload) is not bytes
+            or len(payload) > BASH_REFERENCE_QUERY_MAX_PAYLOAD_BYTES
+            or type(result_offset) is not int
+            or result_offset != offset
+            or type(next_offset) is not int
+            or next_offset != offset + len(payload)
+            or type(total_bytes) is not int
+            or total_bytes < next_offset
+        ):
+            raise RuntimeError("reference response invalid")
+        payload.decode("utf-8", errors="strict")
+    except Exception:
+        error_stream.write(b"context-guard: reference unavailable\n")
+        return 65
+    output_stream.write(payload)
+    if next_offset < total_bytes:
+        hint = (
+            "context-guard: more bytes available; continue with --offset "
+            f"{next_offset}\n"
+        )
+    else:
+        hint = f"context-guard: reference complete at offset {next_offset}\n"
+    error_stream.write(hint.encode("ascii"))
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["--expand-bash-reference"]:
+        return run_bash_reference_query(sys.argv[2:])
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-lines", type=int, default=220)
     parser.add_argument("--max-chars", type=int, default=20000)
@@ -1746,6 +2043,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--bash-reference-v1",
+        action="store_true",
+        help=(
+            "opt-in PreToolUse receipt reference mode; keeps command execution "
+            "local and falls back to the normal digest when Receipt is unavailable"
+        ),
+    )
+    parser.add_argument(
         "--artifact-dir",
         default=".context-guard/artifacts",
         help="artifact receipt directory used by --artifact-receipt (default: .context-guard/artifacts)",
@@ -1778,6 +2083,12 @@ def main() -> int:
     if args.artifact_receipt and args.digest == "off":
         print("trim_command_output.py: --artifact-receipt requires --digest markdown or --digest json", file=sys.stderr)
         return 2
+    if args.bash_reference_v1 and args.digest == "off":
+        print("trim_command_output.py: --bash-reference-v1 requires --digest markdown or --digest json", file=sys.stderr)
+        return 2
+    if args.artifact_receipt and args.bash_reference_v1:
+        print("trim_command_output.py: --artifact-receipt and --bash-reference-v1 are mutually exclusive", file=sys.stderr)
+        return 2
     if args.artifact_receipt:
         try:
             load_artifact_store_module()
@@ -1806,7 +2117,86 @@ def main() -> int:
     except UnsafeAdjacentModuleError as exc:
         print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
         return 2
+    bash_reference_strong_sanitizer = not isinstance(
+        line_sanitizer,
+        FallbackLineSanitizer,
+    )
 
+    artifact_capture = SanitizedArtifactCapture(
+        enabled=(
+            args.artifact_receipt
+            or (args.bash_reference_v1 and bash_reference_strong_sanitizer)
+        ),
+        max_bytes=(
+            BASH_REFERENCE_MAX_SANITIZED_BYTES
+            if args.bash_reference_v1
+            else args.artifact_max_bytes
+        ),
+        reference_spool=args.bash_reference_v1,
+    )
+    bash_reference_adapter: object | None = None
+    bash_reference_broker: object | None = None
+    bash_reference_adapter_reason = (
+        "receipt_policy_unavailable"
+        if bash_reference_strong_sanitizer
+        else "receipt_strong_sanitizer_unavailable"
+    )
+    bash_reference_root: Path | None = None
+    if args.bash_reference_v1 and bash_reference_strong_sanitizer:
+        try:
+            bash_reference_root = Path.cwd().resolve()
+            bash_reference_policy = load_adjacent_python_module(
+                Path(__file__).resolve().parent,
+                "bash_reference_policy.py",
+                module_prefix="context_guard_bash_reference",
+            )
+            discover = getattr(bash_reference_policy, "discover_adapter", None)
+            if bash_reference_policy is None:
+                bash_reference_adapter_reason = "receipt_policy_unavailable"
+            elif not callable(discover):
+                bash_reference_adapter_reason = "receipt_policy_invalid"
+            else:
+                discovered = discover(bash_reference_root)
+                if not isinstance(discovered, tuple) or len(discovered) != 2:
+                    bash_reference_adapter_reason = "receipt_policy_invalid"
+                else:
+                    bash_reference_adapter, reason = discovered
+                    bash_reference_adapter_reason = str(reason)
+                    if bash_reference_adapter is not None and not callable(
+                        getattr(bash_reference_adapter, "start_broker", None)
+                    ):
+                        bash_reference_adapter = None
+                        bash_reference_adapter_reason = "receipt_adapter_invalid"
+        except Exception:
+            bash_reference_adapter = None
+            bash_reference_adapter_reason = "receipt_policy_load_failed"
+    if (
+        args.bash_reference_v1
+        and bash_reference_adapter is not None
+        and bash_reference_root is not None
+        and not artifact_capture.error
+    ):
+        transaction_id = secrets.token_hex(32)
+        try:
+            bash_reference_broker, reason = bash_reference_adapter.start_broker(  # type: ignore[attr-defined]
+                artifact_capture.descriptor(),
+                root=str(bash_reference_root),
+                transaction_id=transaction_id,
+                disclosure_days=7,
+                timeout_seconds=8,
+            )
+            bash_reference_adapter_reason = str(reason)
+            if bash_reference_broker is not None and not all(
+                callable(getattr(bash_reference_broker, name, None))
+                for name in ("abort", "close", "commit")
+            ):
+                abort_bash_reference_broker(bash_reference_broker)
+                bash_reference_broker = None
+                bash_reference_adapter_reason = "receipt_broker_invalid"
+        except Exception:
+            abort_bash_reference_broker(bash_reference_broker)
+            bash_reference_broker = None
+            bash_reference_adapter_reason = "receipt_broker_unavailable"
     popen_kwargs: dict[str, object] = {}
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
@@ -1817,9 +2207,12 @@ def main() -> int:
             stderr=subprocess.STDOUT,
             text=False,
             bufsize=0,
+            close_fds=True,
             **popen_kwargs,
         )
     except OSError as exc:
+        abort_bash_reference_broker(bash_reference_broker)
+        artifact_capture.close()
         print(f"context-guard-kit: command failed to start: {exc}", file=sys.stderr)
         return 127
 
@@ -1834,9 +2227,8 @@ def main() -> int:
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
     duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
-    artifact_capture = SanitizedArtifactCapture(enabled=args.artifact_receipt, max_bytes=args.artifact_max_bytes)
-
     if proc.stdout is None:
+        abort_bash_reference_broker(bash_reference_broker)
         artifact_capture.close()
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
         return 1
@@ -1847,27 +2239,39 @@ def main() -> int:
         max_line_chars=COMMAND_MAX_UNTERMINATED_LINE_CHARS,
         process_group_id=process_group_id_for(proc),
     )
-    for line in command_stream:
-        total += 1
-        raw_chars += len(line)
-        visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
-        if redacted:
-            redacted_lines += 1
-        artifact_capture.add(visible_source)
-        visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
-        any_line_capped = any_line_capped or line_capped
-        visible_chars += len(visible_line)
-        duplicate_tracker.feed(total, visible_line)
-        if total <= args.head_lines:
-            head.append(visible_line)
-        tail.append(visible_line)
-        if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
-            error_lines.append(visible_line)
-        runner_summary.feed(line)
-        if total <= args.max_lines:
-            all_lines.append(visible_line)
+    try:
+        for line in command_stream:
+            total += 1
+            raw_chars += len(line)
+            visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
+            if redacted:
+                redacted_lines += 1
+            artifact_capture.add(visible_source)
+            visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
+            any_line_capped = any_line_capped or line_capped
+            visible_chars += len(visible_line)
+            duplicate_tracker.feed(total, visible_line)
+            if total <= args.head_lines:
+                head.append(visible_line)
+            tail.append(visible_line)
+            if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
+                error_lines.append(visible_line)
+            runner_summary.feed(line)
+            if total <= args.max_lines:
+                all_lines.append(visible_line)
 
-    rc = command_stream.returncode()
+        rc = command_stream.returncode()
+        proc.stdout.close()
+    except BaseException:
+        abort_bash_reference_broker(bash_reference_broker)
+        artifact_capture.close()
+        terminate_process_tree(
+            proc,
+            process_group_id=command_stream.process_group_id,
+            include_exited_group=True,
+        )
+        proc.stdout.close()
+        raise
     if command_stream.timed_out and not command_stream.timeout_reported:
         line = command_stream.timeout_message()
         command_stream.timeout_reported = True
@@ -1962,6 +2366,47 @@ def main() -> int:
                     )
                     if guidance not in next_queries:
                         next_queries.insert(0, guidance)
+        if args.bash_reference_v1:
+            reference: str | None = None
+            reason_code = (
+                bash_reference_adapter_reason
+                if not bash_reference_strong_sanitizer
+                else "receipt_output_below_reference_threshold"
+            )
+            if artifact_capture.overflow:
+                reason_code = "receipt_capture_overflow"
+                abort_bash_reference_broker(bash_reference_broker)
+            elif artifact_capture.error:
+                reason_code = "receipt_capture_unavailable"
+                abort_bash_reference_broker(bash_reference_broker)
+            elif command_stream.timed_out:
+                reason_code = "receipt_command_incomplete"
+                abort_bash_reference_broker(bash_reference_broker)
+            elif artifact_capture.bytes < BASH_REFERENCE_MIN_SANITIZED_BYTES:
+                abort_bash_reference_broker(bash_reference_broker)
+            elif bash_reference_broker is None:
+                reason_code = bash_reference_adapter_reason
+            elif not bash_reference_fits_digest_budget(args.digest, args.max_chars):
+                reason_code = "receipt_reference_exceeds_digest_budget"
+                abort_bash_reference_broker(bash_reference_broker)
+            else:
+                reference, reason_code = commit_bash_reference_broker(
+                    bash_reference_broker
+                )
+            bash_reference_broker = None
+            reference_metadata = (
+                bash_reference_metadata(reference)
+                if reference is not None
+                else None
+            )
+            if reference_metadata is not None:
+                payload["bash_reference"] = reference_metadata
+            else:
+                payload["bash_reference"] = {
+                    "mode": "bash_reference_v1",
+                    "route": "legacy_trim",
+                    "reason_code": "receipt_reference_exceeds_digest_budget" if reference else reason_code,
+                }
         rendered = (
             render_digest_json(payload, args.max_chars)
             if args.digest == "json"
@@ -1989,6 +2434,7 @@ def main() -> int:
         if (
             not args.digest_always
             and not args.artifact_receipt
+            and not args.bash_reference_v1
             and rc == 0
             and complete_output_available
             and passthrough_bytes < digest_bytes
@@ -2045,6 +2491,7 @@ def main() -> int:
             output += "[context-guard-kit] final summary was capped by --max-chars.\n"
         sys.stdout.write(output)
 
+    abort_bash_reference_broker(bash_reference_broker)
     artifact_capture.close()
     return rc
 

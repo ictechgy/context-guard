@@ -13267,8 +13267,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             [sys.executable, str(ROOT / "scripts" / "release_smoke.py")],
             text=True,
             capture_output=True,
-            check=True,
         )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("release smoke: OK", proc.stdout)
 
     def test_release_smoke_stages_clean_plugin_package_copy(self):
@@ -13359,13 +13359,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 env=env,
-                check=True,
             )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("release smoke: OK", proc.stdout)
 
     def test_release_smoke_launch_plan_covers_every_packaged_entrypoint(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_entrypoint_plan")
-        expected = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
+        expected = {
+            path.name
+            for path in PLUGIN_BIN.iterdir()
+            if path.is_file() and stat.S_IMODE(path.stat().st_mode) & stat.S_IXUSR
+        }
         plan = smoke.entrypoint_smoke_plan(PLUGIN_BIN)
         self.assertEqual(set(smoke.ENTRYPOINT_SMOKE_COMMANDS), expected)
         self.assertEqual(set(plan), expected)
@@ -13490,15 +13494,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
             old_github_actions = os.environ.get("GITHUB_ACTIONS")
             old_runner_tool_cache = os.environ.get("RUNNER_TOOL_CACHE")
             os.environ["PATH"] = str(fake_bin) + os.pathsep + str(attacker_toolcache_bin) + os.pathsep + str(toolcache_bin) + os.pathsep + (original_path or "")
-            os.environ["GITHUB_ACTIONS"] = "true"
+            os.environ["GITHUB_ACTIONS"] = "TRUE"
             os.environ["RUNNER_TOOL_CACHE"] = str(toolcache_root)
             try:
                 env = smoke.smoke_environment(home, temp)
+                self.assertEqual(env.get("GITHUB_ACTIONS"), "true")
                 trusted_path_parts = env["PATH"].split(os.pathsep)
                 self.assertNotIn(str(fake_bin), trusted_path_parts)
                 self.assertNotIn(str(attacker_toolcache_bin.resolve()), trusted_path_parts)
                 self.assertIn(str(toolcache_bin.resolve()), trusted_path_parts)
                 self.assertEqual(Path(smoke.trusted_which("npm")).resolve(), (toolcache_bin / "npm").resolve())
+                project = root / "project"
+                project.mkdir()
+                policy = load_module_from_path(
+                    KIT_DIR / "bash_reference_policy.py",
+                    "release_smoke_nested_reference_policy",
+                )
+                policy._TRUSTED_NODE_CANDIDATES = ()
+                policy._TRUSTED_GITHUB_TOOLCACHE_PREFIXES = (trusted_toolcache_root,)
+                with mock.patch.dict(os.environ, env, clear=True):
+                    nested_node = policy._trusted_node_interpreter(project)
+                self.assertIsNotNone(nested_node)
+                self.assertEqual(nested_node[0], (toolcache_bin / "node").resolve())
                 for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
                     resolved = shutil.which(tool_name, path=env["PATH"])
                     if resolved is not None:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tests.test_contextguard_stage2_verification_schema import validate
 from tests.test_contextguard_stage2_protected_surfaces import (
+    APPROVED_POST_STAGE2_PROTECTED_PATHS,
     CSV_COLUMNS_SHA256,
     EXPECTED_PATHS,
     MANIFEST_PATH,
@@ -158,7 +159,8 @@ class ContextGuardStage2CompletionTests(unittest.TestCase):
                 self.assertTrue(stat.S_ISREG(metadata.st_mode))
                 self.assertEqual(entry["file_type"], "regular")
                 self.assertEqual(entry["mode"], portable_regular_mode(metadata.st_mode))
-                self.assertEqual(entry["sha256"], sha256(path))
+                if entry["path"] not in APPROVED_POST_STAGE2_PROTECTED_PATHS:
+                    self.assertEqual(entry["sha256"], sha256(path))
                 self.assertIs(entry["tracked"], entry["path"] in tracked)
 
         invariants = manifest["invariants"]

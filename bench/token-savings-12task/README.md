@@ -16,6 +16,7 @@ are not used here.
 | `settings/treatment.settings.json` | Treatment arm settings with the registered ContextGuard hook bindings. |
 | `variants.template.json` | Arm template. `{{CANDIDATE_HASH}}`, `{{NAMESPACE}}`, and `{{ARTIFACT_ROOT}}` are substituted per run so the concrete variants file always binds the exact candidate under measurement. |
 | `study-plan.json` | Canonical `contextguard.bench.study-plan.v1` plan: 12 tasks x 2 arms x 3 repetitions = 72 initial attempts, with `one_retry_after_valid_task_failure_v1`. |
+| `study-plan-v2.json` | Additive `contextguard.bench.study-plan.v2` preregistration: 12 tasks x 3 arms x 3 repetitions, a frozen blocked-order seed, task-level inference, raw corpus SHA-256, and a domain-separated ordered checker-inventory binding. The fixed corpus is explicitly descriptive-only because no independent effect model supports an 80% power claim. It does not replace the v1 plan. |
 | `hook-event-evidence.json` | External evidence that every registered hook event exists in the provider CLI, with its collection method and boundary. |
 | `rehearsal/solutions.json` | Rehearsal-only scripted workspace writes for the fake provider. Never part of any fixture tree and never used by a real provider run. |
 
@@ -83,7 +84,116 @@ proof.
 python3 scripts/rehearse_measurement_study.py --output-root /tmp/s003-rehearsal
 ```
 
-The harness generates an official-shaped fake Claude CLI, materializes cold
+The additive v2 rehearsal invokes a local fake CLI as real subprocesses, never a
+provider:
+
+```bash
+python3 scripts/rehearse_measurement_study.py --study-version v2 --output-root /tmp/contextguard-v2-rehearsal
+```
+
+It executes 108 initials plus 12 deterministic retries (120 fake CLI processes).
+One retry remains a valid task failure and later schedule entries still run.
+Provider calls, network calls, and USD spend remain zero. The report is always
+descriptive and never claim-authorizing. The v2 rehearsal requires a local C
+compiler to build its temporary native fake-CLI trampoline; this adds no compiler
+dependency to a real executable study.
+
+## v2 executable workflow
+
+Build the npm candidates once, then prepare the private immutable root. The
+candidate hash is the SHA-256 of the exact canonical manifest bytes. Prepare
+verifies both tarballs' sizes, SHA-256 values, SHA-512 SRI strings, and the exact
+checksum document before performing exactly one offline, scripts-disabled npm
+install with package-lock generation disabled. npm versions that still emit an
+inert hidden lockfile have that one exact regular file removed before the overlay
+allowlist is checked; no other extra path is accepted:
+
+```bash
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action prepare \
+  --study-v2-plan bench/token-savings-12task/study-plan-v2.json \
+  --study-v2-tasks bench/token-savings-12task/tasks.json \
+  --study-v2-checkers-dir bench/token-savings-12task/checkers \
+  --study-v2-candidate-manifest /private/candidate/candidate-manifest.json \
+  --study-v2-candidate-checksums /private/candidate/candidate-sha256sums.txt \
+  --study-v2-candidate-hash <sha256-of-exact-manifest-bytes> \
+  --claude-bin /exact/path/to/claude \
+  --study-v2-output-root /private/location/v2-study
+```
+
+`prepare` makes no model/provider request, but it does execute the selected CLI's
+local `--version` and `--help` probes. It accepts only a native CLI executable;
+script launchers are rejected because their external dependency closure cannot
+be proven. It binds the resolved executable bytes, probe output, runner and
+runner-Python bytes, task/fixture/checker bytes, and the frozen PATH/locale plus
+hook interpreter bytes. The remaining trust boundary is the exact native Claude
+artifact plus the host OS substrate; backend and model revisions remain
+unavailable rather than inferred.
+
+Run the two-call discarded host-routing canary before any analytic call, then
+run, resume after interruption, and analyze with the same output root and exact
+same `--claude-bin`:
+
+```bash
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action canary --study-v2-output-root /private/location/v2-study \
+  --claude-bin /exact/path/to/claude
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action run --study-v2-output-root /private/location/v2-study \
+  --claude-bin /exact/path/to/claude
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action resume --study-v2-output-root /private/location/v2-study \
+  --claude-bin /exact/path/to/claude
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action analyze --study-v2-output-root /private/location/v2-study \
+  --claude-bin /exact/path/to/claude
+```
+
+The explicit `canary` action makes two provider calls, one with each hook arm.
+Each must create the exact marker through Bash and produce a successful
+host-emitted `PreToolUse` lifecycle. Its canonical evidence is mandatory for
+`run`, `resume`, and `analyze`, but its calls and tokens never enter the 216
+analytic identities, retry policy, effects, or record count. A reserved or
+launched canary identity is never replayed.
+
+All 216 initial/retry identities are fixed before launch. Every cold workspace
+receives a physical copy of the same verified `node_modules` overlay; safe
+internal npm symlinks are preserved and regular files are not hardlinked.
+`host_unmodified` has no ContextGuard Bash hook. `legacy_trim` uses the
+workspace-local `PreToolUse(Bash)` rewrite, and `bash_reference_v1` uses the same
+command plus `--bash-reference-v1`. Resume conservatively consumes every
+reserved or launched identity and never replays it.
+
+Analytic attempts intentionally do not require a Bash event: tool choice is part
+of the randomized intention-to-treat outcome, so filtering to attempts that
+happened to invoke Bash would bias the estimate. Observed hook lifecycles must
+still be valid and successful. Only the discarded canary requires
+`PreToolUse` in both hook arms.
+
+Success is derived only from a valid provider terminal usage record plus the
+manifest-bound checker executed outside the writable workspace. Provider
+`success` booleans are not evidence. Raw output, receipt, artifact index, token
+buckets, checker result, and pre/post inventories are revalidated on resume and
+analysis. A retry is launched only after a valid initial task failure; a failed
+retry is retained and does not stop the schedule. Missing correction, retrieval,
+or shifted-cost observers remain unavailable/null, never zero or token proxies.
+Every report sets `descriptive_only=true`, `claim_allowed=false`, and
+`claim=null` because the frozen plan has no independent power model.
+
+For every arm-unit, token, correction, and retrieval burdens sum all retained
+attempts, including an unsuccessful initial attempt followed by its fixed retry.
+A missing, non-finite, negative, or Boolean correction/retrieval value on any
+attempt makes that effect unavailable and its claim gate fail closed. The v2
+corpus hash remains the SHA-256 of exact `tasks.json` bytes. Its checker hash is
+domain-separated as `contextguard.bench.v2.checker-binding.v1` over the ordered
+relative filename, byte size, and per-file SHA-256 inventory; concatenated
+checker contents alone are not the binding. The ordered task IDs are separately
+bound with `contextguard.bench.v2.corpus-task-order.v1`, so a manifest cannot
+reuse the real corpus hash with a fabricated schedule/task projection.
+
+## Legacy v1 rehearsal details
+
+The legacy v1 harness generates an official-shaped fake Claude CLI, materializes cold
 local/session roots, executes all 72 scheduled initial attempts plus the scripted
 retry cases, and writes `rehearsal-report.json` plus `overhead-ledger.jsonl`.
 
@@ -109,9 +219,9 @@ Reproducibility is reported two ways:
 runs, and terminal attempts whose recorded receipt hash matches the stored
 receipt bytes. Only the `declared_timestamps` block changes between runs.
 
-## Verified hook-event note
+## Legacy v1 verified hook-event note
 
-The measured treatment registers `PreToolUse` and `PostToolUse`, but each event is
+The legacy v1 measured treatment registers `PreToolUse` and `PostToolUse`, but each event is
 conditional on the model invoking a matching tool. Registered classes define the
 events the runner permits and validates when they occur; the ordered
 `required_event_classes` subset defines events that must occur in every attempt.
