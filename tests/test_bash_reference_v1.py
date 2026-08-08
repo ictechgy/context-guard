@@ -176,6 +176,224 @@ class BashReferenceV1Tests(unittest.TestCase):
 
             self.assertIsNone(result)
 
+    def test_executable_identity_accepts_trusted_github_toolcache_hardlink(self):
+        """GitHub's stable hardlinked toolcache interpreter remains eligible."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trusted_root = root / "trusted-toolcache"
+            trusted_root.mkdir()
+            source = trusted_root / "node-source"
+            node = trusted_root / "node"
+            source.write_bytes(b"trusted runtime")
+            source.chmod(0o700)
+            try:
+                os.link(source, node)
+            except OSError:
+                self.skipTest("hardlinks unavailable on this filesystem")
+
+            with mock.patch.object(
+                policy, "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES", (trusted_root,)
+            ), mock.patch.dict(
+                os.environ, {"GITHUB_ACTIONS": "true"}, clear=False
+            ):
+                identity = policy._executable_identity(node)
+
+            self.assertIsNotNone(identity)
+            self.assertEqual(node.stat().st_nlink, 2)
+
+    def test_executable_identity_rejects_hardlinks_outside_trusted_github_toolcache(self):
+        """Local and prefix-external hardlinks retain the single-link policy."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trusted_root = root / "trusted-toolcache"
+            trusted_root.mkdir()
+            source = root / "node-source"
+            node = root / "node"
+            source.write_bytes(b"untrusted runtime")
+            source.chmod(0o700)
+            try:
+                os.link(source, node)
+            except OSError:
+                self.skipTest("hardlinks unavailable on this filesystem")
+
+            with mock.patch.object(
+                policy, "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES", (trusted_root,)
+            ):
+                with mock.patch.dict(
+                    os.environ, {"GITHUB_ACTIONS": "true"}, clear=False
+                ):
+                    self.assertIsNone(policy._executable_identity(node))
+                with mock.patch.dict(
+                    os.environ, {"GITHUB_ACTIONS": ""}, clear=False
+                ):
+                    self.assertIsNone(policy._executable_identity(node))
+
+    def test_hardlinked_interpreter_replacement_is_detected_before_launch(self):
+        """Changing a hardlinked interpreter after binding still fails closed."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            trusted_root = root / "trusted-toolcache"
+            trusted_root.mkdir()
+            source = trusted_root / "node-source"
+            node = trusted_root / "node"
+            cli = root / "verified-cli"
+            source.write_bytes(b"trusted runtime")
+            source.chmod(0o700)
+            cli.write_bytes(b"trusted cli")
+            try:
+                os.link(source, node)
+            except OSError:
+                self.skipTest("hardlinks unavailable on this filesystem")
+            with mock.patch.object(
+                policy, "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES", (trusted_root,)
+            ), mock.patch.dict(
+                os.environ, {"GITHUB_ACTIONS": "true"}, clear=False
+            ):
+                adapter = policy.NpmReceiptCliAdapter(
+                    cli,
+                    node_path=node,
+                    protected_paths=(cli,),
+                )
+                source.write_bytes(b"replaced through alias")
+
+                with tempfile.TemporaryFile(
+                    "w+b", buffering=0
+                ) as capture, mock.patch.object(
+                    policy.subprocess, "Popen"
+                ) as popen:
+                    os.fchmod(capture.fileno(), 0o600)
+                    broker, reason = adapter.start_broker(
+                        capture.fileno(),
+                        root=str(root),
+                        transaction_id="d" * 64,
+                        disclosure_days=7,
+                        timeout_seconds=8,
+                    )
+
+        self.assertIsNone(broker)
+        self.assertEqual(reason, "receipt_node_interpreter_changed_before_launch")
+        popen.assert_not_called()
+
+    def test_ci_toolcache_node_is_discovered_only_under_trusted_prefix(self):
+        """CI PATH discovery accepts only resolved GitHub-hosted toolcache Node."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            trusted_root = root / "trusted-toolcache"
+            project = trusted_root / "workspace"
+            project_bin = project / "bin"
+            attacker_bin = root / "trusted-toolcache-lookalike" / "bin"
+            escape_bin = trusted_root / "escape" / "bin"
+            trusted_bin = trusted_root / "node" / "22.0.0" / "x64" / "bin"
+            project_bin.mkdir(parents=True)
+            attacker_bin.mkdir(parents=True)
+            escape_bin.mkdir(parents=True)
+            trusted_bin.mkdir(parents=True)
+            for directory, contents in (
+                (project_bin, b"project node"),
+                (attacker_bin, b"attacker node"),
+                (trusted_bin, b"trusted node"),
+            ):
+                node = directory / "node"
+                node.write_bytes(contents)
+                node.chmod(0o700)
+            escape_node = escape_bin / "node"
+            try:
+                escape_node.symlink_to(attacker_bin / "node")
+            except OSError:
+                self.skipTest("symlinks unavailable on this filesystem")
+            with mock.patch.object(policy, "_TRUSTED_NODE_CANDIDATES", ()):
+                with mock.patch.object(
+                    policy,
+                    "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES",
+                    (trusted_root,),
+                ):
+                    with mock.patch.dict(
+                        os.environ,
+                        {
+                            "CI": "",
+                            "GITHUB_ACTIONS": "true",
+                            "PATH": os.pathsep.join(
+                                (
+                                    str(project_bin),
+                                    str(attacker_bin),
+                                    str(escape_bin),
+                                    str(trusted_bin),
+                                )
+                            ),
+                        },
+                        clear=False,
+                    ):
+                        result = policy._trusted_node_interpreter(project)
+
+            self.assertIsNotNone(result)
+            node_path, identity = result
+            self.assertEqual(node_path, (trusted_bin / "node").resolve())
+            self.assertEqual(identity, policy._executable_identity(node_path))
+
+    def test_toolcache_path_discovery_is_disabled_outside_github_actions(self):
+        """Ambient PATH cannot activate dynamic Node discovery outside GitHub Actions."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            project = root / "project"
+            trusted_bin = root / "trusted-toolcache" / "node" / "22.0.0" / "x64" / "bin"
+            trusted_bin.mkdir(parents=True)
+            node = trusted_bin / "node"
+            node.write_bytes(b"trusted node")
+            node.chmod(0o700)
+            with mock.patch.object(policy, "_TRUSTED_NODE_CANDIDATES", ()):
+                with mock.patch.object(
+                    policy,
+                    "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES",
+                    (root / "trusted-toolcache",),
+                ):
+                    with mock.patch.dict(
+                        os.environ,
+                        {"CI": "true", "GITHUB_ACTIONS": "", "PATH": str(trusted_bin)},
+                        clear=False,
+                    ):
+                        result = policy._trusted_node_interpreter(project)
+
+            self.assertIsNone(result)
+
+    def test_ci_toolcache_node_rejects_project_through_ancestor_symlink(self):
+        """An ancestor alias cannot hide a project-owned Node inside toolcache."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            trusted_root = root / "trusted-toolcache"
+            project = trusted_root / "project"
+            project_bin = project / "bin"
+            project_bin.mkdir(parents=True)
+            node = project_bin / "node"
+            node.write_bytes(b"project node")
+            node.chmod(0o700)
+            alias = root / "toolcache-alias"
+            try:
+                alias.symlink_to(trusted_root, target_is_directory=True)
+            except OSError:
+                self.skipTest("symlinks unavailable on this filesystem")
+            aliased_project = alias / "project"
+            with mock.patch.object(policy, "_TRUSTED_NODE_CANDIDATES", ()):
+                with mock.patch.object(
+                    policy, "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES", (trusted_root,)
+                ):
+                    with mock.patch.dict(
+                        os.environ,
+                        {
+                            "GITHUB_ACTIONS": "true",
+                            "PATH": str(aliased_project / "bin"),
+                        },
+                        clear=False,
+                    ):
+                        result = policy._trusted_node_interpreter(aliased_project)
+
+            self.assertIsNone(result)
+
     def test_receipt_manifest_requires_root_policy_digest_pin_before_internal_hashes(self):
         """A coherently rewritten Receipt package cannot bless its own malicious CLI."""
         policy = load_policy()

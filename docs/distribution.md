@@ -45,9 +45,11 @@ npm install --save-exact @ictechgy/context-guard@0.5.0
 
 Setup writes the opt-in flag only when the paired topology is present. Doctor
 and source/plugin setup report it as unavailable otherwise and retain the
-legacy Bash trim hook. Runtime discovery never selects an executable from
-`PATH`; it binds an absolute Node interpreter and rechecks the pinned Receipt
-files before starting one private broker. Before Bash starts, that broker has
+legacy Bash trim hook. Runtime discovery never launches Node by name from
+`PATH`: it binds an absolute interpreter from fixed system locations, with a
+GitHub Actions-only fallback restricted to fixed hosted-toolcache roots, and
+rechecks the pinned Receipt files before starting one private broker. Before
+Bash starts, that broker has
 already loaded its code and retained the repository, store, expiry, journal,
 and anonymous owner-only capture descriptors. `COMMIT` therefore performs no
 later package-path, interpreter, or Git lookup. Even a below-threshold command

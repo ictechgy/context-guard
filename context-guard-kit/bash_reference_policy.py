@@ -47,6 +47,11 @@ _TRUSTED_NODE_CANDIDATES: tuple[Path, ...] = (
     Path("/usr/local/bin/node"),
     Path("/opt/homebrew/bin/node"),
 )
+_TRUSTED_GITHUB_TOOLCACHE_PREFIXES: tuple[Path, ...] = (
+    Path("/opt/hostedtoolcache"),
+    Path("/Users/runner/hostedtoolcache"),
+    Path("/hostedtoolcache"),
+)
 
 
 @dataclass(frozen=True)
@@ -651,6 +656,26 @@ def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _trusted_github_toolcache_roots() -> tuple[Path, ...]:
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return ()
+    roots: list[Path] = []
+    for prefix in _TRUSTED_GITHUB_TOOLCACHE_PREFIXES:
+        try:
+            roots.append(prefix.resolve(strict=True))
+        except OSError:
+            continue
+    return tuple(roots)
+
+
+def _path_is_under(path: Path, roots: tuple[Path, ...]) -> bool:
+    try:
+        path = path.resolve(strict=True)
+    except OSError:
+        return False
+    return any(path == root or root in path.parents for root in roots)
+
+
 def _executable_identity(path: Path) -> tuple[int, ...] | None:
     """Bind one already-absolute interpreter without following a final link."""
     try:
@@ -660,7 +685,10 @@ def _executable_identity(path: Path) -> tuple[int, ...] | None:
     if (
         not path.is_absolute()
         or not stat.S_ISREG(status.st_mode)
-        or status.st_nlink != 1
+        or (
+            status.st_nlink != 1
+            and not _path_is_under(path, _trusted_github_toolcache_roots())
+        )
         or status.st_uid not in {0, os.geteuid()}
         or status.st_mode & 0o022
         or not status.st_mode & 0o111
@@ -669,8 +697,45 @@ def _executable_identity(path: Path) -> tuple[int, ...] | None:
     return _stat_identity(status)
 
 
+def _trusted_ci_node_from_path(project_root: Path) -> tuple[Path, tuple[int, ...]] | None:
+    """Resolve PATH's Node only for GitHub Actions under fixed toolcache roots."""
+    try:
+        project_root = project_root.resolve(strict=True)
+    except OSError:
+        return None
+    if not project_root.is_dir():
+        return None
+    trusted_prefixes = _trusted_github_toolcache_roots()
+    if not trusted_prefixes:
+        return None
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        candidate = Path(entry) / "node"
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(project_root)
+            continue
+        except ValueError:
+            pass
+        except OSError:
+            continue
+        if not _path_is_under(resolved, trusted_prefixes):
+            continue
+        identity = _executable_identity(resolved)
+        if identity is not None:
+            return resolved, identity
+    return None
+
+
 def _trusted_node_interpreter(project_root: Path) -> tuple[Path, tuple[int, ...]] | None:
-    """Resolve Node from fixed administrative locations, never inherited PATH."""
+    """Resolve Node from fixed locations, with a CI-only toolcache fallback."""
+    try:
+        project_root = project_root.resolve(strict=True)
+    except OSError:
+        return None
+    if not project_root.is_dir():
+        return None
     for candidate in _TRUSTED_NODE_CANDIDATES:
         try:
             resolved = candidate.resolve(strict=True)
@@ -681,7 +746,7 @@ def _trusted_node_interpreter(project_root: Path) -> tuple[Path, tuple[int, ...]
                 return resolved, identity
         except OSError:
             continue
-    return None
+    return _trusted_ci_node_from_path(project_root)
 
 
 def _read_stable_regular_bytes(path: Path, *, max_bytes: int) -> bytes | None:
