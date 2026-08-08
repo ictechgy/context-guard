@@ -202,6 +202,58 @@ class BashReferenceV1Tests(unittest.TestCase):
             self.assertIsNotNone(identity)
             self.assertEqual(node.stat().st_nlink, 2)
 
+    def test_github_runner_python_runtime_is_policy_eligible(self):
+        """The real setup-python runtime must satisfy the production policy."""
+        if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+            self.skipTest("GitHub-hosted runtime contract")
+        policy = load_policy()
+        executable = Path(sys.executable).resolve()
+        metadata = executable.lstat()
+        roots = policy._trusted_github_toolcache_roots()
+        details = {
+            "euid": os.geteuid(),
+            "executable": bool(metadata.st_mode & 0o111),
+            "mode": oct(metadata.st_mode & 0o7777),
+            "nlink": metadata.st_nlink,
+            "owner": metadata.st_uid,
+            "path": str(executable),
+            "regular": policy.stat.S_ISREG(metadata.st_mode),
+            "trusted_roots": [str(root) for root in roots],
+            "under_trusted_root": policy._path_is_under(executable, roots),
+        }
+
+        self.assertIsNotNone(
+            policy._executable_identity(executable),
+            json.dumps(details, sort_keys=True),
+        )
+
+    def test_github_runner_node_runtime_is_policy_eligible(self):
+        """The real setup-node runtime must satisfy discovery and binding."""
+        if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+            self.skipTest("GitHub-hosted runtime contract")
+        policy = load_policy()
+        selected = shutil.which("node")
+        self.assertIsNotNone(selected, "setup-node did not expose Node")
+        executable = Path(selected).resolve()
+        metadata = executable.lstat()
+        roots = policy._trusted_github_toolcache_roots()
+        details = {
+            "euid": os.geteuid(),
+            "executable": bool(metadata.st_mode & 0o111),
+            "mode": oct(metadata.st_mode & 0o7777),
+            "nlink": metadata.st_nlink,
+            "owner": metadata.st_uid,
+            "path": str(executable),
+            "regular": policy.stat.S_ISREG(metadata.st_mode),
+            "trusted_roots": [str(root) for root in roots],
+            "under_trusted_root": policy._path_is_under(executable, roots),
+        }
+
+        self.assertIsNotNone(
+            policy._trusted_node_interpreter(ROOT),
+            json.dumps(details, sort_keys=True),
+        )
+
     def test_executable_identity_rejects_hardlinks_outside_trusted_github_toolcache(self):
         """Local and prefix-external hardlinks retain the single-link policy."""
         policy = load_policy()
