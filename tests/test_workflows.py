@@ -379,11 +379,11 @@ class WorkflowSecurityTests(unittest.TestCase):
 
         self.assertEqual(ci.count("name: Normalize hosted runtime permissions"), 2)
         self.assertEqual(
-            ci.count('sudo chmod go-w -- "$python_runtime" "$node_runtime"'),
+            ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'),
             2,
         )
+        self.assertEqual(ci.count("sudo chmod "), 2)
         self.assertNotIn("chmod -R", ci)
-        self.assertNotIn('chmod go-w -- "$python_runtime" *', ci)
         self.assertIn("Linux:/opt/hostedtoolcache/*", ubuntu_job)
         self.assertNotIn("/Library/Frameworks", ubuntu_job)
         self.assertIn(

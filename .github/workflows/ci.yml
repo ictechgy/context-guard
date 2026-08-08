@@ -47,7 +47,7 @@ jobs:
             Linux:/opt/hostedtoolcache/*) ;;
             *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
           esac
-          sudo chmod go-w -- "$python_runtime" "$node_runtime"
+          sudo chmod go-w "$python_runtime" "$node_runtime"
 
       - name: Verify hosted runtime trust
         run: >-
@@ -97,7 +97,7 @@ jobs:
             macOS:/opt/homebrew/*|macOS:/usr/local/*|macOS:/Users/runner/hostedtoolcache/*) ;;
             *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
           esac
-          sudo chmod go-w -- "$python_runtime" "$node_runtime"
+          sudo chmod go-w "$python_runtime" "$node_runtime"
 
       - name: Verify hosted runtime trust
         run: >-
