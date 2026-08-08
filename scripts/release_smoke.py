@@ -816,6 +816,11 @@ def entrypoint_smoke_plan(plugin_bin: Path) -> dict[str, dict[str, Any]]:
 
 def smoke_environment(home: Path, tmp: Path) -> dict[str, str]:
     env = {key: value for key in PRESERVED_ENV_KEYS if (value := os.environ.get(key))}
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        # Installed hooks re-evaluate the same fixed-root toolcache policy in a
+        # child process. Preserve only the normalized CI marker; PATH remains
+        # independently narrowed by trusted_smoke_path().
+        env["GITHUB_ACTIONS"] = "true"
     env.update(
         {
             "PATH": trusted_smoke_path(),
