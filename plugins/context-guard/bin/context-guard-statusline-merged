@@ -5,7 +5,7 @@
 #   ─────────────────────────────────────────────────────────────────────────
 #   OMC HUD 존재? │ token-statusline 존재? │ 출력
 #   ─────────────────────────────────────────────────────────────────────────
-#   yes           │ yes                    │ OMC HUD + cost/cache/reuse 결합 (1줄)
+#   yes           │ yes                    │ OMC HUD + cost/cache/reuse/scope 결합 (1줄)
 #   yes           │ no                     │ OMC HUD 단독
 #   no            │ yes                    │ token-statusline 단독
 #   no            │ no                     │ "[hud unavailable]"
@@ -137,8 +137,9 @@ fi
 
 # ── 3) 결합: OMC HUD 가 살아있을 때만 token 출력에서 compact extras 만 뽑아 붙임 ─
 # token-statusline 형식:
-#   "[model] dir | branch | ctx N% | cost $N.NNN | cache N% | reuse N.Nx"
-# OMC HUD 와 중복되는 model/dir/branch/ctx 는 버리고 cost/cache/reuse 만 채택한다.
+#   "[model] dir | branch | ctx N% | cost $N.NNN | cache N% | reuse N.Nx | usage_tail_v2 window_partial=BOOL"
+# OMC HUD 와 중복되는 model/dir/branch/ctx 는 버리고 cost/cache/reuse 및
+# bounded-tail scope disclosure 만 채택한다.
 extras=''
 if [[ -n "$omc_out" && -n "$tok_out" ]]; then
   if [[ "$tok_out" =~ \|[[:space:]]+cost[[:space:]]+(\$[0-9.]+|n/a) ]]; then
@@ -149,6 +150,9 @@ if [[ -n "$omc_out" && -n "$tok_out" ]]; then
   fi
   if [[ "$tok_out" =~ \|[[:space:]]+reuse[[:space:]]+([0-9]+(\.[0-9]+)?x|n/a) ]]; then
     extras+=" | reuse ${BASH_REMATCH[1]}"
+  fi
+  if [[ "$tok_out" =~ \|[[:space:]]+(usage_tail_v2)[[:space:]]+(window_partial=(true|false)) ]]; then
+    extras+=" | ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
   fi
 fi
 

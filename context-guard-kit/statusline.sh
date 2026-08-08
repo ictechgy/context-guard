@@ -11,6 +11,29 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
+statusline_path=$0
+for _context_guard_symlink_hop in {1..32}; do
+  [[ -L "$statusline_path" ]] || break
+  statusline_link_dir=$(CDPATH= cd -P -- "$(dirname -- "$statusline_path")" && pwd) || break
+  statusline_link_target=$(readlink "$statusline_path" 2>/dev/null) || break
+  if [[ "$statusline_link_target" = /* ]]; then
+    statusline_path=$statusline_link_target
+  else
+    statusline_path=$statusline_link_dir/$statusline_link_target
+  fi
+done
+statusline_dir=$(CDPATH= cd -P -- "$(dirname -- "$statusline_path")" && pwd)
+usage_reducer_file=''
+for candidate in \
+  "$statusline_dir/transcript_usage_reducer.py" \
+  "$statusline_dir/../lib/transcript_usage_reducer.py"; do
+  if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+    usage_reducer_file=$(CDPATH= cd -P -- "$(dirname -- "$candidate")" && printf '%s/%s\n' "$PWD" "$(basename -- "$candidate")")
+    break
+  fi
+done
+export CONTEXT_GUARD_USAGE_REDUCER_FILE="$usage_reducer_file"
+
 read -r -d '' CONTEXT_GUARD_STATUSLINE_PY <<'PYEOF' || true
 from __future__ import annotations
 
@@ -22,14 +45,18 @@ import re
 import stat
 import sys
 import time
+import types
 from typing import Any
 
 TAIL_BYTES = 1024 * 1024
 MAX_RECORDS = 300
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
+CACHE_REDUCER_SCHEMA = "usage-reducer-v2"
+USAGE_METRIC_LABEL = "usage_tail_v2"
 DEFAULT_CACHE_TTL_SECONDS = 2.0
 MAX_CACHE_TTL_SECONDS = 30.0
 MAX_CACHE_BYTES = 4096
+MAX_REDUCER_BYTES = 512 * 1024
 METRIC_RE = re.compile(r"^\d+(?:\.\d)?$")
 SECRET_RE = re.compile(
     r"(gh[pousr]_|github_pat_|glpat-|xox[abprs]-|AKIA|ASIA|sk-|npm_|AIza|Bearer\s|Basic\s)",
@@ -38,6 +65,44 @@ SECRET_RE = re.compile(
 OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 CSI_RE = re.compile(r"\x1b[@-_][0-?]*[ -/]*[@-~]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+def _load_usage_reducer(path: str) -> tuple[str, Any | None]:
+    if not path or not os.path.isabs(path):
+        return CACHE_REDUCER_SCHEMA, None
+    fd = -1
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_REDUCER_BYTES:
+            return CACHE_REDUCER_SCHEMA, None
+        source = os.read(fd, opened.st_size + 1)
+        if len(source) != opened.st_size:
+            return CACHE_REDUCER_SCHEMA, None
+        module_name = "_context_guard_statusline_usage_reducer"
+        module = types.ModuleType(module_name)
+        module.__file__ = path
+        sys.modules[module_name] = module
+        exec(compile(source, path, "exec"), module.__dict__)
+        schema = getattr(module, "REDUCER_SCHEMA", "")
+        reducer = getattr(module, "UsageReducer", None)
+        if not isinstance(schema, str) or reducer is None:
+            return CACHE_REDUCER_SCHEMA, None
+        return schema, reducer
+    except Exception:
+        return CACHE_REDUCER_SCHEMA, None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+REDUCER_SCHEMA, UsageReducer = _load_usage_reducer(
+    os.environ.get("CONTEXT_GUARD_USAGE_REDUCER_FILE", "")
+)
 
 
 def _bounded_int_env(primary: str, legacy: str, default: int, *, lower: int, upper: int) -> int:
@@ -159,31 +224,6 @@ def git_head_branch(current: str) -> str | None:
     return None
 
 
-def _int_or_zero(value: Any) -> int:
-    """Coerce transcript usage token values. bool is an int subclass, so block it."""
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return max(0, value)
-    return 0
-
-
-def _extract_usage(record: Any) -> dict[str, Any] | None:
-    """Extract one known transcript usage object without recursively double-counting copies."""
-    if not isinstance(record, dict):
-        return None
-    for path_keys in (("usage",), ("message", "usage"), ("response", "usage")):
-        cur: Any = record
-        for key in path_keys:
-            if not isinstance(cur, dict):
-                cur = None
-                break
-            cur = cur.get(key)
-        if isinstance(cur, dict):
-            return cur
-    return None
-
-
 def _open_regular_transcript(path: str) -> tuple[int, os.stat_result] | None:
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
@@ -278,6 +318,7 @@ def _identity(path: str, st: os.stat_result) -> dict[str, int | str]:
     absolute = os.path.abspath(path)
     path_hash = hashlib.sha256(os.fsencode(absolute)).hexdigest()
     return {
+        "reducer_schema": CACHE_REDUCER_SCHEMA,
         "path_hash": path_hash,
         "size": int(st.st_size),
         "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
@@ -326,7 +367,7 @@ def _validated_metric(value: Any, *, minimum: float, maximum: float) -> str | No
     return value
 
 
-def _metric_parts(cache_pct: Any, reuse_x: Any) -> str | None:
+def _metric_parts(cache_pct: Any, reuse_x: Any, window_partial: Any) -> str | None:
     cache_pct = _validated_metric(cache_pct, minimum=0.0, maximum=100.0)
     if cache_pct is None:
         return None
@@ -334,7 +375,13 @@ def _metric_parts(cache_pct: Any, reuse_x: Any) -> str | None:
         reuse_x = _validated_metric(reuse_x, minimum=0.0, maximum=1_000_000.0)
         if reuse_x is None:
             return None
-    parts = [f"cache_pct={cache_pct}"]
+    if not isinstance(window_partial, bool):
+        return None
+    parts = [
+        f"usage_scope={USAGE_METRIC_LABEL}",
+        f"window_partial={'true' if window_partial else 'false'}",
+        f"cache_pct={cache_pct}",
+    ]
     if reuse_x:
         parts.append(f"reuse_x={reuse_x}")
     return " ".join(parts)
@@ -360,6 +407,10 @@ def _read_cache(identity: dict[str, int | str], workspace_dir: str, ttl: float) 
             return None
         if data.get("schema_version") != CACHE_SCHEMA_VERSION:
             return None
+        if data.get("reducer_schema") != CACHE_REDUCER_SCHEMA:
+            return None
+        if data.get("metric_label") != USAGE_METRIC_LABEL:
+            return None
         computed_at = float(data.get("computed_at", 0))
         now = time.time()
         if not math.isfinite(computed_at):
@@ -369,12 +420,22 @@ def _read_cache(identity: dict[str, int | str], workspace_dir: str, ttl: float) 
         for key, value in identity.items():
             if data.get(key) != value:
                 return None
-        return _metric_parts(data.get("cache_pct"), data.get("reuse_x"))
+        return _metric_parts(
+            data.get("cache_pct"),
+            data.get("reuse_x"),
+            data.get("window_partial"),
+        )
     except Exception:
         return None
 
 
-def _write_cache(identity: dict[str, int | str], workspace_dir: str, cache_pct: str, reuse_x: str | None) -> None:
+def _write_cache(
+    identity: dict[str, int | str],
+    workspace_dir: str,
+    cache_pct: str,
+    reuse_x: str | None,
+    window_partial: bool,
+) -> None:
     ttl = _cache_ttl_seconds()
     if ttl <= 0:
         return
@@ -383,6 +444,8 @@ def _write_cache(identity: dict[str, int | str], workspace_dir: str, cache_pct: 
         return
     payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
+        "metric_label": USAGE_METRIC_LABEL,
+        "window_partial": window_partial,
         **identity,
         "computed_at": time.time(),
         "cache_pct": cache_pct,
@@ -418,9 +481,12 @@ def _write_cache(identity: dict[str, int | str], workspace_dir: str, cache_pct: 
 
 
 def transcript_metrics(path: str, workspace_dir: str) -> str | None:
-    input_tokens = 0
-    cache_read = 0
-    cache_creation = 0
+    if UsageReducer is None or REDUCER_SCHEMA != CACHE_REDUCER_SCHEMA:
+        print(
+            "context-guard statusline: usage reducer unavailable; transcript metrics omitted",
+            file=sys.stderr,
+        )
+        return None
     try:
         opened = _open_regular_transcript(path)
         if opened is None:
@@ -437,38 +503,38 @@ def transcript_metrics(path: str, workspace_dir: str) -> str | None:
         finally:
             os.close(fd)
         lines = chunk.splitlines()
+        window_partial = size > read_size
         if size > read_size and lines:
             lines = lines[1:]
-        for raw in lines[-MAX_RECORDS:]:
-            if not raw.strip():
-                continue
+        lines = [raw for raw in lines if raw.strip()]
+        if len(lines) > MAX_RECORDS:
+            window_partial = True
+            lines = lines[-MAX_RECORDS:]
+        reducer = UsageReducer()
+        for ordinal, raw in enumerate(lines):
             try:
                 obj = json.loads(raw)
             except Exception:
+                reducer.note_invalid_row()
                 continue
-            usage = _extract_usage(obj)
-            if not usage:
-                continue
-            input_tokens += _int_or_zero(usage.get("input_tokens"))
-            cr = usage.get("cache_read_input_tokens")
-            if cr is None:
-                cr = usage.get("cacheRead")
-            cache_read += _int_or_zero(cr)
-            cc = usage.get("cache_creation_input_tokens")
-            if cc is None:
-                cc = usage.get("cacheCreation")
-            cache_creation += _int_or_zero(cc)
+            reducer.observe(
+                obj,
+                file_identity=str(identity["path_hash"]),
+                row_ordinal=ordinal,
+            )
+        reduced = reducer.finalize()
+        window_partial = window_partial or reduced.partial
+        input_tokens = reduced.tokens.get("input", 0)
+        cache_read = reduced.tokens.get("cache_read", 0)
+        cache_creation = reduced.tokens.get("cache_creation", 0)
         denom = input_tokens + cache_read + cache_creation
         if denom <= 0 or cache_read <= 0:
             return None
         pct = max(0.0, min(100.0, cache_read / denom * 100))
         cache_pct = f"{pct:.0f}"
         reuse_x = f"{cache_read / cache_creation:.1f}" if cache_creation > 0 else None
-        _write_cache(identity, workspace_dir, cache_pct, reuse_x)
-        parts = [f"cache_pct={cache_pct}"]
-        if reuse_x:
-            parts.append(f"reuse_x={reuse_x}")
-        return " ".join(parts)
+        _write_cache(identity, workspace_dir, cache_pct, reuse_x, window_partial)
+        return _metric_parts(cache_pct, reuse_x, window_partial)
     except Exception:
         return None
 
@@ -537,15 +603,26 @@ def render_statusline(payload: dict[str, Any]) -> str:
         if raw_metrics:
             cache_pct = ""
             reuse_x = ""
+            usage_scope = ""
+            window_partial = ""
             for metric in raw_metrics.split():
                 if metric.startswith("cache_pct="):
                     cache_pct = metric[len("cache_pct=") :]
                 elif metric.startswith("reuse_x="):
                     reuse_x = metric[len("reuse_x=") :]
+                elif metric.startswith("usage_scope="):
+                    usage_scope = metric[len("usage_scope=") :]
+                elif metric.startswith("window_partial="):
+                    window_partial = metric[len("window_partial=") :]
             if cache_pct:
                 metrics_label = f" | cache {sanitize_status(cache_pct)}%"
                 if reuse_x:
                     metrics_label += f" | reuse {sanitize_status(reuse_x)}x"
+                if usage_scope == USAGE_METRIC_LABEL and window_partial in {"true", "false"}:
+                    metrics_label += (
+                        f" | {USAGE_METRIC_LABEL} "
+                        f"window_partial={window_partial}"
+                    )
 
     return f"[{model}] {dir_label}{branch_label} | ctx {context_label} | cost {cost}{metrics_label}"
 
@@ -566,4 +643,4 @@ except BrokenPipeError:
     raise SystemExit(0)
 PYEOF
 
-exec python3 -c "$CONTEXT_GUARD_STATUSLINE_PY" "$@"
+exec python3 -I -c "$CONTEXT_GUARD_STATUSLINE_PY" "$@"
