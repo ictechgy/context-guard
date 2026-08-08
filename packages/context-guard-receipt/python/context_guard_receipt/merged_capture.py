@@ -796,6 +796,7 @@ def _initialize_axes(state_dir: str, repository_root: str) -> str:
                 repository_root=repository_root,
                 create=True,
                 limits=_MERGED_STORE_LIMITS,
+                allow_default_limit_upgrade=True,
             )
         except StoreError as error:
             if error.code is not StoreErrorCode.WRITE_FAILED:
@@ -804,6 +805,8 @@ def _initialize_axes(state_dir: str, repository_root: str) -> str:
                 state_dir=state_dir,
                 repository_root=repository_root,
                 create=False,
+                limits=_MERGED_STORE_LIMITS,
+                allow_default_limit_upgrade=True,
             )
         with opened_store as store:
             namespace = store.namespace_id

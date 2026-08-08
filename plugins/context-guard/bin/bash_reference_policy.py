@@ -36,7 +36,7 @@ _RECEIPT_STATE_SELECTOR_DOMAIN = b"contextguard/bash-reference-state-selector/v1
 # Audited digest of Receipt's package-files.json for each exact dependency
 # version. Invalid or missing pins are deliberately unavailable in production.
 EXPECTED_RECEIPT_PACKAGE_FILES_SHA256_BY_VERSION: dict[str, str] = {
-    "0.2.0": "4051bc2c468ac0dc837c1343e28fc4f291b386c1cec1a9bcb26f121daec80095",
+    "0.2.0": "17a930f7877127698c8189181d19fae7e973c446d03cf65dc9cb4b520f316f6e",
 }
 _TRANSACTION_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 _EXACT_NPM_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")

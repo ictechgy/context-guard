@@ -573,6 +573,73 @@ class G001DistributionContractTests(unittest.TestCase):
         self.assertNotIn(private_marker.encode("ascii"), stderr)
         self.assertNotIn(b"cgr1p_", stderr)
 
+    def test_launcher_reports_private_broker_stdin_error_as_runtime_unavailable(self) -> None:
+        """Break caught: a closed broker stdin crashes the launcher with an uncaught error."""
+
+        require_distribution()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory).resolve()
+            runtime = copy_runtime_with_current_launcher(base / "runtime")
+            repository = base / "repository"
+            repository.mkdir(mode=0o700)
+            state = base / "state"
+            preload = base / "emit-stdin-error.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const childProcess = require('child_process');\n"
+                "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                "childProcess.spawn = (...arguments_) => {\n"
+                "  const child = originalSpawn(...arguments_);\n"
+                "  if (arguments_[1].includes('--private-bash-reference-broker-v1')) {\n"
+                "    setTimeout(() => child.stdin.emit('error', new Error('closed')), 50);\n"
+                "  }\n"
+                "  return child;\n"
+                "};\n",
+                encoding="ascii",
+            )
+            with tempfile.TemporaryFile("w+b", buffering=0) as capture:
+                os.fchmod(capture.fileno(), 0o600)
+                process = subprocess.Popen(
+                    [
+                        str(Path(NODE).resolve()),
+                        str(runtime / "bin/context-guard-receipt.cjs"),
+                        "--private-bash-reference-broker-v1",
+                        "--capture-fd",
+                        str(capture.fileno()),
+                        "--transaction-id",
+                        "e" * 64,
+                        "--root",
+                        str(repository),
+                        "--state-dir",
+                        str(state),
+                        "--disclosure-days",
+                        "7",
+                    ],
+                    cwd=repository,
+                    env=launcher_environment(NODE_OPTIONS=f"--require={preload}"),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    pass_fds=(capture.fileno(),),
+                )
+                try:
+                    stdout, stderr = process.communicate(b"COMMIT\n", timeout=8)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+            expected = canonical_json(
+                {
+                    "evidence_boundary": EVIDENCE_BOUNDARY,
+                    "operation": "launcher",
+                    "reason": "runtime_unavailable",
+                    "schema_version": "contextguard-receipt-cli-response/v1",
+                    "status": "error",
+                }
+            ).encode("ascii")
+            self.assertEqual(process.returncode, 69, stderr)
+            self.assertEqual(stderr, expected)
+
     def test_launcher_forwards_interrupts_and_reaps_the_command_group(self) -> None:
         """Break caught: an interrupted Node wrapper strands the captured command."""
 

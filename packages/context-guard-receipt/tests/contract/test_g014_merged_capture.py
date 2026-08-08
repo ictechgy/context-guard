@@ -174,6 +174,83 @@ class G014MergedCaptureTests(unittest.TestCase):
             self.assertEqual(summary.artifact_count, 1)
             self.assertEqual(summary.capability_count, 1)
 
+    def test_existing_default_store_upgrades_for_large_merged_capture(self) -> None:
+        """Break caught: enabling merged capture strands an existing default store."""
+
+        store_module = importlib.import_module("context_guard_receipt.store")
+        with Fixture(self) as fixture:
+            with CapabilityStore.open(
+                state_dir=str(fixture.state),
+                repository_root=str(fixture.root),
+                create=True,
+            ) as store:
+                original_namespace = store.namespace_id
+                legacy = store.issue(
+                    payload=b"existing artifact",
+                    root_identity_sha256=fixture.root_identity,
+                    subject_identity_sha256="a" * 64,
+                    artifact_type=ArtifactType.RAW_EVIDENCE_BYTES,
+                )
+                self.assertEqual(
+                    store.limits.max_single_artifact_bytes,
+                    1024 * 1024,
+                )
+
+            payload = b"x" * (1024 * 1024 + 1)
+            fixture.write_spool(payload)
+            published = self.publish(fixture, "2" * 64)
+
+            self.assertEqual(published["status"], "registered")
+            with CapabilityStore.open(
+                state_dir=str(fixture.state),
+                repository_root=str(fixture.root),
+            ) as store:
+                self.assertEqual(store.namespace_id, original_namespace)
+                self.assertEqual(
+                    store.limits,
+                    store_module.StoreLimits(max_single_artifact_bytes=10_000_000),
+                )
+                self.assertEqual(
+                    store.resolve(
+                        legacy.handle,
+                        expected_root_identity_sha256=fixture.root_identity,
+                    ).payload,
+                    b"existing artifact",
+                )
+                self.assertEqual(
+                    store.resolve(
+                        published["reference"],
+                        expected_root_identity_sha256=fixture.root_identity,
+                    ).payload,
+                    payload,
+                )
+
+    def test_merged_capture_refuses_nondefault_store_limit_mismatch(self) -> None:
+        """Break caught: migration blesses an arbitrary persisted limit profile."""
+
+        store_module = importlib.import_module("context_guard_receipt.store")
+        custom_limits = store_module.StoreLimits(
+            max_single_artifact_bytes=2 * 1024 * 1024
+        )
+        with Fixture(self) as fixture:
+            with CapabilityStore.open(
+                state_dir=str(fixture.state),
+                repository_root=str(fixture.root),
+                create=True,
+                limits=custom_limits,
+            ):
+                pass
+
+            self.assert_import_error(
+                "state_unavailable",
+                lambda: self.publish(fixture, "3" * 64),
+            )
+            with CapabilityStore.open(
+                state_dir=str(fixture.state),
+                repository_root=str(fixture.root),
+            ) as store:
+                self.assertEqual(store.limits, custom_limits)
+
     def test_recovery_refuses_expired_reference_without_redisclosing_authority(self) -> None:
         """Break caught: an expired transaction is returned as an actionable handle."""
 
@@ -1019,6 +1096,21 @@ class G014MergedCaptureTests(unittest.TestCase):
             error = json.loads(refused.stderr)
             self.assertEqual(error["operation"], "import_merged_capture")
             self.assertEqual(error["reason"], "unsafe_spool")
+
+    def test_public_cli_inspect_failure_uses_inspect_operation(self) -> None:
+        with Fixture(self) as fixture:
+            response = run_cli(
+                "inspect",
+                "merged-capture-import",
+                "--root",
+                str(fixture.root),
+                "--state-dir",
+                str(fixture.state),
+            )
+            self.assertEqual(response.returncode, 74)
+            self.assertEqual(response.stdout, b"")
+            error = json.loads(response.stderr)
+            self.assertEqual(error["operation"], "inspect_merged_capture_import")
 
     def test_exact_expiry_boundary_clock_rollback_and_revoke_retain_artifact(self) -> None:
         """Break caught: boundary is off by one, rollback reopens, or denial deletes bytes."""

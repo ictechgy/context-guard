@@ -294,7 +294,7 @@ def candidate_manifest(
 ) -> dict[str, object]:
     if COMMIT_RE.fullmatch(commit_sha) is None:
         raise CandidateBuildError("candidate commit SHA is invalid")
-    if set(tool_versions) < {"node", "npm", "python"} or any(
+    if not {"node", "npm", "python"} <= set(tool_versions) or any(
         not isinstance(value, str) or not value or len(value) > 128 or "\n" in value
         for value in tool_versions.values()
     ):

@@ -89,8 +89,8 @@ cannot roll back the committed advisory row.
 
 There is no default durable location: every durable workflow names an absolute
 `--state-dir`. The local capability store is `store-v1` beneath that directory
-and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and 1 MiB per
-artifact. Diagnostics, the experimental twin, and the experimental
+and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and ordinarily
+1 MiB per artifact. Diagnostics, the experimental twin, and the experimental
 reference-expiry registry use separate `auxiliary-v1` compartments with their
 own quotas and never turn a local receipt into host, provider, or network
 evidence.
@@ -162,12 +162,14 @@ terminally expires that reference, and multi-reference inspection publishes
 due transitions as one bounded batch.
 
 `import merged-capture` is the runner-free adapter for one already completed,
-owner-only (`0600`), no-follow regular spool of at most exactly 10,000,000
+owner-only (`0600`), no-follow regular spool of at most 10,000,000
 bytes. It verifies canonical sanitized UTF-8 without sanitizing again, streams the exact bytes into
 `COMMAND_CAPTURE_BYTES`, and assigns the sole subject domain
 `contextguard-receipt/command-capture-merged-sanitized/v1`. Merged-import store
 initialization opts into that protocol-specific single-artifact ceiling while
-ordinary store initialization retains its 1 MiB default. The optional
+ordinary store initialization retains its 1 MiB default. The first merged import
+atomically upgrades an exact default-limit store in place; custom limit profiles
+remain refused. The optional
 `--disclosure-days` consent marker accepts only `7`; the protocol records one
 absolute deadline exactly 604,800,000 milliseconds after issuance and never
 extends it on retry, recovery, disablement, rollback, or revocation.

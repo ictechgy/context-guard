@@ -259,6 +259,21 @@ class NpmCandidateBuilderTests(unittest.TestCase):
                         tool_versions={"node": "v24", "npm": "11.5.1", "python": "3.12"},
                     )
 
+    def test_manifest_rejects_missing_required_tool_even_with_extra_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _, receipt, package = self._candidate_fixture(root)
+            with self.assertRaisesRegex(
+                self.builder.CandidateBuildError,
+                "candidate tool versions are invalid",
+            ):
+                self.builder.candidate_manifest(
+                    receipt_tarball=receipt,
+                    root_tarball=package,
+                    commit_sha="d" * 40,
+                    tool_versions={"node": "v24", "npm": "11", "git": "2.4"},
+                )
+
     def test_manifest_rejects_policy_that_does_not_pin_receipt_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

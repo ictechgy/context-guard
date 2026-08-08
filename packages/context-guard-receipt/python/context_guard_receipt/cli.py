@@ -1350,7 +1350,9 @@ def _run_bash_reference_query(arguments: Sequence[str]) -> int:
     return 0
 
 
-def _merged_import_error(error: object) -> int:
+def _merged_import_error(
+    error: object, *, operation: str = "import_merged_capture"
+) -> int:
     code = getattr(getattr(error, "code", None), "value", "state_unavailable")
     refused = {
         "invalid_argument",
@@ -1369,8 +1371,8 @@ def _merged_import_error(error: object) -> int:
         "reference_inaccessible",
     }
     if code in refused:
-        return emit_error("import_merged_capture", "refused", code, 65)
-    return emit_error("import_merged_capture", "error", code, 74)
+        return emit_error(operation, "refused", code, 65)
+    return emit_error(operation, "error", code, 74)
 
 
 def _import_merged_capture(arguments: Sequence[str], *, recovery: bool) -> int:
@@ -1411,7 +1413,9 @@ def _inspect_merged_capture(arguments: Sequence[str]) -> int:
         )
         write_stdout(canonical_json_bytes(result))
     except MergedCaptureError as error:
-        return _merged_import_error(error)
+        return _merged_import_error(
+            error, operation="inspect_merged_capture_import"
+        )
     except Exception:
         return emit_error(
             "inspect_merged_capture_import", "error", "internal_failure", 70
