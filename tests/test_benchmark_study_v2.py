@@ -8,9 +8,11 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import stat
 import tempfile
 import unittest
 
@@ -24,6 +26,18 @@ def load_runner():
     spec = importlib.util.spec_from_file_location("benchmark_study_v2", RUNNER)
     if spec is None or spec.loader is None:
         raise AssertionError("cannot load benchmark runner")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_rehearsal():
+    spec = importlib.util.spec_from_file_location(
+        "benchmark_study_v2_rehearsal", REHEARSAL,
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("cannot load v2 rehearsal")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -70,6 +84,180 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         self.assertEqual(result["primary"], ["host_unmodified", "bash_reference_v1"])
         self.assertEqual(result["diagnostic"], ["legacy_trim", "bash_reference_v1"])
         self.assertNotIn("legacy_trim", result["primary"])
+
+    def test_v2_arm_settings_use_only_the_workspace_local_pretool_bash_hook(self) -> None:
+        settings = self.runner._benchmark_study_v2_settings()
+        self.assertNotIn("hooks", settings["host_unmodified"])
+        legacy = settings["legacy_trim"]["hooks"]
+        reference = settings["bash_reference_v1"]["hooks"]
+        self.assertEqual(set(legacy), {"PreToolUse"})
+        self.assertEqual(set(reference), {"PreToolUse"})
+        legacy_command = legacy["PreToolUse"][0]["hooks"][0]["command"]
+        reference_command = reference["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertEqual(legacy_command, "./node_modules/.bin/context-guard-rewrite-bash")
+        self.assertNotIn("--bash-reference-v1", legacy_command)
+        self.assertEqual(reference_command, legacy_command + " --bash-reference-v1")
+
+    def test_v2_cli_binding_pins_executable_bytes_version_and_capabilities(self) -> None:
+        rehearsal = load_rehearsal()
+        with tempfile.TemporaryDirectory() as temp:
+            fixture_root = Path(temp) / "fixture"
+            fixture_root.mkdir()
+            _manifest, _checksum, _npm, cli = rehearsal._v2_candidate_fixture(
+                fixture_root
+            )
+            binding = self.runner._benchmark_study_v2_cli_binding(str(cli))
+
+            self.assertEqual(binding["executable_sha256"], hashlib.sha256(cli.read_bytes()).hexdigest())
+            self.assertEqual(binding["executable_bytes"], len(cli.read_bytes()))
+            self.assertEqual(binding["bundle"]["scope"], "single-native-executable-v1")
+            self.assertEqual(
+                binding["probe"]["version_stdout_sha256"],
+                hashlib.sha256(b"contextguard-v2-fake 1.0\n").hexdigest(),
+            )
+            self.assertEqual(
+                binding["probe"]["capabilities"],
+                sorted(self.runner.BENCHMARK_STUDY_V2_CLI_CAPABILITIES),
+            )
+            self.runner._benchmark_study_v2_assert_cli_binding(str(cli), binding)
+            inconsistent = json.loads(json.dumps(binding))
+            inconsistent["bundle"]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "CLI binding schema"):
+                self.runner._benchmark_study_v2_validate_cli_binding(inconsistent)
+            cli.write_bytes(cli.read_bytes() + b"\0")
+            os.chmod(cli, 0o700)
+            with self.assertRaisesRegex(ValueError, "CLI binding drift"):
+                self.runner._benchmark_study_v2_assert_cli_binding(str(cli), binding)
+
+    def test_v2_cli_rejects_script_launchers_without_a_provable_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cli = Path(temp) / "delegating-claude"
+            cli.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, sys\n"
+                "if sys.argv[1:] == ['--version']:\n"
+                " print('delegating 1.0')\n"
+                "elif sys.argv[1:] == ['--help']:\n"
+                " print('--settings --setting-sources --include-hook-events --no-session-persistence stream-json')\n"
+                "else:\n"
+                " os.execv('/tmp/unbound-backend', ['/tmp/unbound-backend', *sys.argv[1:]])\n",
+                encoding="utf-8",
+            )
+            os.chmod(cli, 0o700)
+            with self.assertRaisesRegex(ValueError, "native executable"):
+                self.runner._benchmark_study_v2_cli_binding(str(cli))
+
+    def test_v2_install_rejects_files_and_bins_outside_exact_tarballs(self) -> None:
+        rehearsal = load_rehearsal()
+        with tempfile.TemporaryDirectory() as temp:
+            fixture_root = Path(temp) / "fixture"
+            fixture_root.mkdir()
+            manifest_path, checksum_path, fake_npm, _fake_cli = (
+                rehearsal._v2_candidate_fixture(fixture_root)
+            )
+            candidate = self.runner.verify_benchmark_study_v2_candidate(
+                manifest_path, checksum_path=checksum_path,
+            )
+            output_root = Path(temp) / "output"
+            output_root.mkdir()
+            overlay, receipt = self.runner._benchmark_study_v2_install_candidate(
+                npm_bin=str(fake_npm), candidate=candidate,
+                output_root=output_root,
+            )
+            self.assertTrue(receipt["hidden_lockfile_removed"])
+            self.assertFalse((overlay / ".package-lock.json").exists())
+
+            rogue_file = overlay / "rogue-package.py"
+            rogue_file.write_text("raise SystemExit(1)\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unverified overlay path"):
+                self.runner._benchmark_study_v2_verify_installed_packages(
+                    overlay, candidate,
+                )
+            rogue_file.unlink()
+
+            rogue_bin = overlay / ".bin" / "rogue-bin"
+            os.symlink(
+                "../@ictechgy/context-guard/package.json", rogue_bin,
+            )
+            with self.assertRaisesRegex(ValueError, "unverified overlay path"):
+                self.runner._benchmark_study_v2_verify_installed_packages(
+                    overlay, candidate,
+                )
+
+    def test_v2_runner_binding_pins_the_checker_python_runtime(self) -> None:
+        binding = self.runner._benchmark_study_v2_runner_binding()
+        python_binding = binding["python"]
+        self.assertEqual(
+            python_binding["version_sha256"],
+            hashlib.sha256(sys.version.encode("utf-8")).hexdigest(),
+        )
+        original_executable = self.runner.sys.executable
+        try:
+            self.runner.sys.executable = str(
+                Path(original_executable).with_name("different-python")
+            )
+            with self.assertRaisesRegex(ValueError, "runner Python binding drift"):
+                self.runner._benchmark_study_v2_assert_python_binding(
+                    python_binding, require_current=True,
+                )
+        finally:
+            self.runner.sys.executable = original_executable
+
+    def test_v2_lifecycle_actions_require_one_exclusive_output_root_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root = Path(temp) / "study"
+            output_root.mkdir()
+            with self.runner._benchmark_study_v2_action_lock(output_root):
+                self.runner.append_study_attempt_event(
+                    output_root / "attempts.jsonl", {"state": "reserved"},
+                )
+                with self.assertRaisesRegex(ValueError, "action is already active"):
+                    with self.runner._benchmark_study_v2_action_lock(output_root):
+                        self.fail("a second lifecycle action acquired the same root")
+
+    def test_attempt_reservation_fsyncs_file_then_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "attempts.jsonl"
+            fsync_kinds = []
+            original_fsync = self.runner.os.fsync
+
+            def recording_fsync(fd: int) -> None:
+                mode = os.fstat(fd).st_mode
+                fsync_kinds.append("directory" if stat.S_ISDIR(mode) else "file")
+                original_fsync(fd)
+
+            self.runner.os.fsync = recording_fsync
+            try:
+                self.runner.append_study_attempt_event(path, {"state": "reserved"})
+            finally:
+                self.runner.os.fsync = original_fsync
+            self.assertEqual(fsync_kinds[-2:], ["file", "directory"])
+
+    def test_v2_checker_executes_only_with_the_bound_python_bytes(self) -> None:
+        task = self.runner._benchmark_study_v2_canary_task()
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            (workspace / "contextguard-v2-canary.txt").write_bytes(
+                self.runner.BENCHMARK_STUDY_V2_CANARY_MARKER
+            )
+            python_binding = self.runner._benchmark_study_v2_runner_binding()[
+                "python"
+            ]
+            self.assertEqual(
+                self.runner.run_task_checker_study(
+                    task, workspace, env={},
+                    interpreter_binding=python_binding,
+                ),
+                "task_success",
+            )
+            tampered = dict(python_binding)
+            tampered["executable_sha256"] = "0" * 64
+            self.assertEqual(
+                self.runner.run_task_checker_study(
+                    task, workspace, env={}, interpreter_binding=tampered,
+                ),
+                "success_checker_infra_invalid",
+            )
 
     def test_task_clustered_binary_inference_rejects_all_success_degeneracy(self) -> None:
         tasks = [f"task-{index:02d}" for index in range(12)]
@@ -508,15 +696,207 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             completed = subprocess.run(
                 [sys.executable, str(REHEARSAL), "--study-version", "v2",
                  "--output-root", str(output_root)],
-                cwd=ROOT, text=True, capture_output=True, timeout=30,
+                cwd=ROOT, text=True, capture_output=True, timeout=120,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report = json.loads((output_root / "rehearsal-report.json").read_text())
+            study_report = json.loads((output_root / "study-report.json").read_text())
+            manifest = json.loads((output_root / "study-manifest.json").read_text())
+            canary = json.loads((output_root / "canary-evidence.json").read_text())
+            analytic_variants = self.runner._benchmark_study_v2_variants(
+                manifest, output_root.resolve(),
+            )
+            canary_variants = self.runner._benchmark_study_v2_canary_variants(
+                manifest, output_root.resolve(),
+            )
+            analytic_required_events = {
+                arm: variant.measurement.required_event_classes
+                for arm, variant in analytic_variants.items()
+            }
+            canary_required_events = {
+                arm: variant.measurement.required_event_classes
+                for arm, variant in canary_variants.items()
+            }
+            install_receipt_path = output_root / "candidate-install-receipt.json"
+            install_receipt_bytes = install_receipt_path.read_bytes()
+            install_receipt = json.loads(install_receipt_bytes)
+            install_receipt["inventory"]["file_count"] += 1
+            install_receipt_path.write_text(
+                json.dumps(
+                    install_receipt,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(install_receipt_path, 0o600)
+            with self.assertRaisesRegex(ValueError, "install receipt"):
+                self.runner.load_benchmark_study_v2_executable_manifest(
+                    output_root, revalidate_external=False,
+                )
+            install_receipt_path.write_bytes(install_receipt_bytes)
+            os.chmod(install_receipt_path, 0o600)
+            study_manifest_path = output_root / "study-manifest.json"
+            study_manifest_bytes = study_manifest_path.read_bytes()
+            namespace_tamper = json.loads(study_manifest_bytes)
+            namespace_tamper["inputs"]["namespace"] = "self-consistent-rewrite"
+            study_manifest_path.write_text(
+                json.dumps(
+                    namespace_tamper, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":"),
+                ) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(study_manifest_path, 0o600)
+            with self.assertRaisesRegex(ValueError, "task order or namespace"):
+                self.runner.load_benchmark_study_v2_executable_manifest(
+                    output_root, revalidate_external=False,
+                )
+            plan_tamper = json.loads(study_manifest_bytes)
+            plan_tamper["plan"]["noninferiority_margin"] = 0.2
+            plan_tamper["plan_sha256"] = hashlib.sha256(
+                self.runner._study_canonical_json_bytes(plan_tamper["plan"])
+            ).hexdigest()
+            study_manifest_path.write_text(
+                json.dumps(
+                    plan_tamper, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":"),
+                ) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(study_manifest_path, 0o600)
+            with self.assertRaisesRegex(ValueError, "external study plan"):
+                self.runner.load_benchmark_study_v2_executable_manifest(
+                    output_root, revalidate_external=True,
+                )
+            study_manifest_path.write_bytes(study_manifest_bytes)
+            os.chmod(study_manifest_path, 0o600)
+            attempts_before = (output_root / "attempts.jsonl").read_bytes()
+            tamper_guard = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "resume",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", "/bin/false",
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertNotEqual(tamper_guard.returncode, 0)
+            self.assertEqual((output_root / "attempts.jsonl").read_bytes(), attempts_before)
+            rows = [json.loads(line) for line in attempts_before.splitlines()]
+            pre_tampered_rows = [dict(row) for row in rows]
+            pre_tampered_terminal = next(
+                row for row in pre_tampered_rows if row["state"] == "terminal"
+            )
+            pre_tampered_terminal["pre_workspace_inventory_sha256"] = "f" * 64
+            bound_tasks = self.runner.parse_tasks(
+                Path(manifest["inputs"]["tasks_path"])
+            )
+            self.runner.load_task_fixture_trees(
+                bound_tasks,
+                task_file_dir=Path(manifest["inputs"]["tasks_path"]).parent,
+            )
+            with self.assertRaisesRegex(ValueError, "pre-launch workspace"):
+                self.runner._benchmark_study_v2_revalidate_terminal_evidence(
+                    manifest=manifest,
+                    output_root=output_root.resolve(),
+                    rows=pre_tampered_rows,
+                    tasks_by_id={task.id: task for task in bound_tasks},
+                    variants=self.runner._benchmark_study_v2_variants(
+                        manifest, output_root.resolve(),
+                    ),
+                )
+            terminal = next(row for row in rows if row["state"] == "terminal")
+            terminal["success"] = not terminal["success"]
+            (output_root / "attempts.jsonl").write_text("".join(
+                json.dumps(row, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+                for row in rows
+            ))
+            os.chmod(output_root / "attempts.jsonl", 0o600)
+            manifest_sha256 = hashlib.sha256(
+                (output_root / "study-manifest.json").read_bytes()
+            ).hexdigest()
+            with self.assertRaisesRegex(ValueError, "success/classification"):
+                self.runner._benchmark_study_v2_read_attempts(
+                    output_root / "attempts.jsonl", manifest=manifest,
+                    manifest_sha256=manifest_sha256,
+                )
+            (output_root / "study-report.json").unlink()
+            altered = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "analyze",
+                    "--study-v2-output-root", str(output_root),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertNotEqual(altered.returncode, 0)
+            self.assertFalse((output_root / "study-report.json").exists())
         self.assertEqual(report["study_version"], "v2")
         self.assertEqual(report["arms"], ["host_unmodified", "legacy_trim", "bash_reference_v1"])
         self.assertFalse(report["claim_ready"])
         self.assertEqual(report["zero_cost_evidence"]["network_calls"], 0)
         self.assertEqual(report["zero_cost_evidence"]["provider_calls"], 0)
+        self.assertEqual(report["fake_cli_process_calls"], 120)
+        self.assertEqual(report["discarded_canary_provider_calls"], 2)
+        self.assertTrue(report["run_without_canary_refused_before_attempts"])
+        self.assertEqual(report["initial_calls"], 108)
+        self.assertEqual(report["retry_calls"], 12)
+        self.assertEqual(report["retry_failure_count"], 1)
+        self.assertTrue(report["later_schedule_continued_after_retry_failure"])
+        self.assertTrue(report["fake_host_pretooluse_lifecycle_verified"])
+        self.assertEqual(report["candidate_install_calls"], 1)
+        self.assertEqual(
+            report["identity_state_counts"],
+            {"not_needed": 96, "terminal": 120},
+        )
+        self.assertEqual(sum(report["identity_state_counts"].values()), 216)
+        self.assertFalse(report["claim_allowed"])
+        self.assertIsNone(report["claim"])
+        self.assertTrue(study_report["descriptive_only"])
+        self.assertFalse(study_report["claim_allowed"])
+        self.assertIsNone(study_report["claim"])
+        self.assertEqual(
+            study_report["provenance"]["cli_binding_sha256"],
+            self.runner._study_domain_hash(
+                "contextguard.bench.v2.cli-binding.v1",
+                manifest["inputs"]["cli_binding"],
+            ),
+        )
+        self.assertEqual(len(manifest["inputs"]["task_definitions"]), 12)
+        self.assertTrue(manifest["inputs"]["canary_contract"]["excluded_from_analysis"])
+        self.assertEqual(
+            [record["arm"] for record in canary["arms"]],
+            ["legacy_trim", "bash_reference_v1"],
+        )
+        self.assertTrue(all(record["passed"] for record in canary["arms"]))
+        self.assertEqual(
+            analytic_required_events,
+            {arm: () for arm in ("host_unmodified", "legacy_trim", "bash_reference_v1")},
+        )
+        self.assertEqual(
+            canary_required_events,
+            {arm: ("PreToolUse",) for arm in ("legacy_trim", "bash_reference_v1")},
+        )
+        self.assertEqual(study_report["identity_state_counts"], report["identity_state_counts"])
+        for observer in ("correction", "retrieval", "shifted_cost"):
+            self.assertEqual(
+                study_report["observers"][observer],
+                {"available": False, "reason": "observer_absent", "value": None},
+            )
+        overlay = manifest["inputs"]["candidate_overlay_inventory"]
+        symlinks = [entry for entry in overlay["files"] if entry["kind"] == "symlink"]
+        self.assertTrue(symlinks)
+        self.assertTrue(all(not Path(entry["target"]).is_absolute() for entry in symlinks))
+
+    def test_v2_inventory_rejects_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "node_modules"
+            root.mkdir()
+            outside = Path(temp) / "outside"
+            outside.write_text("escape")
+            os.symlink("../outside", root / "escape")
+            with self.assertRaisesRegex(ValueError, "escapes"):
+                self.runner._benchmark_study_v2_inventory(root)
 
     def _prepare_provider_export_study(self, directory: Path) -> tuple[Path, dict]:
         """Create the immutable local manifest; this never invokes a provider."""
@@ -590,7 +970,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "task-order binding"):
                 self.runner.load_benchmark_study_v2_provider_manifest(manifest_path)
 
-    def test_v2_cli_prepares_and_analyzes_complete_provider_export(self) -> None:
+    def test_v2_cli_rejects_unbound_provider_export_success(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             manifest_path, manifest = self._prepare_provider_export_study(directory)
@@ -610,13 +990,61 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 ],
                 cwd=ROOT, text=True, capture_output=True, timeout=30,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            report = json.loads(report_path.read_text())
-        self.assertEqual(report["study_version"], "v2")
-        self.assertEqual(report["record_count"], 108)
-        self.assertEqual(report["effects"]["diagnostic_contrast"], ["legacy_trim", "bash_reference_v1"])
-        self.assertFalse(report["claim_readiness"]["claim_ready"])
-        self.assertIn("power", report["claim_readiness"]["unmet_gates"])
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertFalse(report_path.exists())
+
+    def test_v2_cli_exposes_canary_run_and_resume_lifecycle_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root = Path(temp) / "study"
+            for action in ("canary", "run", "resume"):
+                with self.subTest(action=action):
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            str(RUNNER),
+                            "--study-v2-action",
+                            action,
+                            "--study-v2-output-root",
+                            str(output_root),
+                        ],
+                        cwd=ROOT,
+                        text=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    self.assertNotIn("invalid choice", completed.stderr)
+                    self.assertIn("prepared", completed.stderr)
+
+    def test_v2_analyze_rejects_provider_asserted_success_without_checker_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manifest_path, manifest = self._prepare_provider_export_study(directory)
+            evidence_path = directory / "provider-asserted-success.jsonl"
+            evidence_path.write_text("".join(
+                json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+                for row in self._provider_export_rows(manifest)
+            ))
+            report_path = directory / "must-not-exist.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(RUNNER),
+                    "--study-v2-action",
+                    "analyze",
+                    "--study-v2-manifest",
+                    str(manifest_path),
+                    "--study-v2-evidence-jsonl",
+                    str(evidence_path),
+                    "--study-v2-report",
+                    str(report_path),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertFalse(report_path.exists())
 
     def test_v2_cli_rejects_bad_provider_export_before_report_write(self) -> None:
         mutations = {

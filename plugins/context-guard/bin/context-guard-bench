@@ -54,6 +54,7 @@ dry-run 모드는 실제 호출은 하지 않고 어떤 명령이 실행될지�
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 from contextlib import contextmanager, nullcontext
 import csv
@@ -71,13 +72,14 @@ import stat
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 try:
@@ -3065,6 +3067,7 @@ def run_task_checker_study(
     workspace: Path,
     *,
     env: dict[str, str],
+    interpreter_binding: Mapping[str, Any] | None = None,
 ) -> str:
     """Run the content-bound success checker outside the measured workspace.
 
@@ -3080,6 +3083,14 @@ def run_task_checker_study(
     payload = task.success_checker_bytes
     if not payload:
         return "success_checker_infra_invalid"
+    checker_executable = sys.executable
+    if interpreter_binding is not None:
+        try:
+            checker_executable = _benchmark_study_v2_assert_python_binding(
+                interpreter_binding, require_current=False,
+            )
+        except (OSError, TypeError, ValueError):
+            return "success_checker_infra_invalid"
     private_root: str | None = None
     try:
         private_root = tempfile.mkdtemp(prefix="contextguard-bench-checker-")
@@ -3095,7 +3106,7 @@ def run_task_checker_study(
         # PYTHONHOME/PYTHONSTARTUP 또는 sys.path[0] 로 들어오면 심어둔 sitecustomize.py 가
         # 판정기 안에서 실행되어 위협 모델이 무너진다. 환경도 물려받지 않고 최소로 만든다.
         result = run_bounded_command(
-            [sys.executable, "-I", str(checker_path)],
+            [checker_executable, "-I", str(checker_path)],
             cwd=workspace,
             timeout_seconds=600,
             max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,
@@ -3387,11 +3398,13 @@ def _measurement_resolve_terminal_status(
     ):
         if hook_result.get("classification") == status or status in hook_result.get("failure_flags", ()):
             return status
-    if arm == "treatment" and completed_classes - allowed_classes:
+    hook_arms = {"treatment", "legacy_trim", "bash_reference_v1"}
+    unmodified_arms = {"baseline", "host_unmodified"}
+    if arm in hook_arms and completed_classes - allowed_classes:
         return "unexpected_hook_event_class"
-    if arm == "baseline" and hook_result["observed"]:
+    if arm in unmodified_arms and hook_result["observed"]:
         return "baseline_hook_contamination"
-    if arm == "treatment" and required_classes - completed_classes:
+    if arm in hook_arms and required_classes - completed_classes:
         return "missing_required_hook_event_class"
     if hook_process_failed:
         return "hook_process_failure"
@@ -3510,6 +3523,9 @@ def _run_measurement_fixture_locked(
     locked_root_fd: int,
     on_process_started: Callable[[], None] | None = None,
     measurement_study: bool = False,
+    workspace_overlay: Path | None = None,
+    on_workspace_prepared: Callable[[Path], None] | None = None,
+    checker_interpreter_binding: Mapping[str, Any] | None = None,
 ) -> RunResult:
     spec = variant.measurement
     assert spec is not None
@@ -3529,6 +3545,18 @@ def _run_measurement_fixture_locked(
             "load_task_fixture_trees for every task declaring fixture_tree"
         )
     reset_task_fixture_tree(task.fixture_tree_entries or (), context.workspace)
+    if workspace_overlay is not None:
+        destination = context.workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME
+        if destination.exists() or destination.is_symlink():
+            raise SystemExit("measurement candidate overlay destination already exists")
+        shutil.copytree(
+            workspace_overlay,
+            destination,
+            symlinks=True,
+            copy_function=shutil.copy2,
+        )
+    if on_workspace_prepared is not None:
+        on_workspace_prepared(context.workspace)
     settings_snapshot = context.session / spec.settings_file.name
     _measurement_write_exclusive(settings_snapshot, spec.settings_source_bytes)
     try:
@@ -3670,6 +3698,7 @@ def _run_measurement_fixture_locked(
                 )
             checker_classification = run_task_checker_study(
                 task, context.workspace, env=env,
+                interpreter_binding=checker_interpreter_binding,
             )
         else:
             checker_classification = run_success_command_study(task, project_root, env=env)
@@ -8695,6 +8724,10 @@ def append_study_attempt_event(path: Path, event: Mapping[str, Any]) -> None:
         fd = _open_regular_no_symlink(path, flags, 0o600)
         os.fchmod(fd, 0o600)
         _measurement_write_fd(fd, payload)
+        # A provider launch may follow this reservation immediately. Persist the
+        # directory entry as well as the file bytes so a power loss cannot make
+        # an already-consumed identity appear unreserved after restart.
+        os.fsync(parent_fd)
     finally:
         if fd >= 0:
             os.close(fd)
@@ -8982,7 +9015,16 @@ def run_measurement_cli_probes(
     root, paths = create_measurement_probe_layout()
     try:
         validate_measurement_probe_layout(root, paths)
-        path_value = f"{executable_path.parent}:/usr/bin:/bin:/usr/sbin:/sbin"
+        runtime_directories = [str(executable_path.parent)]
+        invoked = shutil.which(claude_bin)
+        if invoked is not None:
+            runtime_directories.append(str(Path(invoked).absolute().parent))
+        for runtime_name in ("node", "python3"):
+            runtime = shutil.which(runtime_name)
+            if runtime is not None:
+                runtime_directories.append(str(Path(runtime).absolute().parent))
+        runtime_directories.extend(("/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+        path_value = os.pathsep.join(dict.fromkeys(runtime_directories))
         env = {
             "PATH": path_value,
             "LANG": "C",
@@ -11142,6 +11184,2452 @@ def evaluate_benchmark_study_v2_claim_readiness(
     }
 
 
+BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v2"
+BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v2"
+BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v2"
+BENCHMARK_STUDY_V2_CANDIDATE_SCHEMA_VERSION = "contextguard-npm-candidate-set/v1"
+BENCHMARK_STUDY_V2_CANDIDATE_NAMES = (
+    "@ictechgy/context-guard-receipt", "@ictechgy/context-guard",
+)
+BENCHMARK_STUDY_V2_OVERLAY_NAME = "node_modules"
+BENCHMARK_STUDY_V2_REWRITE_COMMAND = (
+    "./node_modules/.bin/context-guard-rewrite-bash"
+)
+BENCHMARK_STUDY_V2_CLI_BINDING_SCHEMA_VERSION = (
+    "contextguard.bench.cli-binding.v2"
+)
+BENCHMARK_STUDY_V2_CLI_CAPABILITIES = (
+    "--settings", "--setting-sources", "--include-hook-events",
+    "--no-session-persistence", "stream-json",
+)
+BENCHMARK_STUDY_V2_CLI_MAX_BYTES = 1_073_741_824
+BENCHMARK_STUDY_V2_CANARY_EVENT_SCHEMA_VERSION = (
+    "contextguard.bench.canary-event.v2"
+)
+BENCHMARK_STUDY_V2_CANARY_EVIDENCE_SCHEMA_VERSION = (
+    "contextguard.bench.canary-evidence.v2"
+)
+BENCHMARK_STUDY_V2_CANARY_ARMS = ("legacy_trim", "bash_reference_v1")
+BENCHMARK_STUDY_V2_CANARY_TASK_ID = "contextguard-v2-bash-canary"
+BENCHMARK_STUDY_V2_CANARY_MARKER = b"contextguard-v2-host-pretooluse-canary\n"
+BENCHMARK_STUDY_V2_CANARY_PROMPT = (
+    "Use the Bash tool exactly once to run this command, then reply done: "
+    "printf '%s\\n' contextguard-v2-host-pretooluse-canary > "
+    "contextguard-v2-canary.txt"
+)
+BENCHMARK_STUDY_V2_CANARY_CHECKER = (
+    b"from pathlib import Path\n"
+    b"try:\n"
+    b"    value = Path('contextguard-v2-canary.txt').read_bytes()\n"
+    b"except OSError:\n"
+    b"    raise SystemExit(1)\n"
+    b"raise SystemExit(0 if value == b'contextguard-v2-host-pretooluse-canary\\n' else 1)\n"
+)
+
+
+def _benchmark_study_v2_canary_contract() -> dict[str, Any]:
+    fixture = b"This workspace is used only for the discarded v2 Bash-hook canary.\n"
+    return {
+        "schema_version": "contextguard.bench.canary-contract.v2",
+        "task_id": BENCHMARK_STUDY_V2_CANARY_TASK_ID,
+        "prompt_sha256": _study_sha256_bytes(
+            BENCHMARK_STUDY_V2_CANARY_PROMPT.encode("utf-8")
+        ),
+        "fixture_sha256": _study_sha256_bytes(fixture),
+        "checker_sha256": _study_sha256_bytes(BENCHMARK_STUDY_V2_CANARY_CHECKER),
+        "marker_sha256": _study_sha256_bytes(BENCHMARK_STUDY_V2_CANARY_MARKER),
+        "arms": list(BENCHMARK_STUDY_V2_CANARY_ARMS),
+        "required_event_classes": ["PreToolUse"],
+        "provider_calls": 2,
+        "discarded": True,
+        "excluded_from_analysis": True,
+    }
+
+
+def _benchmark_study_v2_canary_task() -> TaskFixture:
+    fixture = b"This workspace is used only for the discarded v2 Bash-hook canary.\n"
+    return TaskFixture(
+        id=BENCHMARK_STUDY_V2_CANARY_TASK_ID,
+        prompt=BENCHMARK_STUDY_V2_CANARY_PROMPT,
+        model="sonnet", max_turns=2, allowed_tools=["Bash"],
+        fixture_tree="inline-canary-fixture",
+        success_checker="inline-canary-checker.py",
+        fixture_tree_entries=(
+            FixtureTreeEntry(path="CANARY.md", data=fixture, executable=False),
+        ),
+        success_checker_bytes=BENCHMARK_STUDY_V2_CANARY_CHECKER,
+    )
+
+
+def _benchmark_study_v2_output_root(path: Path) -> Path:
+    if path.is_symlink():
+        raise ValueError("v2 output root must not be a symlink")
+    try:
+        return path.resolve(strict=False)
+    except OSError as exc:
+        raise ValueError("v2 output root is unavailable") from exc
+
+
+@contextmanager
+def _benchmark_study_v2_action_lock(output_root: Path) -> Iterable[None]:
+    """Serialize every canary/run/resume/analyze mutation for one study root."""
+    root = _benchmark_study_v2_output_root(output_root)
+    try:
+        root_fd = _ensure_directory_no_symlink(root, create=False)
+    except (OSError, SystemExit, ValueError) as exc:
+        raise ValueError(
+            "v2 executable study requires a prepared output root"
+        ) from exc
+    lock_fd = -1
+    locked = False
+    try:
+        if fcntl is None:
+            raise ValueError("v2 lifecycle locking is unavailable")
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        lock_fd = _open_regular_no_symlink(
+            root / ".study-v2-action.lock", flags, 0o600,
+        )
+        os.fchmod(lock_fd, 0o600)
+        os.fsync(root_fd)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            raise ValueError("another v2 lifecycle action is already active") from exc
+        locked = True
+        yield
+    finally:
+        if locked:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        os.close(root_fd)
+
+
+def _benchmark_study_v2_validate_cli_binding(binding: Mapping[str, Any]) -> None:
+    required = {
+        "schema_version", "executable", "executable_bytes",
+        "executable_sha256", "bundle", "probe",
+    }
+    probe = binding.get("probe")
+    bundle = binding.get("bundle")
+    if (
+        set(binding) != required
+        or binding.get("schema_version")
+        != BENCHMARK_STUDY_V2_CLI_BINDING_SCHEMA_VERSION
+        or not isinstance(binding.get("executable"), str)
+        or not Path(str(binding.get("executable"))).is_absolute()
+        or isinstance(binding.get("executable_bytes"), bool)
+        or not isinstance(binding.get("executable_bytes"), int)
+        or not 0 < int(binding["executable_bytes"]) <= BENCHMARK_STUDY_V2_CLI_MAX_BYTES
+        or not isinstance(binding.get("executable_sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(str(binding["executable_sha256"])) is None
+        or not isinstance(probe, Mapping)
+        or probe.get("schema_version") != MEASUREMENT_CLI_PROBE_SCHEMA_VERSION
+        or probe.get("executable") != binding.get("executable")
+        or probe.get("capabilities") != sorted(BENCHMARK_STUDY_V2_CLI_CAPABILITIES)
+        or "version" in probe
+        or not isinstance(bundle, Mapping)
+        or set(bundle) != {
+            "scope", "root", "file_count", "total_bytes", "sha256",
+        }
+        or bundle.get("scope") != "single-native-executable-v1"
+        or not isinstance(bundle.get("root"), str)
+        or not Path(str(bundle["root"])).is_absolute()
+        or isinstance(bundle.get("file_count"), bool)
+        or not isinstance(bundle.get("file_count"), int)
+        or not 0 < bundle["file_count"] <= 100_000
+        or isinstance(bundle.get("total_bytes"), bool)
+        or not isinstance(bundle.get("total_bytes"), int)
+        or not 0 < bundle["total_bytes"] <= 2_147_483_648
+        or not isinstance(bundle.get("sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(bundle["sha256"]) is None
+        or bundle.get("root") != binding.get("executable")
+        or bundle.get("file_count") != 1
+        or bundle.get("total_bytes") != binding.get("executable_bytes")
+        or bundle.get("sha256") != binding.get("executable_sha256")
+    ):
+        raise ValueError("v2 CLI binding schema mismatch")
+
+
+def _benchmark_study_v2_cli_stat_guard(path: Path) -> dict[str, int | str]:
+    fd = _open_regular_no_symlink(path)
+    try:
+        item = os.fstat(fd)
+        if item.st_size <= 0 or item.st_size > BENCHMARK_STUDY_V2_CLI_MAX_BYTES:
+            raise ValueError("v2 CLI executable size is unsupported")
+        return {
+            "executable": str(path.resolve(strict=True)),
+            "device": int(item.st_dev), "inode": int(item.st_ino),
+            "bytes": int(item.st_size),
+            "mtime_ns": int(item.st_mtime_ns), "ctime_ns": int(item.st_ctime_ns),
+        }
+    finally:
+        os.close(fd)
+
+
+def _benchmark_study_v2_cli_file_binding(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, int | str]]:
+    """Hash a large native CLI through a bounded no-follow fd without buffering it."""
+    fd = _open_regular_no_symlink(path)
+    try:
+        before = os.fstat(fd)
+        if before.st_size <= 0 or before.st_size > BENCHMARK_STUDY_V2_CLI_MAX_BYTES:
+            raise ValueError("v2 CLI executable size is unsupported")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > BENCHMARK_STUDY_V2_CLI_MAX_BYTES:
+                raise ValueError("v2 CLI executable size is unsupported")
+            digest.update(chunk)
+        after = os.fstat(fd)
+        stat_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if total != before.st_size or any(
+            getattr(before, field) != getattr(after, field) for field in stat_fields
+        ):
+            raise ValueError("v2 CLI executable changed while hashing")
+        executable = str(path.resolve(strict=True))
+        return (
+            {
+                "executable": executable,
+                "executable_bytes": total,
+                "executable_sha256": digest.hexdigest(),
+            },
+            {
+                "executable": executable,
+                "device": int(after.st_dev), "inode": int(after.st_ino),
+                "bytes": int(after.st_size),
+                "mtime_ns": int(after.st_mtime_ns),
+                "ctime_ns": int(after.st_ctime_ns),
+            },
+        )
+    finally:
+        os.close(fd)
+
+
+def _benchmark_study_v2_read_executable_shebang(path: Path) -> str | None:
+    fd = _open_regular_no_symlink(path)
+    try:
+        raw = os.read(fd, 4096)
+    finally:
+        os.close(fd)
+    first = raw.splitlines()[0] if raw else b""
+    if not first.startswith(b"#!"):
+        return None
+    try:
+        value = first[2:].decode("utf-8", "strict").strip()
+    except UnicodeDecodeError:
+        raise ValueError("v2 CLI shebang is not UTF-8") from None
+    if not value or len(value) > 512:
+        raise ValueError("v2 CLI shebang is invalid")
+    return value
+
+
+def _benchmark_study_v2_cli_bundle_binding(
+    executable: Path, shebang: str | None,
+) -> dict[str, Any]:
+    if shebang is not None:
+        raise ValueError("v2 executable study requires a native executable")
+    file_binding, _guard = _benchmark_study_v2_cli_file_binding(executable)
+    return {
+        "scope": "single-native-executable-v1",
+        "root": str(executable), "file_count": 1,
+        "total_bytes": file_binding["executable_bytes"],
+        "sha256": file_binding["executable_sha256"],
+    }
+
+
+def _benchmark_study_v2_cli_bundle_stat_guard(
+    bundle: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Detect a native executable replacement between action hash and launch."""
+    if bundle.get("scope") != "single-native-executable-v1":
+        raise ValueError("v2 CLI bundle scope is invalid")
+    item = _benchmark_study_v2_cli_stat_guard(Path(str(bundle["root"])))
+    return {
+        "entry_count": 1,
+        "sha256": _study_domain_hash(
+            "contextguard.bench.v2.cli-bundle-stat.v1", item,
+        ),
+    }
+
+
+def _benchmark_study_v2_execution_environment(
+    cli_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Freeze the PATH and interpreters used by the CLI and Python hook."""
+    _benchmark_study_v2_validate_cli_binding(cli_binding)
+    names = ["python3"]
+    bindings: list[dict[str, Any]] = []
+    lookup_directories: list[str] = []
+    for name in dict.fromkeys(names):
+        lookup = shutil.which(name)
+        if lookup is None:
+            raise ValueError(f"v2 required runtime unavailable: {name}")
+        lookup_path = Path(lookup).absolute()
+        resolved = lookup_path.resolve(strict=True)
+        file_binding, _guard = _benchmark_study_v2_cli_file_binding(resolved)
+        lookup_directories.append(str(lookup_path.parent))
+        bindings.append({
+            "name": name, "lookup_path": str(lookup_path),
+            **file_binding,
+        })
+    path_value = os.pathsep.join(dict.fromkeys(
+        lookup_directories + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    ))
+    return {
+        "schema_version": "contextguard.bench.execution-environment.v2",
+        "values": {"PATH": path_value, "LANG": "C", "LC_ALL": "C"},
+        "runtime_bindings": bindings,
+    }
+
+
+def _benchmark_study_v2_validate_execution_environment(
+    binding: Mapping[str, Any],
+) -> None:
+    values = binding.get("values")
+    runtimes = binding.get("runtime_bindings")
+    if (
+        set(binding) != {"schema_version", "values", "runtime_bindings"}
+        or binding.get("schema_version")
+        != "contextguard.bench.execution-environment.v2"
+        or not isinstance(values, Mapping)
+        or set(values) != {"PATH", "LANG", "LC_ALL"}
+        or values.get("LANG") != "C" or values.get("LC_ALL") != "C"
+        or not isinstance(values.get("PATH"), str) or not values["PATH"]
+        or any(
+            not part or not Path(part).is_absolute()
+            for part in str(values["PATH"]).split(os.pathsep)
+        )
+        or not isinstance(runtimes, list) or not runtimes
+    ):
+        raise ValueError("v2 execution environment binding schema mismatch")
+    seen: set[str] = set()
+    for runtime in runtimes:
+        if (
+            not isinstance(runtime, Mapping)
+            or set(runtime) != {
+                "name", "lookup_path", "executable", "executable_bytes",
+                "executable_sha256",
+            }
+            or not isinstance(runtime.get("name"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_.+-]+", str(runtime["name"]))
+            or runtime["name"] in seen
+            or not isinstance(runtime.get("lookup_path"), str)
+            or not Path(str(runtime["lookup_path"])).is_absolute()
+            or not isinstance(runtime.get("executable"), str)
+            or not Path(str(runtime["executable"])).is_absolute()
+            or isinstance(runtime.get("executable_bytes"), bool)
+            or not isinstance(runtime.get("executable_bytes"), int)
+            or not 0 < runtime["executable_bytes"] <= BENCHMARK_STUDY_V2_CLI_MAX_BYTES
+            or not isinstance(runtime.get("executable_sha256"), str)
+            or SHA256_HEX_PATTERN.fullmatch(runtime["executable_sha256"]) is None
+        ):
+            raise ValueError("v2 runtime interpreter binding schema mismatch")
+        seen.add(str(runtime["name"]))
+
+
+def _benchmark_study_v2_assert_execution_environment(
+    binding: Mapping[str, Any],
+) -> dict[str, dict[str, int | str]]:
+    _benchmark_study_v2_validate_execution_environment(binding)
+    path_value = str(binding["values"]["PATH"])
+    guards: dict[str, dict[str, int | str]] = {}
+    for runtime in binding["runtime_bindings"]:
+        found = shutil.which(str(runtime["name"]), path=path_value)
+        if found is None or str(Path(found).absolute()) != runtime["lookup_path"]:
+            raise ValueError("v2 runtime interpreter lookup drift")
+        current, _guard = _benchmark_study_v2_cli_file_binding(
+            Path(str(runtime["executable"]))
+        )
+        expected = {
+            key: runtime[key]
+            for key in ("executable", "executable_bytes", "executable_sha256")
+        }
+        if current != expected or Path(found).resolve(strict=True) != Path(
+            str(runtime["executable"])
+        ):
+            raise ValueError("v2 runtime interpreter binding drift")
+        guards[str(runtime["name"])] = _benchmark_study_v2_cli_stat_guard(
+            Path(str(runtime["executable"]))
+        )
+    return guards
+
+
+def _benchmark_study_v2_assert_runtime_stat_guards(
+    binding: Mapping[str, Any],
+    guards: Mapping[str, Mapping[str, int | str]],
+) -> None:
+    _benchmark_study_v2_validate_execution_environment(binding)
+    runtimes = binding["runtime_bindings"]
+    if set(guards) != {str(runtime["name"]) for runtime in runtimes}:
+        raise ValueError("v2 runtime interpreter guard mismatch")
+    for runtime in runtimes:
+        name = str(runtime["name"])
+        guard = guards[name]
+        found = shutil.which(
+            name, path=str(binding["values"]["PATH"]),
+        )
+        if (
+            found is None
+            or str(Path(found).absolute()) != runtime["lookup_path"]
+            or Path(found).resolve(strict=True) != Path(str(runtime["executable"]))
+            or guard.get("executable") != runtime["executable"]
+            or guard.get("bytes") != runtime["executable_bytes"]
+            or _benchmark_study_v2_cli_stat_guard(
+                Path(str(runtime["executable"]))
+            ) != dict(guard)
+        ):
+            raise ValueError("v2 runtime interpreter changed before launch")
+
+
+def _benchmark_study_v2_cli_binding(claude_bin: str) -> dict[str, Any]:
+    """Bind the exact executable bytes and isolated version/help capability probes."""
+    executable = Path(executable_argv0(claude_bin))
+    file_binding, stat_guard = _benchmark_study_v2_cli_file_binding(executable)
+    shebang = _benchmark_study_v2_read_executable_shebang(executable)
+    if shebang is not None:
+        raise ValueError(
+            "v2 executable study requires a native executable; script launcher "
+            "dependency closure cannot be proven"
+        )
+    bundle = _benchmark_study_v2_cli_bundle_binding(executable, shebang)
+    probe = run_measurement_cli_probes(
+        str(executable), BENCHMARK_STUDY_V2_CLI_CAPABILITIES,
+    )
+    # Bind exact version bytes by hash/length without persisting arbitrary CLI
+    # display text that could contain a secret-shaped value.
+    probe.pop("version", None)
+    if _benchmark_study_v2_cli_stat_guard(executable) != stat_guard:
+        raise ValueError("v2 CLI executable changed during capability probes")
+    binding = {
+        "schema_version": BENCHMARK_STUDY_V2_CLI_BINDING_SCHEMA_VERSION,
+        **file_binding,
+        "bundle": bundle,
+        "probe": probe,
+    }
+    _benchmark_study_v2_validate_cli_binding(binding)
+    return binding
+
+
+def _benchmark_study_v2_assert_cli_binding(
+    claude_bin: str, expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Refuse a changed or incompatible CLI before reserving any identity."""
+    _benchmark_study_v2_validate_cli_binding(expected)
+    try:
+        actual = _benchmark_study_v2_cli_binding(claude_bin)
+    except (OSError, SystemExit, TypeError, ValueError) as exc:
+        raise ValueError("v2 CLI binding drift") from exc
+    if actual != dict(expected):
+        raise ValueError("v2 CLI binding drift")
+    guard: dict[str, Any] = _benchmark_study_v2_cli_stat_guard(
+        Path(str(actual["executable"]))
+    )
+    guard["bundle_stat_guard"] = _benchmark_study_v2_cli_bundle_stat_guard(
+        actual["bundle"]
+    )
+    return guard
+
+
+def _benchmark_study_v2_assert_cli_executable_bytes(
+    expected: Mapping[str, Any], stat_guard: Mapping[str, Any],
+) -> None:
+    """Repeat a cheap post-hash file-identity check before provider reservation."""
+    _benchmark_study_v2_validate_cli_binding(expected)
+    if (
+        stat_guard.get("executable") != expected["executable"]
+        or stat_guard.get("bytes") != expected["executable_bytes"]
+        or _benchmark_study_v2_cli_stat_guard(
+            Path(str(expected["executable"]))
+        ) != {
+            key: stat_guard[key]
+            for key in ("executable", "device", "inode", "bytes", "mtime_ns", "ctime_ns")
+        }
+        or stat_guard.get("bundle_stat_guard")
+        != _benchmark_study_v2_cli_bundle_stat_guard(expected["bundle"])
+    ):
+        raise ValueError("v2 CLI executable bytes drift")
+
+
+def _benchmark_study_v2_python_binding() -> dict[str, Any]:
+    invoked_python = Path(sys.executable).absolute()
+    resolved_python = invoked_python.resolve(strict=True)
+    python_file, _guard = _benchmark_study_v2_cli_file_binding(resolved_python)
+    return {
+        "invoked_path": str(invoked_python),
+        **python_file,
+        "implementation": sys.implementation.name,
+        "cache_tag": sys.implementation.cache_tag,
+        "version_info": [
+            sys.version_info.major, sys.version_info.minor,
+            sys.version_info.micro, sys.version_info.releaselevel,
+            sys.version_info.serial,
+        ],
+        "version_sha256": _study_sha256_bytes(sys.version.encode("utf-8")),
+        "flags_sha256": _study_domain_hash(
+            "contextguard.bench.v2.python-flags.v1", list(sys.flags),
+        ),
+        "prefix": sys.prefix,
+        "base_prefix": sys.base_prefix,
+    }
+
+
+def _benchmark_study_v2_runner_binding() -> dict[str, Any]:
+    path = Path(__file__).resolve(strict=True)
+    raw = _read_bytes_no_follow(path, max_bytes=4_000_000)
+    return {
+        "path": str(path), "bytes": len(raw),
+        "sha256": _study_sha256_bytes(raw),
+        "python": _benchmark_study_v2_python_binding(),
+    }
+
+
+def _benchmark_study_v2_assert_python_binding(
+    binding: Mapping[str, Any], *, require_current: bool,
+) -> str:
+    required = {
+        "invoked_path", "executable", "executable_bytes", "executable_sha256",
+        "implementation", "cache_tag", "version_info", "version_sha256",
+        "flags_sha256", "prefix", "base_prefix",
+    }
+    if (
+        set(binding) != required
+        or not isinstance(binding.get("invoked_path"), str)
+        or not Path(str(binding["invoked_path"])).is_absolute()
+        or not isinstance(binding.get("executable"), str)
+        or not Path(str(binding["executable"])).is_absolute()
+        or isinstance(binding.get("executable_bytes"), bool)
+        or not isinstance(binding.get("executable_bytes"), int)
+        or not 0 < int(binding["executable_bytes"]) <= BENCHMARK_STUDY_V2_CLI_MAX_BYTES
+        or not isinstance(binding.get("executable_sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(str(binding["executable_sha256"])) is None
+        or not isinstance(binding.get("implementation"), str)
+        or not binding["implementation"]
+        or not isinstance(binding.get("cache_tag"), (str, type(None)))
+        or not isinstance(binding.get("version_info"), list)
+        or len(binding["version_info"]) != 5
+        or any(
+            isinstance(value, bool) or not isinstance(value, (int, str))
+            for value in binding["version_info"]
+        )
+        or not isinstance(binding.get("version_sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(str(binding["version_sha256"])) is None
+        or not isinstance(binding.get("flags_sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(str(binding["flags_sha256"])) is None
+        or not isinstance(binding.get("prefix"), str)
+        or not isinstance(binding.get("base_prefix"), str)
+    ):
+        raise ValueError("v2 runner Python binding schema mismatch")
+    executable = Path(str(binding["executable"]))
+    current_file, _guard = _benchmark_study_v2_cli_file_binding(executable)
+    expected_file = {
+        key: binding[key]
+        for key in ("executable", "executable_bytes", "executable_sha256")
+    }
+    if current_file != expected_file:
+        raise ValueError("v2 runner Python binding drift")
+    if require_current:
+        invoked = Path(sys.executable).absolute()
+        try:
+            resolved = invoked.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("v2 runner Python binding drift") from exc
+        if (
+            str(invoked) != binding["invoked_path"]
+            or str(resolved) != binding["executable"]
+            or sys.implementation.name != binding["implementation"]
+            or sys.implementation.cache_tag != binding["cache_tag"]
+            or [
+                sys.version_info.major, sys.version_info.minor,
+                sys.version_info.micro, sys.version_info.releaselevel,
+                sys.version_info.serial,
+            ] != binding["version_info"]
+            or _study_sha256_bytes(sys.version.encode("utf-8"))
+            != binding["version_sha256"]
+            or _study_domain_hash(
+                "contextguard.bench.v2.python-flags.v1", list(sys.flags),
+            ) != binding["flags_sha256"]
+            or sys.prefix != binding["prefix"]
+            or sys.base_prefix != binding["base_prefix"]
+        ):
+            raise ValueError("v2 runner Python binding drift")
+    return str(executable)
+
+
+def _benchmark_study_v2_read_canonical(path: Path, *, owner: str, maximum: int) -> tuple[dict[str, Any], bytes]:
+    raw = _read_bytes_no_follow(path, max_bytes=maximum)
+    try:
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_measurement_object_no_duplicates,
+            parse_constant=_stream_reject_nonfinite,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"{owner} is invalid JSON") from exc
+    if not isinstance(value, dict) or raw != _study_canonical_json_bytes(value):
+        raise ValueError(f"{owner} must be exact canonical JSON bytes")
+    return value, raw
+
+
+def verify_benchmark_study_v2_candidate(
+    manifest_path: Path, *, checksum_path: Path | None = None,
+    expected_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Verify the build-once candidate as inert bytes; never import its code."""
+    manifest, manifest_raw = _benchmark_study_v2_read_canonical(
+        manifest_path, owner="v2 candidate manifest", maximum=1_000_000,
+    )
+    required = {
+        "build_policy", "commit_sha", "exact_dependency", "packages",
+        "policy_sha256", "receipt_package_files_sha256", "protocol",
+        "repository", "schema_version", "tool_versions",
+    }
+    if set(manifest) != required or manifest.get("schema_version") != BENCHMARK_STUDY_V2_CANDIDATE_SCHEMA_VERSION:
+        raise ValueError("v2 candidate manifest schema mismatch")
+    if manifest.get("build_policy") != {
+        "ignore_scripts": True, "lockfiles": [], "network": "offline",
+        "package_build_count": 1,
+    }:
+        raise ValueError("v2 candidate build policy mismatch")
+    if manifest.get("protocol") != {
+        "maximum": 1, "minimum": 1, "name": "bash_reference_v1",
+    }:
+        raise ValueError("v2 candidate protocol mismatch")
+    if (
+        manifest.get("repository") != "ictechgy/context-guard"
+        or not isinstance(manifest.get("commit_sha"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", manifest["commit_sha"]) is None
+        or not isinstance(manifest.get("tool_versions"), dict)
+        or not manifest["tool_versions"]
+        or any(
+            not isinstance(key, str) or not key or len(key) > 64
+            or not isinstance(value, str) or not value or len(value) > 128
+            for key, value in manifest["tool_versions"].items()
+        )
+        or any(
+            not isinstance(manifest.get(key), str)
+            or SHA256_HEX_PATTERN.fullmatch(manifest[key]) is None
+            for key in ("policy_sha256", "receipt_package_files_sha256")
+        )
+    ):
+        raise ValueError("v2 candidate build provenance is invalid")
+    manifest_sha256 = _study_sha256_bytes(manifest_raw)
+    if expected_manifest_sha256 is not None and manifest_sha256 != expected_manifest_sha256:
+        raise ValueError("v2 candidate canonical manifest hash drift")
+    packages = manifest.get("packages")
+    if not isinstance(packages, list) or len(packages) != 2:
+        raise ValueError("v2 candidate must bind exactly two tarballs")
+    records: list[dict[str, Any]] = []
+    checksum_rows: list[str] = []
+    for index, package in enumerate(packages):
+        if not isinstance(package, dict) or set(package) != {
+            "filename", "integrity", "name", "sha256", "size_bytes", "version",
+        }:
+            raise ValueError("v2 candidate tarball record schema mismatch")
+        filename = package.get("filename")
+        digest = package.get("sha256")
+        size = package.get("size_bytes")
+        if (
+            package.get("name") != BENCHMARK_STUDY_V2_CANDIDATE_NAMES[index]
+            or not isinstance(filename, str) or Path(filename).name != filename
+            or not isinstance(digest, str) or SHA256_HEX_PATTERN.fullmatch(digest) is None
+            or isinstance(size, bool) or not isinstance(size, int) or size <= 0
+            or not isinstance(package.get("version"), str) or not package["version"]
+        ):
+            raise ValueError("v2 candidate tarball identity is invalid")
+        tarball_path = manifest_path.parent / filename
+        raw = _read_bytes_no_follow(tarball_path, max_bytes=100_000_000)
+        sri = "sha512-" + base64.b64encode(hashlib.sha512(raw).digest()).decode("ascii")
+        if len(raw) != size or _study_sha256_bytes(raw) != digest or package.get("integrity") != sri:
+            raise ValueError("v2 candidate tarball size, SHA-256, or SRI mismatch")
+        checksum_rows.append(f"{digest}  {filename}\n")
+        records.append({**package, "path": str(tarball_path.resolve())})
+    if len({record["filename"] for record in records}) != 2 or manifest.get("exact_dependency") != {
+        "name": BENCHMARK_STUDY_V2_CANDIDATE_NAMES[0],
+        "version": records[0]["version"],
+    }:
+        raise ValueError("v2 candidate exact dependency binding mismatch")
+    checksum = checksum_path or manifest_path.with_name("candidate-sha256sums.txt")
+    checksum_raw = _read_bytes_no_follow(checksum, max_bytes=10_000)
+    expected_checksum = "".join(checksum_rows).encode("ascii")
+    if checksum_raw != expected_checksum:
+        raise ValueError("v2 candidate checksum document mismatch")
+    return {
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": manifest_sha256,
+        "manifest_bytes": len(manifest_raw),
+        "checksum_path": str(checksum.resolve()),
+        "checksum_sha256": _study_sha256_bytes(checksum_raw),
+        "packages": records,
+    }
+
+
+def _benchmark_study_v2_tarball_inventory(path: Path) -> dict[str, Any]:
+    """Inventory regular npm package members without extracting candidate code."""
+    files: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    try:
+        with tarfile.open(path, mode="r:gz") as archive:
+            for index, member in enumerate(archive):
+                if index >= 10_000:
+                    raise ValueError("v2 candidate tarball has too many members")
+                raw_parts = member.name.split("/")
+                if (
+                    not raw_parts
+                    or raw_parts[0] != "package"
+                    or any(part in {"", ".", ".."} for part in raw_parts)
+                    or any(
+                        ord(character) < 0x20 or ord(character) == 0x7F
+                        for character in member.name
+                    )
+                ):
+                    raise ValueError("v2 candidate tarball member path is invalid")
+                if len(raw_parts) == 1:
+                    if not member.isdir():
+                        raise ValueError("v2 candidate tarball package root is invalid")
+                    continue
+                relative = PurePosixPath(*raw_parts[1:]).as_posix()
+                if relative in seen:
+                    raise ValueError("v2 candidate tarball has duplicate members")
+                if member.isdir():
+                    continue
+                if not member.isreg() or member.size < 0 or member.size > 100_000_000:
+                    raise ValueError("v2 candidate tarball member type is unsupported")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError("v2 candidate tarball member is unreadable")
+                raw = stream.read(member.size + 1)
+                if len(raw) != member.size:
+                    raise ValueError("v2 candidate tarball member size drift")
+                total_bytes += len(raw)
+                if total_bytes > 100_000_000:
+                    raise ValueError("v2 candidate tarball expanded size exceeds limit")
+                seen.add(relative)
+                files.append({
+                    "path": relative,
+                    "bytes": len(raw),
+                    "sha256": _study_sha256_bytes(raw),
+                    "executable": bool(member.mode & 0o111),
+                    "kind": "file",
+                    "target": None,
+                })
+    except (OSError, tarfile.TarError) as exc:
+        raise ValueError("v2 candidate tarball is not a readable npm archive") from exc
+    files.sort(key=lambda item: item["path"])
+    if not files:
+        raise ValueError("v2 candidate tarball package is empty")
+    return {
+        "files": files,
+        "file_count": len(files),
+        "sha256": _study_domain_hash("contextguard.bench.v2.inventory.v1", files),
+    }
+
+
+def _benchmark_study_v2_verify_installed_packages(
+    overlay_root: Path, candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the executed package bytes to the two already-verified tarballs."""
+    bindings: list[dict[str, Any]] = []
+    installed_documents: dict[str, dict[str, Any]] = {}
+    allowed_overlay_paths: set[str] = set()
+    for record in candidate["packages"]:
+        name = record["name"]
+        package_root = overlay_root.joinpath(*str(name).split("/"))
+        expected = _benchmark_study_v2_tarball_inventory(Path(record["path"]))
+        actual = _benchmark_study_v2_inventory(package_root)
+        if actual != expected:
+            raise ValueError("v2 installed package bytes differ from candidate tarball")
+        package_raw = _read_bytes_no_follow(
+            package_root / "package.json", max_bytes=128 * 1024,
+        )
+        try:
+            document = json.loads(
+                package_raw.decode("utf-8"),
+                object_pairs_hook=_measurement_object_no_duplicates,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("v2 installed package metadata is invalid") from exc
+        if (
+            not isinstance(document, dict)
+            or document.get("name") != name
+            or document.get("version") != record["version"]
+        ):
+            raise ValueError("v2 installed package identity differs from candidate")
+        installed_documents[str(name)] = document
+        allowed_overlay_paths.update(
+            f"{name}/{item['path']}" for item in expected["files"]
+        )
+        bindings.append({
+            "name": name,
+            "version": record["version"],
+            "inventory_sha256": actual["sha256"],
+        })
+    root_document = installed_documents[BENCHMARK_STUDY_V2_CANDIDATE_NAMES[1]]
+    receipt_record = candidate["packages"][0]
+    if root_document.get("dependencies") != {
+        BENCHMARK_STUDY_V2_CANDIDATE_NAMES[0]: receipt_record["version"],
+    }:
+        raise ValueError("v2 installed root exact dependency binding mismatch")
+    required_bins = ("context-guard", "context-guard-rewrite-bash")
+    root_bin_map = root_document.get("bin")
+    if not isinstance(root_bin_map, dict) or any(
+        not isinstance(root_bin_map.get(name), str) for name in required_bins
+    ):
+        raise ValueError("v2 installed root package lacks required public bins")
+    bin_bindings: list[dict[str, str]] = []
+    seen_bin_names: set[str] = set()
+    for package_name in sorted(installed_documents):
+        bin_map = installed_documents[package_name].get("bin", {})
+        if not isinstance(bin_map, dict):
+            raise ValueError("v2 installed package bin metadata is invalid")
+        package_root = overlay_root.joinpath(*package_name.split("/"))
+        for bin_name, relative_target in sorted(bin_map.items()):
+            if (
+                not isinstance(bin_name, str)
+                or not bin_name
+                or "/" in bin_name
+                or bin_name in {".", ".."}
+                or bin_name in seen_bin_names
+                or not isinstance(relative_target, str)
+            ):
+                raise ValueError("v2 installed package bin metadata is invalid")
+            target_parts = relative_target.split("/")
+            target_path = PurePosixPath(relative_target)
+            if (
+                target_path.is_absolute()
+                or not target_parts
+                or any(part in {"", ".", ".."} for part in target_parts)
+            ):
+                raise ValueError("v2 installed package bin target is unsafe")
+            package_relative_target = (
+                PurePosixPath(package_name) / target_path
+            ).as_posix()
+            if package_relative_target not in allowed_overlay_paths:
+                raise ValueError("v2 installed package bin target is not in its tarball")
+            link_relative = f".bin/{bin_name}"
+            link = overlay_root / ".bin" / bin_name
+            expected_raw_target = (
+                PurePosixPath("..") / package_name / target_path
+            ).as_posix()
+            try:
+                raw_target = os.readlink(link)
+                resolved = link.resolve(strict=True)
+                expected_target = (package_root / Path(*target_parts)).resolve(
+                    strict=True
+                )
+            except OSError as exc:
+                raise ValueError("v2 installed public bin link is unavailable") from exc
+            if raw_target != expected_raw_target or resolved != expected_target:
+                raise ValueError(
+                    "v2 installed public bin link differs from package metadata"
+                )
+            seen_bin_names.add(bin_name)
+            allowed_overlay_paths.add(link_relative)
+            bin_bindings.append({
+                "name": bin_name,
+                "package": package_name,
+                "target": expected_raw_target,
+            })
+    actual_overlay = _benchmark_study_v2_inventory(overlay_root)
+    actual_overlay_paths = {item["path"] for item in actual_overlay["files"]}
+    if actual_overlay_paths - allowed_overlay_paths:
+        raise ValueError("v2 candidate install contains an unverified overlay path")
+    if actual_overlay_paths != allowed_overlay_paths:
+        raise ValueError("v2 candidate install is missing a verified overlay path")
+    return {
+        "packages": bindings,
+        "bins": bin_bindings,
+        "sha256": _study_domain_hash(
+            "contextguard.bench.v2.installed-packages.v2",
+            {"packages": bindings, "bins": bin_bindings},
+        ),
+    }
+
+
+def _benchmark_study_v2_inventory(root: Path, *, reject_symlinks: bool = False) -> dict[str, Any]:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("v2 inventory root must be a real directory")
+    files: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        rel = path.relative_to(root).as_posix()
+        mode = os.lstat(path).st_mode
+        if stat.S_ISLNK(mode):
+            if reject_symlinks:
+                raise ValueError("v2 physical overlay must not contain symlinks")
+            raw_target = os.readlink(path)
+            if Path(raw_target).is_absolute():
+                raise ValueError("v2 candidate overlay symlink must be relative")
+            target = path.resolve(strict=True)
+            try:
+                target.relative_to(root.resolve(strict=True))
+            except ValueError:
+                raise ValueError("v2 candidate overlay symlink escapes the install root") from None
+            if not target.is_file():
+                raise ValueError("v2 candidate overlay symlink must resolve to an internal file")
+            raw = _read_bytes_no_follow(target, max_bytes=100_000_000)
+            executable = bool(target.stat().st_mode & 0o111)
+            kind = "symlink"
+        elif stat.S_ISREG(mode):
+            raw = _read_bytes_no_follow(path, max_bytes=100_000_000)
+            executable = bool(mode & 0o111)
+            raw_target = None
+            kind = "file"
+        elif stat.S_ISDIR(mode):
+            continue
+        else:
+            raise ValueError("v2 inventory contains an unsupported filesystem entry")
+        files.append({
+            "path": rel, "bytes": len(raw), "sha256": _study_sha256_bytes(raw),
+            "executable": executable, "kind": kind, "target": raw_target,
+        })
+    if not files:
+        raise ValueError("v2 candidate overlay is empty")
+    return {
+        "files": files,
+        "file_count": len(files),
+        "sha256": _study_domain_hash("contextguard.bench.v2.inventory.v1", files),
+    }
+
+
+def _benchmark_study_v2_verify_physical_copy(
+    source: Path, destination: Path, *, expected: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_inventory = _benchmark_study_v2_inventory(source)
+    if expected is not None and source_inventory != dict(expected):
+        raise ValueError("v2 staged candidate changed before the attempt copy")
+    destination_inventory = _benchmark_study_v2_inventory(destination)
+    if destination_inventory != source_inventory:
+        raise ValueError("v2 candidate overlay copy differs from installed candidate")
+    for item in source_inventory["files"]:
+        if item["kind"] != "file":
+            continue
+        source_path = source / item["path"]
+        destination_path = destination / item["path"]
+        if source_path.stat().st_dev == destination_path.stat().st_dev and source_path.stat().st_ino == destination_path.stat().st_ino:
+            raise ValueError("v2 candidate overlay contains a hardlink to the staged install")
+    return destination_inventory
+
+
+def _benchmark_study_v2_expected_pre_workspace(
+    task: TaskFixture, *, install_root: Path,
+    expected_overlay_inventory: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Re-materialize the bound cold workspace without invoking candidate code."""
+    with tempfile.TemporaryDirectory(prefix="contextguard-v2-pre-workspace-") as temp:
+        workspace = Path(temp).resolve()
+        os.chmod(workspace, 0o700)
+        reset_task_fixture_tree(task.fixture_tree_entries or (), workspace)
+        overlay = workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME
+        shutil.copytree(
+            install_root, overlay, symlinks=True, copy_function=shutil.copy2,
+        )
+        _benchmark_study_v2_verify_physical_copy(
+            install_root, overlay, expected=expected_overlay_inventory,
+        )
+        return _benchmark_study_v2_inventory(workspace)
+
+
+def _benchmark_study_v2_settings() -> dict[str, dict[str, Any]]:
+    common: dict[str, Any] = {
+        "model": "sonnet",
+        "permissions": {"allow": ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]},
+    }
+    result = {"host_unmodified": json.loads(json.dumps(common))}
+    for arm, suffix in (("legacy_trim", ""), ("bash_reference_v1", " --bash-reference-v1")):
+        settings = json.loads(json.dumps(common))
+        settings["hooks"] = {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": BENCHMARK_STUDY_V2_REWRITE_COMMAND + suffix,
+                }],
+            }],
+        }
+        result[arm] = settings
+    return result
+
+
+def _benchmark_study_v2_write_settings(output_root: Path) -> dict[str, Any]:
+    settings_root = output_root / "inputs" / "settings-v2"
+    settings_root.mkdir(mode=0o700, parents=True)
+    bindings: dict[str, Any] = {}
+    for arm, value in _benchmark_study_v2_settings().items():
+        path = settings_root / f"{arm}.settings.json"
+        raw = _study_canonical_json_bytes(value)
+        _measurement_write_exclusive(path, raw)
+        bindings[arm] = {
+            "path": str(path.resolve()), "sha256": _study_sha256_bytes(raw),
+            "bytes": len(raw),
+            "bash_hook": arm != "host_unmodified",
+            "bash_reference_v1": arm == "bash_reference_v1",
+        }
+    return bindings
+
+
+def _benchmark_study_v2_install_candidate(
+    *, npm_bin: str, candidate: Mapping[str, Any], output_root: Path,
+) -> tuple[Path, dict[str, Any]]:
+    install_root = output_root / "candidate-install"
+    install_root.mkdir(mode=0o700)
+    isolated = output_root / "npm-isolation"
+    isolated.mkdir(mode=0o700)
+    for name in ("home", "cache", "tmp"):
+        (isolated / name).mkdir(mode=0o700)
+    root_package = next(
+        record for record in candidate["packages"]
+        if record["name"] == "@ictechgy/context-guard"
+    )
+    receipt_package = next(
+        record for record in candidate["packages"]
+        if record["name"] == "@ictechgy/context-guard-receipt"
+    )
+    npm_executable = executable_argv0(npm_bin)
+    runtime_directories = [str(Path(npm_executable).parent)]
+    node_executable = shutil.which("node")
+    if node_executable is not None:
+        runtime_directories.append(str(Path(node_executable).resolve().parent))
+    runtime_directories.extend(os.defpath.split(os.pathsep))
+    runtime_path = os.pathsep.join(dict.fromkeys(runtime_directories))
+    argv = [
+        npm_executable, "install", "--offline", "--ignore-scripts",
+        "--no-audit", "--fund=false", "--package-lock=false",
+        "--prefix", str(install_root.resolve()),
+        str(root_package["path"]), str(receipt_package["path"]),
+    ]
+    env = {
+        "PATH": runtime_path, "HOME": str((isolated / "home").resolve()),
+        "TMPDIR": str((isolated / "tmp").resolve()),
+        "NPM_CONFIG_CACHE": str((isolated / "cache").resolve()),
+        "NPM_CONFIG_OFFLINE": "true", "NPM_CONFIG_IGNORE_SCRIPTS": "true",
+        "NPM_CONFIG_AUDIT": "false", "NPM_CONFIG_FUND": "false",
+        "NPM_CONFIG_PACKAGE_LOCK": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NPM_CONFIG_REGISTRY": "https://registry.invalid/",
+    }
+    result = run_bounded_command(
+        argv, cwd=output_root, timeout_seconds=180,
+        max_output_bytes=MEASUREMENT_CLI_PROBE_OUTPUT_MAX_BYTES, env=env,
+    )
+    if result.returncode != 0 or result.timed_out or result.output_truncated:
+        raise ValueError("v2 candidate offline npm install failed")
+    overlay_root = install_root / "node_modules"
+    hidden_lock = overlay_root / ".package-lock.json"
+    hidden_lock_removed = False
+    try:
+        hidden_lock_mode = os.lstat(hidden_lock).st_mode
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(hidden_lock_mode):
+            raise ValueError("v2 npm hidden lockfile has an unsupported type")
+        hidden_lock.unlink()
+        hidden_lock_removed = True
+    inventory = _benchmark_study_v2_inventory(overlay_root)
+    installed_packages = _benchmark_study_v2_verify_installed_packages(
+        overlay_root, candidate,
+    )
+    receipt = {
+        "schema_version": "contextguard.bench.candidate-install.v2",
+        "install_count": 1,
+        "network": "offline",
+        "ignore_scripts": True,
+        "no_audit": True,
+        "fund": False,
+        "hidden_lockfile_removed": hidden_lock_removed,
+        "candidate_manifest_sha256": candidate["manifest_sha256"],
+        "argv_policy": [
+            "install", "--offline", "--ignore-scripts", "--no-audit",
+            "--fund=false", "--package-lock=false",
+        ],
+        "inventory": inventory,
+        "installed_packages": installed_packages,
+    }
+    _study_write_private(output_root / "candidate-install-receipt.json", receipt)
+    return overlay_root, receipt
+
+
+def prepare_benchmark_study_v2_executable(
+    *, output_root: Path, plan_path: Path, tasks_path: Path, checkers_dir: Path,
+    candidate_manifest_path: Path, candidate_checksum_path: Path | None,
+    expected_candidate_hash: str, npm_bin: str, claude_bin: str,
+) -> dict[str, Any]:
+    output_root = _benchmark_study_v2_output_root(output_root)
+    if output_root.exists() and (
+        output_root.is_symlink() or not output_root.is_dir() or any(output_root.iterdir())
+    ):
+        raise ValueError("v2 prepare output root must be new or empty")
+    # Candidate validation is deliberately first and performs no candidate import.
+    candidate = verify_benchmark_study_v2_candidate(
+        candidate_manifest_path, checksum_path=candidate_checksum_path,
+        expected_manifest_sha256=expected_candidate_hash,
+    )
+    plan = load_benchmark_study_v2_plan(plan_path)
+    corpus_bytes = _read_bytes_no_follow(tasks_path, max_bytes=MAX_FIXTURE_FILE_BYTES)
+    checker_binding = benchmark_study_v2_checker_binding(checkers_dir)
+    validate_benchmark_study_v2_bindings(
+        plan, corpus_bytes=corpus_bytes, checker_binding=checker_binding,
+    )
+    tasks = parse_tasks(tasks_path)
+    load_task_fixture_trees(tasks, task_file_dir=tasks_path.parent)
+    task_definitions = [
+        _study_task_manifest(task, tasks_path.parent) for task in tasks
+    ]
+    task_ids = _benchmark_study_v2_task_ids_from_corpus(corpus_bytes)
+    if [task.id for task in tasks] != task_ids:
+        raise ValueError("v2 parsed task order differs from the bound corpus")
+    cli_binding = _benchmark_study_v2_cli_binding(claude_bin)
+    execution_environment = _benchmark_study_v2_execution_environment(cli_binding)
+    _benchmark_study_v2_assert_execution_environment(execution_environment)
+    runner_binding = _benchmark_study_v2_runner_binding()
+    schedule = generate_benchmark_study_v2_schedule(
+        task_ids, repetitions=3, schedule_seed=plan["schedule_seed"],
+    )
+    slots = generate_benchmark_study_v2_slots(
+        task_ids, schedule, candidate_hash=candidate["manifest_sha256"],
+        namespace=BENCHMARK_STUDY_V2_NAMESPACE,
+    )
+    output_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(output_root, 0o700)
+    settings = _benchmark_study_v2_write_settings(output_root)
+    install_root, install_receipt = _benchmark_study_v2_install_candidate(
+        npm_bin=npm_bin, candidate=candidate, output_root=output_root,
+    )
+    manifest = {
+        "schema_version": BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION,
+        "plan": plan,
+        "plan_sha256": _study_sha256_bytes(_study_canonical_json_bytes(plan)),
+        "inputs": {
+            "plan_path": str(plan_path.resolve()),
+            "tasks_path": str(tasks_path.resolve()),
+            "tasks_sha256": _study_sha256_bytes(corpus_bytes),
+            "task_definitions": task_definitions,
+            "checkers_dir": str(checkers_dir.resolve()),
+            "checker_binding": checker_binding,
+            "cli_binding": cli_binding,
+            "execution_environment": execution_environment,
+            "runner_binding": runner_binding,
+            "canary_contract": _benchmark_study_v2_canary_contract(),
+            "candidate": candidate,
+            "candidate_install_root": str(install_root.resolve()),
+            "candidate_install_receipt_sha256": _study_sha256_bytes(
+                _study_canonical_json_bytes(install_receipt)
+            ),
+            "candidate_overlay_inventory": install_receipt["inventory"],
+            "settings": settings,
+            "namespace": BENCHMARK_STUDY_V2_NAMESPACE,
+            "task_ids": task_ids,
+            "task_ids_sha256": _benchmark_study_v2_task_ids_sha256(task_ids),
+        },
+        "schedule": schedule,
+        "slots": slots,
+        "execution": {
+            "identities": 216, "initial_calls": 108,
+            "retry": "exactly_after_valid_initial_failure_v1",
+            "resume": "never_replay_launched_identity_v1",
+            "candidate_imported": False, "candidate_install_count": 1,
+            "overlay_copy": "physical_copy_no_hardlinks_v1",
+        },
+    }
+    _study_write_private(output_root / "study-manifest.json", manifest)
+    return manifest
+
+
+def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate_external: bool) -> tuple[dict[str, Any], str]:
+    output_root = _benchmark_study_v2_output_root(output_root)
+    manifest_path = output_root / "study-manifest.json"
+    if not manifest_path.exists():
+        raise ValueError("v2 executable study requires a prepared output root")
+    manifest, raw = _benchmark_study_v2_read_canonical(
+        manifest_path, owner="v2 executable manifest", maximum=2_000_000,
+    )
+    if set(manifest) != {"schema_version", "plan", "plan_sha256", "inputs", "schedule", "slots", "execution"} or manifest.get("schema_version") != BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("v2 executable manifest schema mismatch")
+    validate_benchmark_study_v2_plan(manifest["plan"])
+    if manifest["plan_sha256"] != _study_sha256_bytes(_study_canonical_json_bytes(manifest["plan"])):
+        raise ValueError("v2 executable plan binding mismatch")
+    inputs = manifest["inputs"]
+    required_inputs = {
+        "plan_path", "tasks_path", "tasks_sha256", "task_definitions",
+        "checkers_dir", "checker_binding", "cli_binding", "execution_environment",
+        "runner_binding", "canary_contract", "candidate",
+        "candidate_install_root", "candidate_install_receipt_sha256",
+        "candidate_overlay_inventory", "settings", "namespace", "task_ids",
+        "task_ids_sha256",
+    }
+    if set(inputs) != required_inputs:
+        raise ValueError("v2 executable input schema mismatch")
+    _benchmark_study_v2_validate_cli_binding(inputs["cli_binding"])
+    _benchmark_study_v2_validate_execution_environment(
+        inputs["execution_environment"]
+    )
+    if inputs["runner_binding"] != _benchmark_study_v2_runner_binding():
+        raise ValueError("v2 benchmark runner binding drift")
+    if inputs["canary_contract"] != _benchmark_study_v2_canary_contract():
+        raise ValueError("v2 canary contract binding mismatch")
+    if (
+        not isinstance(inputs["task_definitions"], list)
+        or len(inputs["task_definitions"]) != 12
+    ):
+        raise ValueError("v2 executable task definition binding mismatch")
+    task_ids = _benchmark_study_v2_task_ids(inputs["task_ids"])
+    task_definition_ids = [
+        item.get("id") if isinstance(item, Mapping) else None
+        for item in inputs["task_definitions"]
+    ]
+    if (
+        inputs.get("namespace") != BENCHMARK_STUDY_V2_NAMESPACE
+        or inputs.get("tasks_sha256") != manifest["plan"]["corpus_sha256"]
+        or not isinstance(inputs.get("checker_binding"), Mapping)
+        or inputs["checker_binding"].get("sha256")
+        != manifest["plan"]["checker_sha256"]
+        or inputs.get("task_ids_sha256") != manifest["plan"]["task_ids_sha256"]
+        or inputs.get("task_ids_sha256")
+        != _benchmark_study_v2_task_ids_sha256(task_ids)
+        or task_definition_ids != task_ids
+    ):
+        raise ValueError("v2 executable task order or namespace binding mismatch")
+    if manifest["execution"] != {
+        "identities": 216, "initial_calls": 108,
+        "retry": "exactly_after_valid_initial_failure_v1",
+        "resume": "never_replay_launched_identity_v1",
+        "candidate_imported": False, "candidate_install_count": 1,
+        "overlay_copy": "physical_copy_no_hardlinks_v1",
+    }:
+        raise ValueError("v2 executable lifecycle contract drift")
+    settings = inputs.get("settings")
+    expected_settings = _benchmark_study_v2_settings()
+    if not isinstance(settings, Mapping) or set(settings) != set(BENCHMARK_STUDY_V2_ARMS):
+        raise ValueError("v2 settings arm binding mismatch")
+    for arm in BENCHMARK_STUDY_V2_ARMS:
+        binding = settings[arm]
+        expected_path = output_root / "inputs" / "settings-v2" / f"{arm}.settings.json"
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != {
+                "path", "sha256", "bytes", "bash_hook", "bash_reference_v1",
+            }
+            or binding.get("path") != str(expected_path.resolve())
+            or binding.get("bash_hook") is not (arm != "host_unmodified")
+            or binding.get("bash_reference_v1") is not (arm == "bash_reference_v1")
+        ):
+            raise ValueError(f"v2 {arm} settings binding mismatch")
+        raw_settings = _read_bytes_no_follow(expected_path, max_bytes=100_000)
+        expected_raw = _study_canonical_json_bytes(expected_settings[arm])
+        if (
+            raw_settings != expected_raw
+            or binding.get("sha256") != _study_sha256_bytes(expected_raw)
+            or binding.get("bytes") != len(expected_raw)
+        ):
+            raise ValueError(f"v2 {arm} settings policy drift")
+    install_receipt, install_receipt_raw = _benchmark_study_v2_read_canonical(
+        output_root / "candidate-install-receipt.json",
+        owner="v2 candidate install receipt", maximum=2_000_000,
+    )
+    if (
+        set(install_receipt) != {
+            "schema_version", "install_count", "network", "ignore_scripts",
+            "no_audit", "fund", "hidden_lockfile_removed",
+            "candidate_manifest_sha256", "argv_policy", "inventory",
+            "installed_packages",
+        }
+        or install_receipt.get("schema_version")
+        != "contextguard.bench.candidate-install.v2"
+        or install_receipt.get("install_count") != 1
+        or install_receipt.get("network") != "offline"
+        or install_receipt.get("ignore_scripts") is not True
+        or install_receipt.get("no_audit") is not True
+        or install_receipt.get("fund") is not False
+        or not isinstance(install_receipt.get("hidden_lockfile_removed"), bool)
+        or install_receipt.get("argv_policy") != [
+            "install", "--offline", "--ignore-scripts", "--no-audit",
+            "--fund=false", "--package-lock=false",
+        ]
+        or _study_sha256_bytes(install_receipt_raw)
+        != inputs.get("candidate_install_receipt_sha256")
+        or install_receipt.get("candidate_manifest_sha256")
+        != inputs.get("candidate", {}).get("manifest_sha256")
+        or install_receipt.get("inventory")
+        != inputs.get("candidate_overlay_inventory")
+    ):
+        raise ValueError("v2 candidate install receipt binding mismatch")
+    expected_schedule = generate_benchmark_study_v2_schedule(
+        task_ids, repetitions=3, schedule_seed=manifest["plan"]["schedule_seed"],
+    )
+    expected_slots = generate_benchmark_study_v2_slots(
+        task_ids, expected_schedule,
+        candidate_hash=inputs["candidate"]["manifest_sha256"],
+        namespace=inputs["namespace"],
+    )
+    if manifest["schedule"] != expected_schedule or manifest["slots"] != expected_slots:
+        raise ValueError("v2 executable schedule or identity drift")
+    if revalidate_external:
+        _benchmark_study_v2_assert_execution_environment(
+            inputs["execution_environment"]
+        )
+        external_plan = load_benchmark_study_v2_plan(Path(inputs["plan_path"]))
+        if external_plan != manifest["plan"]:
+            raise ValueError("v2 external study plan binding drift")
+        corpus = _read_bytes_no_follow(Path(inputs["tasks_path"]), max_bytes=MAX_FIXTURE_FILE_BYTES)
+        if _study_sha256_bytes(corpus) != inputs["tasks_sha256"]:
+            raise ValueError("v2 task corpus binding drift")
+        checker = benchmark_study_v2_checker_binding(Path(inputs["checkers_dir"]))
+        if checker != inputs["checker_binding"]:
+            raise ValueError("v2 checker inventory binding drift")
+        validate_benchmark_study_v2_bindings(
+            manifest["plan"], corpus_bytes=corpus, checker_binding=checker,
+        )
+        tasks = parse_tasks(Path(inputs["tasks_path"]))
+        load_task_fixture_trees(
+            tasks, task_file_dir=Path(inputs["tasks_path"]).parent,
+        )
+        task_definitions = [
+            _study_task_manifest(task, Path(inputs["tasks_path"]).parent)
+            for task in tasks
+        ]
+        if task_definitions != inputs["task_definitions"]:
+            raise ValueError("v2 task fixture or checker binding drift")
+        if [task.id for task in tasks] != task_ids:
+            raise ValueError("v2 external task order binding drift")
+        candidate = verify_benchmark_study_v2_candidate(
+            Path(inputs["candidate"]["manifest_path"]),
+            checksum_path=Path(inputs["candidate"]["checksum_path"]),
+            expected_manifest_sha256=inputs["candidate"]["manifest_sha256"],
+        )
+        if candidate != inputs["candidate"]:
+            raise ValueError("v2 candidate binding drift")
+        if _benchmark_study_v2_verify_installed_packages(
+            Path(inputs["candidate_install_root"]), candidate,
+        ) != install_receipt["installed_packages"]:
+            raise ValueError("v2 installed candidate package binding drift")
+        if _benchmark_study_v2_inventory(Path(inputs["candidate_install_root"])) != inputs["candidate_overlay_inventory"]:
+            raise ValueError("v2 installed candidate inventory drift")
+        for arm, binding in inputs["settings"].items():
+            raw_settings = _read_bytes_no_follow(Path(binding["path"]), max_bytes=100_000)
+            if _study_sha256_bytes(raw_settings) != binding["sha256"] or len(raw_settings) != binding["bytes"]:
+                raise ValueError(f"v2 {arm} settings drift")
+    return manifest, _study_sha256_bytes(raw)
+
+
+def _benchmark_study_v2_variants(manifest: Mapping[str, Any], output_root: Path) -> dict[str, Variant]:
+    output_root = _benchmark_study_v2_output_root(output_root)
+    result: dict[str, Variant] = {}
+    artifact_root = output_root / "artifacts"
+    for arm in BENCHMARK_STUDY_V2_ARMS:
+        binding = manifest["inputs"]["settings"][arm]
+        settings_path = Path(binding["path"])
+        settings_raw = _read_bytes_no_follow(settings_path, max_bytes=100_000)
+        settings_payload = json.loads(settings_raw)
+        command = BENCHMARK_STUDY_V2_REWRITE_COMMAND + (
+            " --bash-reference-v1" if arm == "bash_reference_v1" else ""
+        )
+        registered = () if arm == "host_unmodified" else (("PreToolUse", command),)
+        identity = MeasurementIdentity(
+            candidate_hash=manifest["inputs"]["candidate"]["manifest_sha256"],
+            repetition=0, arm=arm, attempt=0,
+            namespace=manifest["inputs"]["namespace"],
+        )
+        result[arm] = Variant(
+            name=arm,
+            measurement=MeasurementVariant(
+                settings_file=settings_path,
+                setting_sources=("project",), environment_allow=(),
+                environment_overrides=tuple(
+                    (name, str(manifest["inputs"]["execution_environment"]["values"][name]))
+                    for name in sorted(
+                        manifest["inputs"]["execution_environment"]["values"]
+                    )
+                ),
+                workspace_mode="isolated",
+                session_mode="isolated", session_persistence="disabled",
+                hook_events_enabled=True, registered_bindings=registered,
+                required_event_classes=(), pair_registered_bindings=registered,
+                cli_capabilities=(
+                    "--settings", "--setting-sources", "--include-hook-events",
+                    "--no-session-persistence", "stream-json",
+                ),
+                identity=identity, artifact_root=artifact_root,
+                settings_payload=settings_payload, settings_source_bytes=settings_raw,
+            ),
+        )
+    return result
+
+
+def _benchmark_study_v2_canary_variants(
+    manifest: Mapping[str, Any], output_root: Path,
+) -> dict[str, Variant]:
+    analytic = _benchmark_study_v2_variants(manifest, output_root)
+    result: dict[str, Variant] = {}
+    for arm in BENCHMARK_STUDY_V2_CANARY_ARMS:
+        base = analytic[arm].measurement
+        assert base is not None
+        identity = MeasurementIdentity(
+            candidate_hash=manifest["inputs"]["candidate"]["manifest_sha256"],
+            repetition=0, arm=arm, attempt=0,
+            namespace=f"{manifest['inputs']['namespace']}.canary",
+        )
+        result[arm] = Variant(
+            name=arm,
+            measurement=replace(
+                base,
+                required_event_classes=("PreToolUse",),
+                identity=identity,
+                artifact_root=output_root / "canary-artifacts",
+            ),
+        )
+    return result
+
+
+def _benchmark_study_v2_canary_base_event(
+    *, arm: str, run_id: str, manifest_sha256: str, state: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    event = {
+        "schema_version": BENCHMARK_STUDY_V2_CANARY_EVENT_SCHEMA_VERSION,
+        "manifest_sha256": manifest_sha256,
+        "arm": arm, "run_id": run_id, "state": state,
+    }
+    event.update(extra)
+    return event
+
+
+def _benchmark_study_v2_read_canary_events(
+    path: Path, *, manifest_sha256: str,
+    variants: Mapping[str, Variant],
+) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    raw = _measurement_read_private_file(path, maximum=200_000)
+    expected_run_ids = {}
+    for arm, variant in variants.items():
+        spec = variant.measurement
+        assert spec is not None
+        expected_run_ids[arm] = spec.identity.run_id(BENCHMARK_STUDY_V2_CANARY_TASK_ID)
+    base_keys = {"schema_version", "manifest_sha256", "arm", "run_id", "state"}
+    workspace_keys = base_keys | {
+        "pre_workspace_inventory_sha256", "pre_overlay_inventory_sha256",
+    }
+    terminal_keys = base_keys | {
+        "passed", "measurement_terminal_status", "checker_status",
+        "receipt_sha256", "pre_workspace_inventory_sha256",
+        "post_workspace_inventory_sha256", "pre_overlay_inventory_sha256",
+        "post_overlay_inventory_sha256", "pretooluse_event_count",
+    }
+    states: dict[str, list[str]] = collections.defaultdict(list)
+    rows: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        try:
+            row = json.loads(
+                line.decode("utf-8"),
+                object_pairs_hook=_measurement_object_no_duplicates,
+                parse_constant=_stream_reject_nonfinite,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("v2 canary event ledger is invalid JSONL") from exc
+        if not isinstance(row, dict) or line + b"\n" != _study_canonical_json_bytes(row):
+            raise ValueError("v2 canary event ledger must be canonical JSONL")
+        arm = row.get("arm")
+        state = row.get("state")
+        if (
+            row.get("schema_version") != BENCHMARK_STUDY_V2_CANARY_EVENT_SCHEMA_VERSION
+            or row.get("manifest_sha256") != manifest_sha256
+            or arm not in BENCHMARK_STUDY_V2_CANARY_ARMS
+            or row.get("run_id") != expected_run_ids.get(str(arm))
+            or state not in {"launch_reserved", "workspace_prepared", "launched", "terminal"}
+        ):
+            raise ValueError("v2 canary event binding mismatch")
+        expected_keys = (
+            workspace_keys if state == "workspace_prepared"
+            else terminal_keys if state == "terminal" else base_keys
+        )
+        if set(row) != expected_keys:
+            raise ValueError("v2 canary event schema mismatch")
+        previous = states[str(arm)]
+        expected_previous = {
+            "launch_reserved": [],
+            "workspace_prepared": ["launch_reserved"],
+            "launched": ["launch_reserved", "workspace_prepared"],
+            "terminal": ["launch_reserved", "workspace_prepared", "launched"],
+        }[str(state)]
+        if previous != expected_previous:
+            raise ValueError("v2 canary event state transition is invalid")
+        if state in {"workspace_prepared", "terminal"}:
+            hash_fields = (
+                ("pre_workspace_inventory_sha256", "pre_overlay_inventory_sha256")
+                if state == "workspace_prepared" else (
+                    "receipt_sha256", "pre_workspace_inventory_sha256",
+                    "post_workspace_inventory_sha256", "pre_overlay_inventory_sha256",
+                    "post_overlay_inventory_sha256",
+                )
+            )
+            if any(
+                not isinstance(row.get(field), str)
+                or SHA256_HEX_PATTERN.fullmatch(str(row[field])) is None
+                for field in hash_fields
+            ):
+                raise ValueError("v2 canary evidence hash is invalid")
+        if state == "terminal" and (
+            not isinstance(row.get("passed"), bool)
+            or row.get("measurement_terminal_status") not in {
+                "success", "raw_byte_limit", "raw_line_limit", "raw_line_byte_limit",
+                "process_timeout", "process_launch_error", "process_error",
+                "terminal_error", "missing_terminal", "invalid_stream",
+                "hook_payload_limit", "hook_lifecycle_limit", "invalid_hook_lifecycle",
+                "unexpected_hook_event_class", "missing_required_hook_event_class",
+                "hook_process_failure",
+            }
+            or row.get("checker_status") not in {
+                "task_success", "valid_task_failure_v1", "success_checker_infra_invalid",
+                "not_run",
+            }
+            or isinstance(row.get("pretooluse_event_count"), bool)
+            or not isinstance(row.get("pretooluse_event_count"), int)
+            or row["pretooluse_event_count"] < 0
+        ):
+            raise ValueError("v2 canary terminal evidence is invalid")
+        previous.append(str(state))
+        rows.append(row)
+    return rows
+
+
+def _benchmark_study_v2_derive_canary_terminal(
+    *, manifest: Mapping[str, Any], manifest_sha256: str, output_root: Path,
+    arm: str, variant: Variant, task: TaskFixture,
+    workspace_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    spec = variant.measurement
+    assert spec is not None
+    run_id = spec.identity.run_id(task.id)
+    receipt = _verify_existing_measurement_run(
+        spec, task.id, run_id, require_index=True,
+    )
+    context = _measurement_existing_context(spec, run_id)
+    receipt_raw = _measurement_read_private_file(context.receipt_path)
+    expected_overlay = manifest["inputs"]["candidate_overlay_inventory"]
+    expected_pre = _benchmark_study_v2_expected_pre_workspace(
+        task,
+        install_root=Path(manifest["inputs"]["candidate_install_root"]),
+        expected_overlay_inventory=expected_overlay,
+    )
+    post_workspace = _benchmark_study_v2_inventory(context.workspace)
+    post_overlay = _benchmark_study_v2_inventory(
+        context.workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME,
+    )
+    checker = (
+        run_task_checker_study(
+            task, context.workspace, env={},
+            interpreter_binding=manifest["inputs"]["runner_binding"]["python"],
+        )
+        if receipt["terminal_status"] == "success" else "not_run"
+    )
+    summary = receipt["hook_summary"]
+    counts = {
+        row["hook_event"]: row["count"]
+        for row in summary["event_class_counts"]
+    }
+    pretooluse_count = int(counts.get("PreToolUse", 0))
+    pre_bound = bool(
+        workspace_event.get("pre_workspace_inventory_sha256") == expected_pre["sha256"]
+        and workspace_event.get("pre_overlay_inventory_sha256") == expected_overlay["sha256"]
+    )
+    hooks_valid = bool(
+        summary["required_event_classes"] == ["PreToolUse"]
+        and pretooluse_count >= 1
+        and set(counts) == {"PreToolUse"}
+        and all(
+            hook["hook_event"] == "PreToolUse"
+            and hook["hook_process_outcome"] == "success"
+            and hook["hook_process_exit_code"] in (None, 0)
+            for hook in receipt["hooks"]
+        )
+    )
+    passed = bool(
+        receipt["terminal_status"] == "success"
+        and checker == "task_success" and hooks_valid and pre_bound
+        and post_overlay == expected_overlay
+    )
+    return _benchmark_study_v2_canary_base_event(
+        arm=arm, run_id=run_id, manifest_sha256=manifest_sha256,
+        state="terminal", passed=passed,
+        measurement_terminal_status=receipt["terminal_status"],
+        checker_status=checker,
+        receipt_sha256=_study_sha256_bytes(receipt_raw),
+        pre_workspace_inventory_sha256=str(
+            workspace_event["pre_workspace_inventory_sha256"]
+        ),
+        post_workspace_inventory_sha256=post_workspace["sha256"],
+        pre_overlay_inventory_sha256=str(
+            workspace_event["pre_overlay_inventory_sha256"]
+        ),
+        post_overlay_inventory_sha256=post_overlay["sha256"],
+        pretooluse_event_count=pretooluse_count,
+    )
+
+
+def _benchmark_study_v2_expected_canary_evidence(
+    *, manifest: Mapping[str, Any], manifest_sha256: str, output_root: Path,
+    rows: Sequence[Mapping[str, Any]], variants: Mapping[str, Variant],
+) -> dict[str, Any]:
+    task = _benchmark_study_v2_canary_task()
+    by_arm: dict[str, list[Mapping[str, Any]]] = {
+        arm: [row for row in rows if row["arm"] == arm]
+        for arm in BENCHMARK_STUDY_V2_CANARY_ARMS
+    }
+    records: list[dict[str, Any]] = []
+    for arm in BENCHMARK_STUDY_V2_CANARY_ARMS:
+        arm_rows = by_arm[arm]
+        if [row["state"] for row in arm_rows] != [
+            "launch_reserved", "workspace_prepared", "launched", "terminal",
+        ]:
+            raise ValueError("v2 canary evidence is incomplete")
+        recomputed = _benchmark_study_v2_derive_canary_terminal(
+            manifest=manifest, manifest_sha256=manifest_sha256,
+            output_root=output_root, arm=arm, variant=variants[arm], task=task,
+            workspace_event=arm_rows[1],
+        )
+        if recomputed != dict(arm_rows[-1]) or recomputed["passed"] is not True:
+            raise ValueError("v2 canary terminal evidence did not pass")
+        spec = variants[arm].measurement
+        assert spec is not None
+        records.append({
+            "arm": arm, "run_id": recomputed["run_id"], "passed": True,
+            "settings_sha256": manifest["inputs"]["settings"][arm]["sha256"],
+            "settings_binding_set_sha256": _measurement_binding_set_sha256(
+                spec.registered_bindings
+            ),
+            "required_event_classes": ["PreToolUse"],
+            "pretooluse_event_count": recomputed["pretooluse_event_count"],
+            "receipt_sha256": recomputed["receipt_sha256"],
+            "pre_overlay_inventory_sha256": recomputed[
+                "pre_overlay_inventory_sha256"
+            ],
+            "post_overlay_inventory_sha256": recomputed[
+                "post_overlay_inventory_sha256"
+            ],
+        })
+    return {
+        "schema_version": BENCHMARK_STUDY_V2_CANARY_EVIDENCE_SCHEMA_VERSION,
+        "manifest_sha256": manifest_sha256,
+        "canary_contract_sha256": _study_domain_hash(
+            "contextguard.bench.v2.canary-contract.v1",
+            manifest["inputs"]["canary_contract"],
+        ),
+        "cli_binding_sha256": _study_domain_hash(
+            "contextguard.bench.v2.cli-binding.v1",
+            manifest["inputs"]["cli_binding"],
+        ),
+        "candidate_manifest_sha256": manifest["inputs"]["candidate"][
+            "manifest_sha256"
+        ],
+        "candidate_overlay_sha256": manifest["inputs"][
+            "candidate_overlay_inventory"
+        ]["sha256"],
+        "discarded": True, "excluded_from_analysis": True,
+        "provider_calls": 2, "arms": records,
+    }
+
+
+def _benchmark_study_v2_verify_canary_evidence(
+    *, manifest: Mapping[str, Any], manifest_sha256: str, output_root: Path,
+) -> tuple[dict[str, Any], str]:
+    variants = _benchmark_study_v2_canary_variants(manifest, output_root)
+    rows = _benchmark_study_v2_read_canary_events(
+        output_root / "canary-events.jsonl",
+        manifest_sha256=manifest_sha256, variants=variants,
+    )
+    expected = _benchmark_study_v2_expected_canary_evidence(
+        manifest=manifest, manifest_sha256=manifest_sha256,
+        output_root=output_root, rows=rows, variants=variants,
+    )
+    observed, raw = _benchmark_study_v2_read_canonical(
+        output_root / "canary-evidence.json",
+        owner="v2 canary evidence", maximum=200_000,
+    )
+    if observed != expected:
+        raise ValueError("v2 canary evidence binding mismatch")
+    return observed, _study_sha256_bytes(raw)
+
+
+def _benchmark_study_v2_run_canary_arm(
+    *, manifest: Mapping[str, Any], manifest_sha256: str, output_root: Path,
+    arm: str, variant: Variant, task: TaskFixture, claude_bin: str,
+    cli_stat_guard: Mapping[str, Any],
+    runtime_stat_guards: Mapping[str, Mapping[str, int | str]],
+) -> dict[str, Any]:
+    spec = variant.measurement
+    assert spec is not None
+    run_id = spec.identity.run_id(task.id)
+    ledger_path = output_root / "canary-events.jsonl"
+    _benchmark_study_v2_assert_cli_executable_bytes(
+        manifest["inputs"]["cli_binding"], cli_stat_guard,
+    )
+    _benchmark_study_v2_assert_runtime_stat_guards(
+        manifest["inputs"]["execution_environment"], runtime_stat_guards,
+    )
+    append_study_attempt_event(
+        ledger_path,
+        _benchmark_study_v2_canary_base_event(
+            arm=arm, run_id=run_id, manifest_sha256=manifest_sha256,
+            state="launch_reserved",
+        ),
+    )
+    pre: dict[str, Any] = {}
+
+    def prepared(workspace: Path) -> None:
+        overlay = workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME
+        overlay_inventory = _benchmark_study_v2_verify_physical_copy(
+            Path(manifest["inputs"]["candidate_install_root"]), overlay,
+            expected=manifest["inputs"]["candidate_overlay_inventory"],
+        )
+        workspace_inventory = _benchmark_study_v2_inventory(workspace)
+        pre.update({"overlay": overlay_inventory, "workspace": workspace_inventory})
+        append_study_attempt_event(
+            ledger_path,
+            _benchmark_study_v2_canary_base_event(
+                arm=arm, run_id=run_id, manifest_sha256=manifest_sha256,
+                state="workspace_prepared",
+                pre_workspace_inventory_sha256=workspace_inventory["sha256"],
+                pre_overlay_inventory_sha256=overlay_inventory["sha256"],
+            ),
+        )
+
+    def launched() -> None:
+        append_study_attempt_event(
+            ledger_path,
+            _benchmark_study_v2_canary_base_event(
+                arm=arm, run_id=run_id, manifest_sha256=manifest_sha256,
+                state="launched",
+            ),
+        )
+
+    root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+    try:
+        os.fchmod(root_fd, 0o700)
+        if fcntl is not None:
+            fcntl.flock(root_fd, fcntl.LOCK_EX)
+        _run_measurement_fixture_locked(
+            task, variant, claude_bin, Path(manifest_sha256),
+            locked_root_fd=root_fd, on_process_started=launched,
+            measurement_study=True,
+            workspace_overlay=Path(manifest["inputs"]["candidate_install_root"]),
+            on_workspace_prepared=prepared,
+            checker_interpreter_binding=manifest["inputs"]["runner_binding"][
+                "python"
+            ],
+        )
+    finally:
+        os.close(root_fd)
+    if set(pre) != {"overlay", "workspace"}:
+        raise ValueError("v2 canary workspace was not prepared")
+    workspace_event = _benchmark_study_v2_canary_base_event(
+        arm=arm, run_id=run_id, manifest_sha256=manifest_sha256,
+        state="workspace_prepared",
+        pre_workspace_inventory_sha256=pre["workspace"]["sha256"],
+        pre_overlay_inventory_sha256=pre["overlay"]["sha256"],
+    )
+    terminal = _benchmark_study_v2_derive_canary_terminal(
+        manifest=manifest, manifest_sha256=manifest_sha256,
+        output_root=output_root, arm=arm, variant=variant, task=task,
+        workspace_event=workspace_event,
+    )
+    append_study_attempt_event(ledger_path, terminal)
+    if terminal["passed"] is not True:
+        raise ValueError(f"v2 {arm} host PreToolUse canary failed")
+    return terminal
+
+
+def execute_benchmark_study_v2_canary(
+    *, output_root: Path, claude_bin: str,
+) -> dict[str, Any]:
+    with _benchmark_study_v2_action_lock(output_root):
+        return _execute_benchmark_study_v2_canary_unlocked(
+            output_root=output_root, claude_bin=claude_bin,
+        )
+
+
+def _execute_benchmark_study_v2_canary_unlocked(
+    *, output_root: Path, claude_bin: str,
+) -> dict[str, Any]:
+    output_root = _benchmark_study_v2_output_root(output_root)
+    manifest, manifest_sha256 = load_benchmark_study_v2_executable_manifest(
+        output_root, revalidate_external=True,
+    )
+    attempts_path = output_root / "attempts.jsonl"
+    if attempts_path.exists() and attempts_path.stat().st_size:
+        raise ValueError("v2 canary must finish before analytic attempts")
+    cli_stat_guard = _benchmark_study_v2_assert_cli_binding(
+        claude_bin, manifest["inputs"]["cli_binding"],
+    )
+    runtime_stat_guards = _benchmark_study_v2_assert_execution_environment(
+        manifest["inputs"]["execution_environment"]
+    )
+    bound_claude_bin = str(cli_stat_guard["executable"])
+    variants = _benchmark_study_v2_canary_variants(manifest, output_root)
+    task = _benchmark_study_v2_canary_task()
+    ledger_path = output_root / "canary-events.jsonl"
+    launched_now = 0
+    for arm in BENCHMARK_STUDY_V2_CANARY_ARMS:
+        rows = _benchmark_study_v2_read_canary_events(
+            ledger_path, manifest_sha256=manifest_sha256, variants=variants,
+        )
+        arm_rows = [row for row in rows if row["arm"] == arm]
+        if arm_rows and arm_rows[-1]["state"] == "terminal":
+            if arm_rows[-1]["passed"] is not True:
+                raise ValueError(f"v2 {arm} canary terminal did not pass")
+            continue
+        if arm_rows:
+            if arm_rows[-1]["state"] != "launched":
+                raise ValueError("v2 canary reserved identity cannot be replayed")
+            try:
+                recovered = _benchmark_study_v2_derive_canary_terminal(
+                    manifest=manifest, manifest_sha256=manifest_sha256,
+                    output_root=output_root, arm=arm, variant=variants[arm],
+                    task=task, workspace_event=arm_rows[1],
+                )
+            except (OSError, SystemExit, TypeError, ValueError) as exc:
+                raise ValueError("v2 launched canary cannot be safely recovered") from exc
+            append_study_attempt_event(ledger_path, recovered)
+            if recovered["passed"] is not True:
+                raise ValueError(f"v2 {arm} recovered canary did not pass")
+            continue
+        _benchmark_study_v2_run_canary_arm(
+            manifest=manifest, manifest_sha256=manifest_sha256,
+            output_root=output_root, arm=arm, variant=variants[arm], task=task,
+            claude_bin=bound_claude_bin, cli_stat_guard=cli_stat_guard,
+            runtime_stat_guards=runtime_stat_guards,
+        )
+        launched_now += 1
+    rows = _benchmark_study_v2_read_canary_events(
+        ledger_path, manifest_sha256=manifest_sha256, variants=variants,
+    )
+    expected = _benchmark_study_v2_expected_canary_evidence(
+        manifest=manifest, manifest_sha256=manifest_sha256,
+        output_root=output_root, rows=rows, variants=variants,
+    )
+    evidence_path = output_root / "canary-evidence.json"
+    if evidence_path.exists():
+        observed, _raw = _benchmark_study_v2_read_canonical(
+            evidence_path, owner="v2 canary evidence", maximum=200_000,
+        )
+        if observed != expected:
+            raise ValueError("v2 canary evidence binding mismatch")
+    else:
+        _study_write_private(evidence_path, expected)
+    _observed, evidence_sha256 = _benchmark_study_v2_verify_canary_evidence(
+        manifest=manifest, manifest_sha256=manifest_sha256,
+        output_root=output_root,
+    )
+    return {
+        "provider_process_calls": launched_now,
+        "discarded_provider_calls": 2,
+        "canary_evidence_sha256": evidence_sha256,
+    }
+
+
+def _benchmark_study_v2_revalidate_terminal_evidence(
+    *, manifest: Mapping[str, Any], output_root: Path,
+    rows: Sequence[Mapping[str, Any]], tasks_by_id: Mapping[str, TaskFixture],
+    variants: Mapping[str, Variant],
+) -> None:
+    slots = {slot["run_id"]: slot for slot in manifest["slots"]}
+    install_root = Path(manifest["inputs"]["candidate_install_root"])
+    expected_overlay = manifest["inputs"]["candidate_overlay_inventory"]
+    expected_pre_by_task: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["state"] != "terminal" or row["terminal_status"] == "recovered_process_status_unknown":
+            continue
+        slot = slots[row["run_id"]]
+        task_id = str(slot["task_id"])
+        if task_id not in expected_pre_by_task:
+            expected_pre_by_task[task_id] = _benchmark_study_v2_expected_pre_workspace(
+                tasks_by_id[task_id], install_root=install_root,
+                expected_overlay_inventory=expected_overlay,
+            )
+        if (
+            row["pre_workspace_inventory_sha256"]
+            != expected_pre_by_task[task_id]["sha256"]
+        ):
+            raise ValueError("v2 pre-launch workspace inventory drift")
+        study_variant = _study_variant_for_slot(variants[slot["arm"]], slot)
+        spec = study_variant.measurement
+        assert spec is not None
+        receipt = _verify_existing_measurement_run(
+            spec, task_id, str(slot["run_id"]), require_index=True,
+        )
+        context = _measurement_existing_context(spec, str(slot["run_id"]))
+        receipt_raw = _measurement_read_private_file(context.receipt_path)
+        raw = _measurement_read_private_raw(context.raw_path)
+        if _study_sha256_bytes(receipt_raw) != row["receipt_sha256"]:
+            raise ValueError("v2 attempt receipt hash differs from immutable receipt")
+        if receipt["terminal_status"] != row["provider_terminal_status"]:
+            raise ValueError("v2 attempt provider terminal differs from immutable receipt")
+        if receipt["terminal_status"] == "success":
+            usage = parse_measurement_terminal_usage(raw)
+            expected_buckets = {
+                key: usage[key] for key in MEASUREMENT_STUDY_USAGE_KEYS
+            }
+            checker = run_task_checker_study(
+                tasks_by_id[task_id], context.workspace, env={},
+                interpreter_binding=manifest["inputs"]["runner_binding"][
+                    "python"
+                ],
+            )
+        else:
+            expected_buckets = {key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS}
+            checker = "not_run"
+        if row["token_buckets"] != expected_buckets or row["primary_tokens"] != sum(expected_buckets.values()):
+            raise ValueError("v2 attempt tokens differ from provider terminal usage")
+        if row["checker_status"] != checker:
+            raise ValueError("v2 attempt checker status differs from the bound checker")
+        derived = (
+            "success" if receipt["terminal_status"] == "success" and checker == "task_success"
+            else "valid_task_failure_v1"
+            if receipt["terminal_status"] == "success" and checker == "valid_task_failure_v1"
+            else "study_infra_invalid"
+        )
+        if row["terminal_status"] != derived or row["success"] is not (derived == "success"):
+            raise ValueError("v2 attempt outcome was not derived from provider plus checker")
+        workspace_inventory = _benchmark_study_v2_inventory(context.workspace)
+        overlay_inventory = _benchmark_study_v2_inventory(
+            context.workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME,
+        )
+        if (
+            workspace_inventory["sha256"] != row["post_workspace_inventory_sha256"]
+            or overlay_inventory["sha256"] != row["post_overlay_inventory_sha256"]
+            or overlay_inventory != manifest["inputs"]["candidate_overlay_inventory"]
+        ):
+            raise ValueError("v2 terminal workspace or overlay inventory drift")
+
+
+def _benchmark_study_v2_read_attempts(path: Path, *, manifest: Mapping[str, Any], manifest_sha256: str) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    raw = _measurement_read_private_file(path, maximum=4_000_000)
+    slots = {slot["run_id"]: slot for slot in manifest["slots"]}
+    rows: list[dict[str, Any]] = []
+    states: dict[str, list[str]] = collections.defaultdict(list)
+    base_keys = {
+        "schema_version", "manifest_sha256", "run_id", "task_id",
+        "repetition", "arm", "attempt", "state",
+    }
+    terminal_keys = base_keys | {
+        "terminal_status", "provider_terminal_status", "checker_status",
+        "success", "token_buckets", "primary_tokens", "correction",
+        "retrieval", "shifted_cost", "pre_workspace_inventory_sha256",
+        "post_workspace_inventory_sha256", "pre_overlay_inventory_sha256",
+        "post_overlay_inventory_sha256", "receipt_sha256",
+    }
+    blocked_keys = base_keys | {"reason"}
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line.decode("utf-8"), object_pairs_hook=_measurement_object_no_duplicates)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("v2 attempt index is invalid JSONL") from exc
+        if not isinstance(row, dict) or line + b"\n" != _study_canonical_json_bytes(row):
+            raise ValueError("v2 attempt index must be canonical JSONL")
+        slot = slots.get(row.get("run_id"))
+        if row.get("schema_version") != BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION or row.get("manifest_sha256") != manifest_sha256 or slot is None:
+            raise ValueError("v2 attempt index binding mismatch")
+        if any(row.get(key) != slot.get(key) for key in ("task_id", "repetition", "arm", "attempt")):
+            raise ValueError("v2 attempt identity mismatch")
+        state = row.get("state")
+        if state not in {
+            "launch_reserved", "launched", "terminal", "not_needed",
+            "blocked_study_invalid",
+        }:
+            raise ValueError("v2 attempt state is invalid")
+        expected_keys = (
+            terminal_keys if state == "terminal"
+            else blocked_keys if state == "blocked_study_invalid"
+            else base_keys
+        )
+        if set(row) != expected_keys:
+            raise ValueError("v2 attempt state has an inexact key schema")
+        previous = states[row["run_id"]]
+        if (
+            (state == "launch_reserved" and previous)
+            or (state == "launched" and previous != ["launch_reserved"])
+            or (state == "terminal" and previous not in (["launch_reserved"], ["launch_reserved", "launched"]))
+            or (state in {"not_needed", "blocked_study_invalid"} and previous)
+        ):
+            raise ValueError("v2 attempt state transition is invalid")
+        if state in {"not_needed", "blocked_study_invalid"} and row["attempt"] != 1:
+            raise ValueError("v2 non-launched final state is only valid for a retry")
+        if state == "blocked_study_invalid" and row["reason"] != "initial_study_invalid":
+            raise ValueError("v2 blocked retry reason is invalid")
+        previous.append(state)
+        if state == "terminal":
+            status = row["terminal_status"]
+            if status not in {
+                "success", "valid_task_failure_v1", "study_infra_invalid",
+                "recovered_process_status_unknown",
+            } or not isinstance(row["success"], bool) or row["success"] is not (status == "success"):
+                raise ValueError("v2 attempt success/classification binding is invalid")
+            buckets = row["token_buckets"]
+            if not isinstance(buckets, dict) or set(buckets) != set(MEASUREMENT_STUDY_USAGE_KEYS):
+                raise ValueError("v2 attempt token bucket schema is invalid")
+            total = 0
+            for key in MEASUREMENT_STUDY_USAGE_KEYS:
+                value = buckets[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_USAGE_TOKEN_COUNT:
+                    raise ValueError("v2 attempt token bucket is invalid")
+                total += value
+            if total > MAX_USAGE_TOKEN_COUNT or row["primary_tokens"] != total:
+                raise ValueError("v2 attempt primary token sum is invalid")
+            if any(row[field] is not None for field in ("correction", "retrieval", "shifted_cost")):
+                raise ValueError("v2 absent observer must remain null")
+            hash_fields = (
+                "pre_workspace_inventory_sha256", "post_workspace_inventory_sha256",
+                "pre_overlay_inventory_sha256", "post_overlay_inventory_sha256",
+                "receipt_sha256",
+            )
+            if status == "recovered_process_status_unknown":
+                if (
+                    row["provider_terminal_status"] != "unknown"
+                    or row["checker_status"] != "not_run" or total != 0
+                    or any(row[field] is not None for field in hash_fields)
+                ):
+                    raise ValueError("v2 recovered terminal row is invalid")
+            else:
+                if any(
+                    not isinstance(row[field], str)
+                    or SHA256_HEX_PATTERN.fullmatch(row[field]) is None
+                    for field in hash_fields
+                ):
+                    raise ValueError("v2 terminal evidence hash is invalid")
+                if row["pre_overlay_inventory_sha256"] != manifest["inputs"]["candidate_overlay_inventory"]["sha256"] or row["post_overlay_inventory_sha256"] != row["pre_overlay_inventory_sha256"]:
+                    raise ValueError("v2 terminal overlay binding is invalid")
+                if status == "success" and not (
+                    row["provider_terminal_status"] == "success"
+                    and row["checker_status"] == "task_success"
+                ):
+                    raise ValueError("v2 successful outcome lacks provider/checker evidence")
+                if status == "valid_task_failure_v1" and not (
+                    row["provider_terminal_status"] == "success"
+                    and row["checker_status"] == "valid_task_failure_v1"
+                ):
+                    raise ValueError("v2 valid failure lacks provider/checker evidence")
+        rows.append(row)
+    terminal_by_unit = {
+        (row["task_id"], row["repetition"], row["arm"]): row
+        for row in rows
+        if row["attempt"] == 0 and row["state"] == "terminal"
+    }
+    for row in rows:
+        if row["attempt"] != 1:
+            continue
+        initial = terminal_by_unit.get((row["task_id"], row["repetition"], row["arm"]))
+        if row["state"] == "not_needed" and (
+            initial is None or initial["terminal_status"] != "success"
+        ):
+            raise ValueError("v2 not-needed retry lacks a successful initial")
+        if row["state"] == "blocked_study_invalid" and (
+            initial is None
+            or initial["terminal_status"] not in {
+                "study_infra_invalid", "recovered_process_status_unknown",
+            }
+        ):
+            raise ValueError("v2 blocked retry lacks an invalid initial")
+        if row["state"] in {"launch_reserved", "launched", "terminal"} and (
+            initial is None or initial["terminal_status"] != "valid_task_failure_v1"
+        ):
+            raise ValueError("v2 launched retry lacks a valid failed initial")
+    return rows
+
+
+def _benchmark_study_v2_event(slot: Mapping[str, Any], manifest_sha256: str, state: str, **extra: Any) -> dict[str, Any]:
+    event = {
+        "schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
+        "manifest_sha256": manifest_sha256, "run_id": slot["run_id"],
+        "task_id": slot["task_id"], "repetition": slot["repetition"],
+        "arm": slot["arm"], "attempt": slot["attempt"], "state": state,
+    }
+    event.update(extra)
+    return event
+
+
+def _benchmark_study_v2_run_slot(
+    *, slot: Mapping[str, Any], task: TaskFixture, variant: Variant,
+    claude_bin: str, attempts_path: Path, manifest_sha256: str,
+    install_root: Path, expected_overlay_inventory: Mapping[str, Any],
+    cli_binding: Mapping[str, Any],
+    cli_stat_guard: Mapping[str, Any],
+    execution_environment: Mapping[str, Any],
+    runtime_stat_guards: Mapping[str, Mapping[str, int | str]],
+    checker_interpreter_binding: Mapping[str, Any],
+) -> str:
+    study_variant = _study_variant_for_slot(variant, slot)
+    spec = study_variant.measurement
+    assert spec is not None
+    pre: dict[str, Any] = {}
+
+    def prepared(workspace: Path) -> None:
+        overlay = workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME
+        pre["overlay"] = _benchmark_study_v2_verify_physical_copy(
+            install_root, overlay, expected=expected_overlay_inventory,
+        )
+        pre["workspace"] = _benchmark_study_v2_inventory(workspace)
+
+    def launched() -> None:
+        append_study_attempt_event(
+            attempts_path,
+            _benchmark_study_v2_event(slot, manifest_sha256, "launched"),
+        )
+
+    # Durable reservation precedes Popen. Resume treats even a reservation-only
+    # identity as consumed/unknown, so a provider that started while launched
+    # accounting failed can never be invoked twice.
+    _benchmark_study_v2_assert_cli_executable_bytes(cli_binding, cli_stat_guard)
+    _benchmark_study_v2_assert_runtime_stat_guards(
+        execution_environment, runtime_stat_guards,
+    )
+    append_study_attempt_event(
+        attempts_path,
+        _benchmark_study_v2_event(slot, manifest_sha256, "launch_reserved"),
+    )
+    root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+    try:
+        os.fchmod(root_fd, 0o700)
+        if fcntl is not None:
+            fcntl.flock(root_fd, fcntl.LOCK_EX)
+        result = _run_measurement_fixture_locked(
+            task, study_variant, claude_bin, Path(manifest_sha256),
+            locked_root_fd=root_fd, on_process_started=launched,
+            measurement_study=True, workspace_overlay=install_root,
+            on_workspace_prepared=prepared,
+            checker_interpreter_binding=checker_interpreter_binding,
+        )
+    finally:
+        os.close(root_fd)
+    context = _measurement_existing_context(spec, str(slot["run_id"]))
+    post_workspace = _benchmark_study_v2_inventory(context.workspace)
+    post_overlay = _benchmark_study_v2_inventory(
+        context.workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME,
+    )
+    if _benchmark_study_v2_inventory(install_root) != dict(expected_overlay_inventory):
+        raise ValueError("v2 staged candidate changed during an attempt")
+    receipt_raw = _measurement_read_private_file(context.receipt_path)
+    receipt = _measurement_parse_canonical_json_bytes(receipt_raw, owner="v2 measurement receipt")
+    provider_terminal = str(receipt["terminal_status"])
+    checker_status = result.notes if provider_terminal == "success" else "not_run"
+    if provider_terminal == "success" and checker_status == "task_success":
+        classification = "success"
+    elif provider_terminal == "success" and checker_status == "valid_task_failure_v1":
+        classification = "valid_task_failure_v1"
+    else:
+        classification = "study_infra_invalid"
+    if post_overlay != pre.get("overlay"):
+        classification = "study_infra_invalid"
+    token_buckets = {
+        "input_tokens": result.tokens["input_tokens"],
+        "cache_creation_input_tokens": result.tokens["cache_creation"],
+        "cache_read_input_tokens": result.tokens["cache_read"],
+        "output_tokens": result.tokens["output_tokens"],
+    }
+    append_study_attempt_event(
+        attempts_path,
+        _benchmark_study_v2_event(
+            slot, manifest_sha256, "terminal",
+            terminal_status=classification,
+            provider_terminal_status=provider_terminal,
+            checker_status=checker_status,
+            success=classification == "success",
+            token_buckets=token_buckets,
+            primary_tokens=sum(token_buckets.values()),
+            correction=None, retrieval=None, shifted_cost=None,
+            pre_workspace_inventory_sha256=pre["workspace"]["sha256"],
+            post_workspace_inventory_sha256=post_workspace["sha256"],
+            pre_overlay_inventory_sha256=pre["overlay"]["sha256"],
+            post_overlay_inventory_sha256=post_overlay["sha256"],
+            receipt_sha256=_study_sha256_bytes(receipt_raw),
+        ),
+    )
+    return classification
+
+
+def execute_benchmark_study_v2(
+    *, output_root: Path, claude_bin: str, resume: bool,
+) -> dict[str, int]:
+    with _benchmark_study_v2_action_lock(output_root):
+        return _execute_benchmark_study_v2_unlocked(
+            output_root=output_root, claude_bin=claude_bin, resume=resume,
+        )
+
+
+def _execute_benchmark_study_v2_unlocked(
+    *, output_root: Path, claude_bin: str, resume: bool,
+) -> dict[str, int]:
+    output_root = _benchmark_study_v2_output_root(output_root)
+    # Revalidate every inert candidate byte and installed overlay before a provider launch.
+    manifest, manifest_sha256 = load_benchmark_study_v2_executable_manifest(
+        output_root, revalidate_external=True,
+    )
+    cli_stat_guard = _benchmark_study_v2_assert_cli_binding(
+        claude_bin, manifest["inputs"]["cli_binding"],
+    )
+    runtime_stat_guards = _benchmark_study_v2_assert_execution_environment(
+        manifest["inputs"]["execution_environment"]
+    )
+    bound_claude_bin = str(cli_stat_guard["executable"])
+    attempts_path = output_root / "attempts.jsonl"
+    if not resume and attempts_path.exists() and attempts_path.stat().st_size:
+        raise ValueError("v2 run requires an absent or empty attempt index")
+    if resume and not attempts_path.exists():
+        raise ValueError("v2 resume requires an existing attempt index")
+    _canary_evidence, _canary_evidence_sha256 = (
+        _benchmark_study_v2_verify_canary_evidence(
+            manifest=manifest, manifest_sha256=manifest_sha256,
+            output_root=output_root,
+        )
+    )
+    tasks = parse_tasks(Path(manifest["inputs"]["tasks_path"]))
+    load_task_fixture_trees(tasks, task_file_dir=Path(manifest["inputs"]["tasks_path"]).parent)
+    tasks_by_id = {task.id: task for task in tasks}
+    variants = _benchmark_study_v2_variants(manifest, output_root)
+    rows = _benchmark_study_v2_read_attempts(
+        attempts_path, manifest=manifest, manifest_sha256=manifest_sha256,
+    )
+    _benchmark_study_v2_revalidate_terminal_evidence(
+        manifest=manifest, output_root=output_root, rows=rows,
+        tasks_by_id=tasks_by_id, variants=variants,
+    )
+    launched = {
+        row["run_id"] for row in rows
+        if row["state"] in {"launch_reserved", "launched", "terminal"}
+    }
+    accounted = {row["run_id"] for row in rows}
+    terminal = {row["run_id"]: row for row in rows if row["state"] == "terminal"}
+    if resume:
+        for slot in manifest["slots"]:
+            run_id = slot["run_id"]
+            if run_id in launched and run_id not in terminal:
+                recovered = _benchmark_study_v2_event(
+                    slot, manifest_sha256, "terminal",
+                    terminal_status="recovered_process_status_unknown",
+                    provider_terminal_status="unknown", checker_status="not_run",
+                    success=False,
+                    token_buckets={key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS},
+                    primary_tokens=0, correction=None, retrieval=None, shifted_cost=None,
+                    pre_workspace_inventory_sha256=None,
+                    post_workspace_inventory_sha256=None,
+                    pre_overlay_inventory_sha256=None,
+                    post_overlay_inventory_sha256=None, receipt_sha256=None,
+                )
+                append_study_attempt_event(attempts_path, recovered)
+                terminal[run_id] = recovered
+                accounted.add(run_id)
+    retry_by_unit = {
+        (slot["task_id"], slot["repetition"], slot["arm"]): slot
+        for slot in manifest["slots"] if slot["attempt"] == 1
+    }
+    install_root = Path(manifest["inputs"]["candidate_install_root"])
+    calls_before = len(launched)
+    for initial in (slot for slot in manifest["slots"] if slot["attempt"] == 0):
+        if initial["run_id"] not in launched:
+            _benchmark_study_v2_run_slot(
+                slot=initial, task=tasks_by_id[initial["task_id"]],
+                variant=variants[initial["arm"]], claude_bin=bound_claude_bin,
+                attempts_path=attempts_path, manifest_sha256=manifest_sha256,
+                install_root=install_root,
+                expected_overlay_inventory=manifest["inputs"]["candidate_overlay_inventory"],
+                cli_binding=manifest["inputs"]["cli_binding"],
+                cli_stat_guard=cli_stat_guard,
+                execution_environment=manifest["inputs"]["execution_environment"],
+                runtime_stat_guards=runtime_stat_guards,
+                checker_interpreter_binding=manifest["inputs"]["runner_binding"][
+                    "python"
+                ],
+            )
+            launched.add(initial["run_id"])
+            terminal = {
+                row["run_id"]: row for row in _benchmark_study_v2_read_attempts(
+                    attempts_path, manifest=manifest, manifest_sha256=manifest_sha256,
+                ) if row["state"] == "terminal"
+            }
+        initial_row = terminal.get(initial["run_id"])
+        if initial_row is None:
+            continue
+        retry = retry_by_unit[(initial["task_id"], initial["repetition"], initial["arm"])]
+        if initial_row.get("terminal_status") != "valid_task_failure_v1":
+            if retry["run_id"] not in accounted:
+                state = (
+                    "not_needed"
+                    if initial_row.get("terminal_status") == "success"
+                    else "blocked_study_invalid"
+                )
+                extra = {"reason": "initial_study_invalid"} if state == "blocked_study_invalid" else {}
+                append_study_attempt_event(
+                    attempts_path,
+                    _benchmark_study_v2_event(
+                        retry, manifest_sha256, state, **extra,
+                    ),
+                )
+                accounted.add(retry["run_id"])
+            continue
+        if retry["run_id"] in accounted:
+            continue
+        # A failed retry is retained, but it never stops later scheduled blocks.
+        _benchmark_study_v2_run_slot(
+            slot=retry, task=tasks_by_id[retry["task_id"]],
+            variant=variants[retry["arm"]], claude_bin=bound_claude_bin,
+            attempts_path=attempts_path, manifest_sha256=manifest_sha256,
+            install_root=install_root,
+            expected_overlay_inventory=manifest["inputs"]["candidate_overlay_inventory"],
+            cli_binding=manifest["inputs"]["cli_binding"],
+            cli_stat_guard=cli_stat_guard,
+            execution_environment=manifest["inputs"]["execution_environment"],
+            runtime_stat_guards=runtime_stat_guards,
+            checker_interpreter_binding=manifest["inputs"]["runner_binding"][
+                "python"
+            ],
+        )
+        launched.add(retry["run_id"])
+        accounted.add(retry["run_id"])
+        terminal = {
+            row["run_id"]: row for row in _benchmark_study_v2_read_attempts(
+                attempts_path, manifest=manifest, manifest_sha256=manifest_sha256,
+            ) if row["state"] == "terminal"
+        }
+    final_rows = _benchmark_study_v2_read_attempts(
+        attempts_path, manifest=manifest, manifest_sha256=manifest_sha256,
+    )
+    final_states = {row["run_id"]: row["state"] for row in final_rows}
+    return {
+        "provider_process_calls": len(launched) - calls_before,
+        "launched_identities": len(launched),
+        "accounted_identities": len(final_states),
+    }
+
+
+def analyze_benchmark_study_v2_executable(
+    *, output_root: Path, claude_bin: str,
+) -> dict[str, Any]:
+    with _benchmark_study_v2_action_lock(output_root):
+        return _analyze_benchmark_study_v2_executable_unlocked(
+            output_root=output_root, claude_bin=claude_bin,
+        )
+
+
+def _analyze_benchmark_study_v2_executable_unlocked(
+    *, output_root: Path, claude_bin: str,
+) -> dict[str, Any]:
+    output_root = _benchmark_study_v2_output_root(output_root)
+    manifest, manifest_sha256 = load_benchmark_study_v2_executable_manifest(
+        output_root, revalidate_external=True,
+    )
+    _benchmark_study_v2_assert_cli_binding(
+        claude_bin, manifest["inputs"]["cli_binding"],
+    )
+    _canary_evidence, canary_evidence_sha256 = (
+        _benchmark_study_v2_verify_canary_evidence(
+            manifest=manifest, manifest_sha256=manifest_sha256,
+            output_root=output_root,
+        )
+    )
+    rows = _benchmark_study_v2_read_attempts(
+        output_root / "attempts.jsonl", manifest=manifest,
+        manifest_sha256=manifest_sha256,
+    )
+    tasks = parse_tasks(Path(manifest["inputs"]["tasks_path"]))
+    load_task_fixture_trees(
+        tasks, task_file_dir=Path(manifest["inputs"]["tasks_path"]).parent,
+    )
+    _benchmark_study_v2_revalidate_terminal_evidence(
+        manifest=manifest, output_root=output_root, rows=rows,
+        tasks_by_id={task.id: task for task in tasks},
+        variants=_benchmark_study_v2_variants(manifest, output_root),
+    )
+    terminal_rows = [row for row in rows if row["state"] == "terminal"]
+    final_states = {row["run_id"]: row["state"] for row in rows}
+    if len(final_states) != 216 or any(
+        state not in {"terminal", "not_needed", "blocked_study_invalid"}
+        for state in final_states.values()
+    ):
+        raise ValueError("v2 analysis requires final accounting for all 216 identities")
+    identity_state_counts = dict(sorted(collections.Counter(final_states.values()).items()))
+    if any(
+        row["terminal_status"] not in {"success", "valid_task_failure_v1"}
+        for row in terminal_rows
+    ):
+        raise ValueError("v2 analysis refuses infrastructure-invalid or recovered attempts")
+    initial = [row for row in terminal_rows if row["attempt"] == 0]
+    if len(initial) != 108:
+        raise ValueError("v2 analysis requires all 108 initial provider calls")
+    by_unit = {(row["task_id"], row["repetition"], row["arm"]): row for row in initial}
+    expected_retries = {
+        key for key, row in by_unit.items()
+        if row["terminal_status"] == "valid_task_failure_v1"
+    }
+    retry_rows = [row for row in terminal_rows if row["attempt"] == 1]
+    if {(row["task_id"], row["repetition"], row["arm"]) for row in retry_rows} != expected_retries:
+        raise ValueError("v2 analysis retry coverage is incomplete or replaced")
+    effect_rows = [{
+        "task_id": row["task_id"], "repetition": row["repetition"],
+        "arm": row["arm"], "attempt": row["attempt"],
+        "terminal_status": row["terminal_status"], "success": row["success"],
+        "tokens": row["primary_tokens"], "correction": row["correction"],
+        "retrieval": row["retrieval"],
+    } for row in terminal_rows]
+    terminal_by_unit = dict(by_unit)
+    for row in retry_rows:
+        terminal_by_unit[(row["task_id"], row["repetition"], row["arm"])] = row
+    binary_rows = [
+        {"task_id": row["task_id"], "repetition": row["repetition"],
+         "arm": row["arm"], "success": row["success"]}
+        for row in terminal_by_unit.values()
+        if row["arm"] in BENCHMARK_STUDY_V2_PRIMARY_CONTRAST
+    ]
+    inference = infer_benchmark_study_v2_binary(
+        binary_rows, task_order=manifest["inputs"]["task_ids"],
+        ni_margin=float(manifest["plan"]["noninferiority_margin"]),
+    )
+    effects = compute_benchmark_study_v2_effects(
+        effect_rows, task_order=manifest["inputs"]["task_ids"],
+    )
+    unavailable = {"available": False, "value": None, "reason": "observer_absent"}
+    return {
+        "schema_version": BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION,
+        "study_version": "v2", "manifest_sha256": manifest_sha256,
+        "record_count": len(terminal_rows), "initial_provider_calls": 108,
+        "retry_provider_calls": len(retry_rows),
+        "discarded_canary_provider_calls": 2,
+        "identity_state_counts": identity_state_counts,
+        "binary_inference": inference, "effects": effects,
+        "observers": {
+            "correction": dict(unavailable), "retrieval": dict(unavailable),
+            "shifted_cost": dict(unavailable),
+        },
+        "descriptive_only": True, "claim_allowed": False, "claim": None,
+        "claim_readiness": {
+            "claim_ready": False, "descriptive_only": True,
+            "claim_allowed": False, "unmet_gates": ["power"],
+        },
+        "provenance": {
+            "source": "direct_cli_plus_bound_checker",
+            "success_source": "provider_terminal_usage_and_bound_checker",
+            "provider_success_boolean_trusted": False,
+            "cli_binding_sha256": _study_domain_hash(
+                "contextguard.bench.v2.cli-binding.v1",
+                manifest["inputs"]["cli_binding"],
+            ),
+            "cli_version_stdout_sha256": manifest["inputs"]["cli_binding"][
+                "probe"
+            ]["version_stdout_sha256"],
+            "backend_revision": "unavailable",
+            "model_revision": "unavailable",
+            "canary_evidence_sha256": canary_evidence_sha256,
+            "canary_discarded_from_analysis": True,
+        },
+    }
+
+
 BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION = "contextguard.bench.provider-export-manifest.v2"
 BENCHMARK_STUDY_V2_PROVIDER_EXPORT_SCHEMA_VERSION = "contextguard.bench.provider-export.v2"
 BENCHMARK_STUDY_V2_PRIVATE_REPORT_SCHEMA_VERSION = "contextguard.bench.provider-export-report.v2"
@@ -11368,37 +13856,11 @@ def analyze_benchmark_study_v2_provider_export(
     *, manifest_path: Path, evidence_path: Path,
 ) -> dict[str, Any]:
     """Validate a complete provider export locally; never calls a provider or CLI."""
-    manifest = load_benchmark_study_v2_provider_manifest(manifest_path)
-    manifest_sha256 = _study_sha256_bytes(_study_canonical_json_bytes(manifest))
-    rows, provenance = _benchmark_study_v2_load_provider_export(
-        evidence_path, manifest=manifest, manifest_sha256=manifest_sha256,
+    del manifest_path, evidence_path
+    raise ValueError(
+        "provider-declared success is not executable evidence; use the v2 "
+        "output-root run/resume/analyze lifecycle with a bound checker"
     )
-    task_ids = manifest["inputs"]["task_ids"]
-    terminal_by_unit: dict[tuple[str, int, str], dict[str, Any]] = {}
-    for row in rows:
-        key = (row["task_id"], row["repetition"], row["arm"])
-        if row["attempt"] == 1 or key not in terminal_by_unit:
-            terminal_by_unit[key] = row
-    binary_rows = [
-        {key: row[key] for key in ("task_id", "repetition", "arm", "success")}
-        for row in terminal_by_unit.values()
-        if row["arm"] in BENCHMARK_STUDY_V2_PRIMARY_CONTRAST
-    ]
-    inference = infer_benchmark_study_v2_binary(
-        binary_rows, task_order=task_ids,
-        ni_margin=float(manifest["plan"]["noninferiority_margin"]),
-    )
-    effects = compute_benchmark_study_v2_effects(rows, task_order=task_ids)
-    readiness = evaluate_benchmark_study_v2_claim_readiness(
-        plan=manifest["plan"], task_ids=task_ids, binary_inference=inference,
-        binary_rows=binary_rows, effects=effects, effect_records=rows, provenance=provenance,
-    )
-    return {
-        "schema_version": BENCHMARK_STUDY_V2_PRIVATE_REPORT_SCHEMA_VERSION,
-        "study_version": "v2", "manifest_sha256": manifest_sha256,
-        "record_count": len(rows), "binary_inference": inference,
-        "effects": effects, "claim_readiness": readiness, "provenance": provenance,
-    }
 
 
 def run_benchmark_study_v2_provider_export_action(args: argparse.Namespace) -> int:
@@ -11455,8 +13917,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--measurement-study-output-root", default=None, type=Path,
                         help="private S002 measurement study artifact directory")
     parser.add_argument(
-        "--study-v2-action", default=None, choices=("prepare", "analyze"),
-        help="prepare or locally analyze the additive v2 provider-export study; never invokes a provider",
+        "--study-v2-action", default=None,
+        choices=("prepare", "canary", "run", "resume", "analyze"),
+        help="prepare, canary, run, resume, or analyze the executable additive v2 study",
     )
     parser.add_argument("--study-v2-plan", default=None, type=Path,
                         help="canonical v2 study plan used only by --study-v2-action prepare")
@@ -11472,6 +13935,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="canonical provider-export JSONL used only by --study-v2-action analyze")
     parser.add_argument("--study-v2-report", default=None, type=Path,
                         help="new private v2 analysis report used only by --study-v2-action analyze")
+    parser.add_argument("--study-v2-output-root", default=None, type=Path,
+                        help="private executable v2 lifecycle directory")
+    parser.add_argument("--study-v2-candidate-manifest", default=None, type=Path,
+                        help="canonical build-once npm candidate manifest used by v2 prepare")
+    parser.add_argument("--study-v2-candidate-checksums", default=None, type=Path,
+                        help="exact candidate checksum document (default: manifest sibling)")
+    parser.add_argument("--study-v2-npm-bin", default="npm",
+                        help="npm executable used once for the offline candidate install")
     args = parser.parse_args(argv)
 
     require_no_follow_file_ops_supported()
@@ -11479,6 +13950,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.study_v2_action, args.study_v2_plan, args.study_v2_tasks,
         args.study_v2_checkers_dir, args.study_v2_candidate_hash,
         args.study_v2_manifest, args.study_v2_evidence_jsonl, args.study_v2_report,
+        args.study_v2_output_root, args.study_v2_candidate_manifest,
+        args.study_v2_candidate_checksums,
     )
     if any(value is not None for value in v2_values):
         if args.study_v2_action is None:
@@ -11499,6 +13972,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         ]
         if conflicts:
             parser.error(f"v2 provider-export mode conflicts with {', '.join(conflicts)}")
+        if args.study_v2_output_root is not None:
+            forbidden_legacy = (
+                args.study_v2_candidate_hash, args.study_v2_manifest,
+                args.study_v2_evidence_jsonl, args.study_v2_report,
+            )
+            if args.study_v2_action == "prepare":
+                required = (
+                    args.study_v2_plan, args.study_v2_tasks,
+                    args.study_v2_checkers_dir, args.study_v2_candidate_manifest,
+                    args.study_v2_candidate_hash,
+                )
+                forbidden = forbidden_legacy[1:]
+            else:
+                required = (args.study_v2_output_root,)
+                forbidden = forbidden_legacy + (
+                    args.study_v2_plan, args.study_v2_tasks,
+                    args.study_v2_checkers_dir, args.study_v2_candidate_manifest,
+                    args.study_v2_candidate_checksums,
+                )
+            if not all(value is not None for value in required) or any(value is not None for value in forbidden):
+                parser.error("v2 executable action has incomplete or conflicting arguments")
+            try:
+                if args.study_v2_action == "prepare":
+                    prepare_benchmark_study_v2_executable(
+                        output_root=args.study_v2_output_root,
+                        plan_path=args.study_v2_plan, tasks_path=args.study_v2_tasks,
+                        checkers_dir=args.study_v2_checkers_dir,
+                        candidate_manifest_path=args.study_v2_candidate_manifest,
+                        candidate_checksum_path=args.study_v2_candidate_checksums,
+                        expected_candidate_hash=args.study_v2_candidate_hash,
+                        npm_bin=args.study_v2_npm_bin,
+                        claude_bin=args.claude_bin,
+                    )
+                    print(f"prepared executable v2 study: {args.study_v2_output_root}")
+                elif args.study_v2_action == "canary":
+                    summary = execute_benchmark_study_v2_canary(
+                        output_root=args.study_v2_output_root,
+                        claude_bin=args.claude_bin,
+                    )
+                    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+                elif args.study_v2_action in {"run", "resume"}:
+                    summary = execute_benchmark_study_v2(
+                        output_root=args.study_v2_output_root,
+                        claude_bin=args.claude_bin,
+                        resume=args.study_v2_action == "resume",
+                    )
+                    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+                else:
+                    report = analyze_benchmark_study_v2_executable(
+                        output_root=args.study_v2_output_root,
+                        claude_bin=args.claude_bin,
+                    )
+                    _study_write_private(
+                        args.study_v2_output_root / "study-report.json", report,
+                    )
+                    print(f"analyzed executable v2 study: {args.study_v2_output_root / 'study-report.json'}")
+                return 0
+            except (OSError, SystemExit, TypeError, ValueError) as exc:
+                print(f"v2 executable study refused: {exc}", file=sys.stderr)
+                return 2
+        if args.study_v2_action not in {"prepare", "analyze"}:
+            parser.error("v2 run/resume requires --study-v2-output-root")
         if args.study_v2_action == "prepare":
             required = (
                 args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,

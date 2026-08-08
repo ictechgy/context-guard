@@ -199,9 +199,9 @@ retry/missing-data/exclusion/contamination/stopping rules, model and CLI version
 fields, and quality/failure/correction/retrieval/shifted-cost gates before data
 collection. The fixed 12-task corpus has no independent effect-size/variance
 model, so it makes no 80% power claim and is always descriptive rather than
-claim-ready. Claim readiness also requires complete provider-export
-provenance for every relevant record. Offline, fake, and manual rehearsal data
-are not provider-export evidence; unavailable backend/model revisions remain
+claim-ready. Every report therefore fixes `descriptive_only=true`,
+`claim_allowed=false`, and `claim=null`. Offline and fake rehearsal data are not
+provider evidence; unavailable observers and backend/model revisions remain
 unavailable. The corpus binding remains the SHA-256 of the exact canonical
 `tasks.json` bytes. The checker binding is the domain-separated
 `contextguard.bench.v2.checker-binding.v1` hash of the ordered list of relative
@@ -211,29 +211,48 @@ corpus are additionally bound by
 `contextguard.bench.v2.corpus-task-order.v1`, preventing a manifest from
 retaining the real corpus hash while substituting fabricated task identities.
 
-Provider-export rows use an exact key allowlist. Public evidence metadata
-excludes prompts, outputs, commands, command hashes, paths, project identifiers,
-capabilities, credentials, artifact-handle-like values, and recognized secret
-shapes. `backend_revision`, `model_revision`, and `cli_version` are identifiers,
-not free-form notes: each must match
-`[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,127}`. Violations are rejected before a report
-path is written.
+### Executable lifecycle
 
-### Operator-export execution surface
+`prepare` validates the exact canonical candidate-manifest hash, both npm
+tarballs' size/SHA-256/SRI, and the checksum document, then performs exactly one
+`npm install --offline --ignore-scripts --no-audit --fund=false --package-lock=false`.
+Any npm-generated hidden `.package-lock.json` regular file is removed before the
+overlay is accepted; the remaining paths must be exactly the two tarball trees
+plus every declared `.bin` link. Candidate code
+is never imported by the runner. The installed `node_modules` inventory and all
+216 initial/retry run IDs are bound into the private manifest. Prepare also runs
+local `claude --version`/`--help` probes without making a model request and binds
+the exact native executable, runner and runner-Python bytes, task fixture and
+checker bytes, fixed PATH/locale, and the Python interpreter used by the hook.
+Script CLI launchers are rejected because a launcher-tree hash cannot prove an
+external runtime closure. The bound native artifact and trusted host OS are the
+client-side boundary; backend/model revisions remain explicitly unavailable.
 
-The additive v2 surface is executable without becoming a provider runtime. Its
-`prepare` action binds the canonical plan, exact corpus bytes, domain-separated
-checker inventory, candidate SHA-256, deterministic blocked schedule, and all
-216 initial/retry run IDs into a private manifest. Its `analyze` action imports canonical JSONL that the
-operator exported from an approved provider run. It has no provider client,
-network request, credential read, or `claude` subprocess path.
+Each attempt receives a cold physical copy at `workspace/node_modules`. Safe
+internal relative npm symlinks are preserved; regular files must have different
+inodes from the staged install. `host_unmodified` has no ContextGuard Bash hook;
+the other arms use `PreToolUse(Bash)` with the workspace-local rewrite command,
+and only `bash_reference_v1` adds `--bash-reference-v1`.
 
-Before any private report is written, analysis requires every initial slot,
-exactly the retries made necessary by unsuccessful initials, one exact manifest
-and candidate binding per row, and one backend/model/CLI revision across the
-export. It rejects malformed, unknown, duplicate, partial, mixed-version, and
-sensitive evidence. The report recomputes primary binary inference and
-task-cluster effects from the retained records; legacy-trim effects remain
-diagnostic only. Because the frozen 12-task corpus has no independent power
-model, every resulting report is descriptive-only and cannot authorize an
-80%-power or public token-savings claim.
+The lifecycle is explicitly `prepare -> canary -> run -> resume -> analyze`,
+using the same exact `--claude-bin` for every action. `canary` makes two visible,
+discarded provider calls before any analytic reservation. Each hook arm must use
+Bash to create a bound marker, produce a successful host-emitted `PreToolUse`
+lifecycle, keep the candidate overlay unchanged, and pass the private checker.
+Canary calls/tokens never enter attempts, effects, or record counts, and a
+reserved/launched canary identity is never replayed. `run`, `resume`, and
+`analyze` only revalidate the canonical canary evidence.
+
+Analytic hook requirements remain empty by design: stochastic Bash choice stays
+inside the intention-to-treat sample instead of silently filtering treatment
+runs. Every hook lifecycle that is observed must still be registered, complete,
+and successful.
+
+`run` executes all 108 initials and exactly the retries whose initials ended in
+a valid bound-checker task failure. A failed retry never stops later schedule
+entries. `launch_reserved` is persisted before process creation and resume
+never replays a reserved or launched identity. `resume` and `analyze` revalidate
+the exact attempt schema plus raw stream, receipt, artifact index, terminal
+usage, bound checker result, and overlay inventory. Provider-declared success is
+ignored. Infrastructure-invalid or recovered attempts are refused for effects,
+and absent correction/retrieval/shifted-cost observers remain null/unavailable.

@@ -2,10 +2,10 @@
 """Zero-cost S003 rehearsal for the real 12-task measurement suite.
 
 This harness proves the full measurement path end to end without any provider,
-network, credential, or keychain access. It generates an official-shaped fake
-Claude CLI, materializes cold local/session roots, executes all 72 initial
-scheduled attempts plus the scripted retry cases, then writes a deterministic
-rehearsal report and an engineering overhead ledger.
+network, credential, or keychain access. The legacy v1 mode executes 72 initial
+attempts plus scripted retries. The additive v2 mode compiles a temporary native
+fake-CLI trampoline, executes 108 initials plus its fixed retries and discarded
+canaries, and keeps every reported result non-claim-authorizing.
 
 Boundaries that are intentional and must not be relaxed:
 
@@ -19,12 +19,16 @@ Boundaries that are intentional and must not be relaxed:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,6 +66,14 @@ SCRIPTED_RETRY_UNITS = (
     ("ts12_07_docs", "baseline", 2),
     ("ts12_12_artifact_receipt", "treatment", 0),
 )
+V2_SCRIPTED_RETRY_UNITS = tuple(
+    (f"ts12_{index:02d}_{name}", ("host_unmodified", "legacy_trim", "bash_reference_v1")[(index - 1) % 3], (index - 1) % 3)
+    for index, name in enumerate((
+        "small_fix", "bugfix", "exploration", "review", "long_log", "migration",
+        "docs", "refactor", "performance", "telemetry", "cache_layout", "artifact_receipt",
+    ), 1)
+)
+V2_PERSISTENT_FAILURE_UNIT = V2_SCRIPTED_RETRY_UNITS[0]
 
 FAKE_CLI = '''#!/usr/bin/env python3
 """Official-shaped fake Claude CLI for the S003 zero-cost rehearsal.
@@ -250,6 +262,229 @@ print(json.dumps({
 }, separators=(",", ":")), flush=True)
 log_env("audit_clean" if not AUDIT_VIOLATIONS else "audit_violation")
 raise SystemExit(0 if not AUDIT_VIOLATIONS else 24)
+'''
+
+V2_FAKE_CLI = '''#!/usr/bin/env python3
+"""Local-only fake Claude process used by the executable v2 rehearsal."""
+import hashlib
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("contextguard-v2-fake 1.0")
+    raise SystemExit(0)
+if sys.argv[1:] == ["--help"]:
+    print("--settings --setting-sources --include-hook-events --no-session-persistence stream-json")
+    raise SystemExit(0)
+
+settings = Path(sys.argv[sys.argv.index("--settings") + 1])
+config_path = next(
+    (parent / "fake-cli-config.json" for parent in settings.parents
+     if (parent / "fake-cli-config.json").is_file()),
+    None,
+)
+if config_path is None:
+    raise SystemExit(20)
+config = json.loads(config_path.read_text(encoding="utf-8"))
+settings_document = json.loads(settings.read_text(encoding="utf-8"))
+pretool = settings_document.get("hooks", {}).get("PreToolUse", [])
+hook_command = None
+if pretool:
+    if (
+        len(pretool) != 1 or pretool[0].get("matcher") != "Bash"
+        or len(pretool[0].get("hooks", [])) != 1
+        or pretool[0]["hooks"][0].get("type") != "command"
+    ):
+        raise SystemExit(22)
+    hook_command = pretool[0]["hooks"][0].get("command")
+    if hook_command == "./node_modules/.bin/context-guard-rewrite-bash":
+        arm = "legacy_trim"
+    elif hook_command == "./node_modules/.bin/context-guard-rewrite-bash --bash-reference-v1":
+        arm = "bash_reference_v1"
+    else:
+        raise SystemExit(23)
+else:
+    arm = "host_unmodified"
+run_id = settings.parent.parent.name
+slot = config["run_id_to_unit"].get(run_id)
+prompt = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else ""
+task_id = config["prompt_sha256_to_task"].get(hashlib.sha256(prompt.encode()).hexdigest())
+is_canary = prompt == config["canary_prompt"]
+if is_canary:
+    if slot is not None or arm not in {"legacy_trim", "bash_reference_v1"}:
+        raise SystemExit(21)
+    task_id = config["canary_task_id"]
+    slot = {"task_id": task_id, "arm": arm, "repetition": 0, "attempt": 0}
+elif slot is None or task_id != slot["task_id"] or arm != slot["arm"]:
+    raise SystemExit(21)
+unit = [task_id, arm, slot["repetition"]]
+retry_units = config["scripted_retry_units"]
+persistent = config["persistent_failure_unit"]
+should_fail = not is_canary and unit in retry_units and (
+    slot["attempt"] == 0 or (unit == persistent and slot["attempt"] == 1)
+)
+hook_mode = "host_unmodified"
+reference_handle_created = False
+public_retrieval_path = False
+if arm != "host_unmodified":
+    assert isinstance(hook_command, str)
+    hook_argv = shlex.split(hook_command)
+    hook_argv[0] = str(Path.cwd() / hook_argv[0])
+    lifecycle = {
+        "type": "system", "session_id": "fake-session-" + run_id,
+        "hook_id": "fake-hook-" + run_id,
+        "hook_name": "contextguard-bash-rewrite", "hook_event": "PreToolUse",
+        "uuid": "fake-uuid-" + run_id,
+    }
+    print(json.dumps({**lifecycle, "subtype": "hook_started"}, separators=(",", ":")), flush=True)
+    hook_result = subprocess.run(
+        hook_argv, input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash"}),
+        text=True, capture_output=True, check=False,
+    )
+    print(json.dumps({
+        **lifecycle, "subtype": "hook_response", "stdout": "", "stderr": "",
+        "output": "", "outcome": "success" if hook_result.returncode == 0 else "error",
+        "exit_code": hook_result.returncode,
+    }, separators=(",", ":")), flush=True)
+    if hook_result.returncode != 0:
+        raise SystemExit(25)
+    hook_payload = json.loads(hook_result.stdout)
+    hook_mode = hook_payload["mode"]
+    expected_handle = "cgr1p_" + "A" * 43
+    reference_handle_created = hook_payload.get("handle") == expected_handle
+    public_retrieval_path = hook_payload.get("retrieval") == (
+        "./node_modules/.bin/context-guard reference " + expected_handle
+    )
+with open(config["state_path"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({
+        "run_id": run_id, "task_id": task_id, "arm": arm,
+        "repetition": slot["repetition"], "attempt": slot["attempt"],
+        "scripted_failure": should_fail,
+        "canary": is_canary,
+        "hook_mode": hook_mode,
+        "reference_handle_created": reference_handle_created,
+        "public_retrieval_path": public_retrieval_path,
+    }, sort_keys=True) + "\\n")
+if is_canary:
+    Path.cwd().joinpath("contextguard-v2-canary.txt").write_text(
+        config["canary_marker"], encoding="utf-8",
+    )
+elif not should_fail:
+    for rel, content in sorted(config["solutions"][task_id].items()):
+        target = Path.cwd() / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+digest = int(hashlib.sha256(f"{task_id}|{arm}|{slot['repetition']}|{slot['attempt']}".encode()).hexdigest()[:8], 16)
+print(json.dumps({
+    "type": "result", "subtype": "success", "is_error": False,
+    "success": True,
+    "usage": {
+        "input_tokens": 3000 + digest % 300,
+        "cache_creation_input_tokens": 100 + digest % 30,
+        "cache_read_input_tokens": 50 + digest % 20,
+        "output_tokens": 200 + digest % 40,
+    },
+    "total_cost_usd": 0.0,
+}, separators=(",", ":")), flush=True)
+'''
+
+
+def _compile_v2_fake_cli(path: Path) -> None:
+    """Build a native rehearsal trampoline without weakening production policy."""
+    compiler = shutil.which("cc")
+    if compiler is None:
+        raise SystemExit("v2 offline rehearsal requires a local C compiler (cc)")
+    embedded = ",".join(str(byte) for byte in V2_FAKE_CLI.encode("utf-8"))
+    source = f'''#include <stdlib.h>
+#include <unistd.h>
+
+static const unsigned char embedded_source[] = {{{embedded},0}};
+
+int main(int argc, char **argv) {{
+    char **python_argv = calloc((size_t)argc + 4, sizeof(char *));
+    if (python_argv == NULL) return 126;
+    python_argv[0] = "python3";
+    python_argv[1] = "-I";
+    python_argv[2] = "-c";
+    python_argv[3] = (char *)embedded_source;
+    for (int index = 1; index < argc; ++index) {{
+        python_argv[index + 3] = argv[index];
+    }}
+    python_argv[argc + 3] = NULL;
+    execvp(python_argv[0], python_argv);
+    return 127;
+}}
+'''
+    source_path = path.with_suffix(".c")
+    source_path.write_text(source, encoding="ascii")
+    try:
+        completed = subprocess.run(
+            [compiler, "-std=c99", "-O0", "-Wall", "-Wextra", "-Werror",
+             str(source_path), "-o", str(path)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, timeout=60,
+            env={
+                "PATH": os.environ.get("PATH", os.defpath),
+                "LANG": "C", "LC_ALL": "C",
+            },
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit("v2 native fake CLI compilation failed") from exc
+    finally:
+        source_path.unlink(missing_ok=True)
+    if completed.returncode != 0:
+        raise SystemExit("v2 native fake CLI compilation failed")
+    os.chmod(path, 0o700)
+
+V2_FAKE_NPM = '''#!/usr/bin/env contextguard-v2-python
+"""One-shot local npm stand-in; installs the exact inert tarball bytes."""
+import json
+import os
+import sys
+import tarfile
+from pathlib import Path
+
+prefix = Path(sys.argv[sys.argv.index("--prefix") + 1])
+node_modules = prefix / "node_modules"
+documents = {}
+for tarball_path in [Path(value) for value in sys.argv[1:] if value.endswith(".tgz")]:
+    with tarfile.open(tarball_path, mode="r:gz") as archive:
+        package_member = archive.getmember("package/package.json")
+        package_stream = archive.extractfile(package_member)
+        if package_stream is None:
+            raise SystemExit(31)
+        document = json.loads(package_stream.read().decode("utf-8"))
+        name = document["name"]
+        documents[name] = document
+        package_root = node_modules.joinpath(*name.split("/"))
+        for member in archive:
+            parts = member.name.split("/")
+            if not parts or parts[0] != "package" or any(part in {"", ".", ".."} for part in parts):
+                raise SystemExit(32)
+            if len(parts) == 1 or member.isdir():
+                continue
+            if not member.isreg():
+                raise SystemExit(33)
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise SystemExit(34)
+            target = package_root.joinpath(*parts[1:])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(stream.read())
+            os.chmod(target, 0o700 if member.mode & 0o111 else 0o600)
+root_name = "@ictechgy/context-guard"
+root_document = documents[root_name]
+binary_root = node_modules / ".bin"
+binary_root.mkdir(parents=True, exist_ok=True)
+for name, relative in root_document["bin"].items():
+    target = node_modules / "@ictechgy" / "context-guard" / relative
+    os.symlink(os.path.relpath(target, binary_root), binary_root / name)
+(node_modules / ".package-lock.json").write_text("{}\\n", encoding="utf-8")
+with open(Path(__file__).with_name("v2-npm-calls.jsonl"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\\n")
 '''
 
 
@@ -654,68 +889,275 @@ def collect_validation_problems(report: dict) -> list[str]:
     return problems
 
 
-def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
-    """Exercise only v2 planning/identity code; it never invokes a provider.
+def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
+    candidate_dir = root / "candidate"
+    candidate_dir.mkdir(mode=0o700)
+    rewrite = (
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "reference = '--bash-reference-v1' in sys.argv[1:]\n"
+        "payload = {'mode': 'bash_reference_v1' if reference else 'legacy_trim'}\n"
+        "if reference:\n"
+        "    payload['handle'] = 'cgr1p_' + 'A' * 43\n"
+        "    payload['retrieval'] = './node_modules/.bin/context-guard reference ' + payload['handle']\n"
+        "print(json.dumps(payload, separators=(',', ':')))\n"
+    ).encode("utf-8")
+    dispatcher = b"#!/bin/sh\nexit 0\n"
+    receipt_document = {
+        "name": "@ictechgy/context-guard-receipt", "version": "0.2.0",
+    }
+    root_document = {
+        "name": "@ictechgy/context-guard", "version": "0.5.0",
+        "dependencies": {"@ictechgy/context-guard-receipt": "0.2.0"},
+        "bin": {
+            "context-guard": "plugins/context-guard/bin/context-guard",
+            "context-guard-rewrite-bash": (
+                "plugins/context-guard/bin/context-guard-rewrite-bash"
+            ),
+        },
+    }
+    package_specs = (
+        (
+            receipt_document,
+            {"package.json": (
+                json.dumps(receipt_document, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode("utf-8")},
+        ),
+        (
+            root_document,
+            {
+                "package.json": (
+                    json.dumps(root_document, sort_keys=True, separators=(",", ":"))
+                    + "\n"
+                ).encode("utf-8"),
+                "plugins/context-guard/bin/context-guard": dispatcher,
+                "plugins/context-guard/bin/context-guard-rewrite-bash": rewrite,
+            },
+        ),
+    )
+    packages = []
+    for document, files in package_specs:
+        name, version = document["name"], document["version"]
+        filename = name.replace("@", "").replace("/", "-") + f"-{version}.tgz"
+        path = candidate_dir / filename
+        with tarfile.open(path, mode="w:gz") as archive:
+            for relative, payload in sorted(files.items()):
+                member = tarfile.TarInfo(f"package/{relative}")
+                member.size = len(payload)
+                member.mode = 0o755 if payload.startswith(b"#!") else 0o644
+                member.mtime = 0
+                archive.addfile(member, io.BytesIO(payload))
+        raw = path.read_bytes()
+        packages.append({
+            "filename": filename,
+            "integrity": "sha512-" + base64.b64encode(hashlib.sha512(raw).digest()).decode("ascii"),
+            "name": name, "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw), "version": version,
+        })
+    manifest = {
+        "build_policy": {
+            "ignore_scripts": True, "lockfiles": [], "network": "offline",
+            "package_build_count": 1,
+        },
+        "commit_sha": "0" * 40,
+        "exact_dependency": {"name": "@ictechgy/context-guard-receipt", "version": "0.2.0"},
+        "packages": packages, "policy_sha256": "0" * 64,
+        "receipt_package_files_sha256": "0" * 64,
+        "protocol": {"maximum": 1, "minimum": 1, "name": "bash_reference_v1"},
+        "repository": "ictechgy/context-guard",
+        "schema_version": "contextguard-npm-candidate-set/v1",
+        "tool_versions": {"npm": "fake-offline-v2", "python": sys.version.split()[0]},
+    }
+    manifest_path = candidate_dir / "candidate-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="ascii",
+    )
+    checksum_path = candidate_dir / "candidate-sha256sums.txt"
+    checksum_path.write_text(
+        "".join(f"{row['sha256']}  {row['filename']}\n" for row in packages),
+        encoding="ascii",
+    )
+    npm_bin_dir = root / "npm-bin"
+    npm_bin_dir.mkdir(mode=0o700)
+    fake_npm = npm_bin_dir / "fake-npm"
+    fake_npm.write_text(V2_FAKE_NPM, encoding="utf-8")
+    os.chmod(fake_npm, 0o700)
+    os.symlink(sys.executable, npm_bin_dir / "contextguard-v2-python")
+    cli_bin_dir = root / "cli-bin"
+    cli_bin_dir.mkdir(mode=0o700)
+    fake_cli = cli_bin_dir / "fake-claude-v2"
+    _compile_v2_fake_cli(fake_cli)
+    return manifest_path, checksum_path, fake_npm, fake_cli
 
-    This deliberately produces no empirical outcome data, so its report is
-    descriptive and cannot satisfy the v2 provider-provenance or claim gates.
-    """
-    task_entries = json.loads((suite / "tasks.json").read_text(encoding="utf-8"))
-    task_ids = [str(task["id"]) for task in task_entries]
-    plan = runner.load_benchmark_study_v2_plan(suite / "study-plan-v2.json")
-    corpus_bytes = (suite / "tasks.json").read_bytes()
-    checker_binding = runner.benchmark_study_v2_checker_binding(
-        suite / "checkers",
+
+def _run_v2_action(
+    action: str, *, output_root: Path, suite: Path, fake_cli: Path,
+    manifest_path: Path | None = None, checksum_path: Path | None = None,
+    fake_npm: Path | None = None, expect_canary_refusal: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    argv = [
+        sys.executable, str(CANONICAL_RUNNER), "--study-v2-action", action,
+        "--study-v2-output-root", str(output_root), "--claude-bin", str(fake_cli),
+    ]
+    if action == "prepare":
+        assert manifest_path is not None and checksum_path is not None and fake_npm is not None
+        argv.extend([
+            "--study-v2-plan", str(suite / "study-plan-v2.json"),
+            "--study-v2-tasks", str(suite / "tasks.json"),
+            "--study-v2-checkers-dir", str(suite / "checkers"),
+            "--study-v2-candidate-manifest", str(manifest_path),
+            "--study-v2-candidate-checksums", str(checksum_path),
+            "--study-v2-candidate-hash", hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "--study-v2-npm-bin", str(fake_npm),
+        ])
+    completed = subprocess.run(argv, cwd=REPO_ROOT, text=True, capture_output=True, timeout=120)
+    if expect_canary_refusal:
+        if completed.returncode == 0 or "canary" not in completed.stderr.lower():
+            raise SystemExit("v2 run did not refuse missing canary evidence")
+        return completed
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stdout[-4000:])
+        sys.stderr.write(completed.stderr[-4000:])
+        raise SystemExit(f"v2 rehearsal action {action} failed: {completed.returncode}")
+    return completed
+
+
+def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
+    """Execute two discarded canaries plus 120 analytic local fake processes."""
+    with tempfile.TemporaryDirectory(prefix="contextguard-v2-rehearsal-") as temporary:
+        temporary_root = Path(temporary)
+        manifest_path, checksum_path, fake_npm, fake_cli = _v2_candidate_fixture(temporary_root)
+        _run_v2_action(
+            "prepare", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            manifest_path=manifest_path, checksum_path=checksum_path, fake_npm=fake_npm,
+        )
+        study_manifest = json.loads((output_root / "study-manifest.json").read_text(encoding="utf-8"))
+        tasks = json.loads((suite / "tasks.json").read_text(encoding="utf-8"))
+        solutions = json.loads((suite / "rehearsal/solutions.json").read_text(encoding="utf-8"))["solutions"]
+        config = {
+            "prompt_sha256_to_task": {
+                hashlib.sha256(task["prompt"].encode("utf-8")).hexdigest(): task["id"]
+                for task in tasks
+            },
+            "run_id_to_unit": {
+                slot["run_id"]: {
+                    "task_id": slot["task_id"], "arm": slot["arm"],
+                    "repetition": slot["repetition"], "attempt": slot["attempt"],
+                }
+                for slot in study_manifest["slots"]
+            },
+            "solutions": solutions,
+            "scripted_retry_units": [list(unit) for unit in V2_SCRIPTED_RETRY_UNITS],
+            "persistent_failure_unit": list(V2_PERSISTENT_FAILURE_UNIT),
+            "state_path": str(output_root / "fake-cli-calls.jsonl"),
+            "canary_prompt": runner.BENCHMARK_STUDY_V2_CANARY_PROMPT,
+            "canary_task_id": runner.BENCHMARK_STUDY_V2_CANARY_TASK_ID,
+            "canary_marker": runner.BENCHMARK_STUDY_V2_CANARY_MARKER.decode("utf-8"),
+        }
+        (output_root / "fake-cli-config.json").write_text(
+            json.dumps(config, sort_keys=True), encoding="utf-8",
+        )
+        _run_v2_action(
+            "run", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            expect_canary_refusal=True,
+        )
+        run_without_canary_refused = not (output_root / "attempts.jsonl").exists()
+        _run_v2_action("canary", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action("run", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        calls_after_run = (output_root / "fake-cli-calls.jsonl").read_text(encoding="utf-8").splitlines()
+        _run_v2_action("resume", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        calls_after_resume = (output_root / "fake-cli-calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if calls_after_resume != calls_after_run:
+            raise SystemExit("v2 resume replayed an already launched identity")
+        _run_v2_action("analyze", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        study_report = json.loads((output_root / "study-report.json").read_text(encoding="utf-8"))
+        npm_calls = fake_npm.with_name("v2-npm-calls.jsonl").read_text(encoding="utf-8").splitlines()
+    all_calls = [json.loads(line) for line in calls_after_run]
+    canary_calls = [call for call in all_calls if call["canary"]]
+    calls = [call for call in all_calls if not call["canary"]]
+    attempts = [
+        json.loads(line) for line in (output_root / "attempts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminals = [row for row in attempts if row["state"] == "terminal"]
+    initial = [row for row in terminals if row["attempt"] == 0]
+    retries = [row for row in terminals if row["attempt"] == 1]
+    final_states = {row["run_id"]: row["state"] for row in attempts}
+    identity_state_counts = {
+        state: sum(value == state for value in final_states.values())
+        for state in sorted(set(final_states.values()))
+    }
+    persistent_index = next(
+        index for index, call in enumerate(calls)
+        if [call["task_id"], call["arm"], call["repetition"]] == list(V2_PERSISTENT_FAILURE_UNIT)
+        and call["attempt"] == 1
     )
-    runner.validate_benchmark_study_v2_bindings(
-        plan, corpus_bytes=corpus_bytes, checker_binding=checker_binding,
+    later_schedule_continued = persistent_index < len(calls) - 1
+    reference_calls = [call for call in calls if call["arm"] == "bash_reference_v1"]
+    legacy_calls = [call for call in calls if call["arm"] == "legacy_trim"]
+    reference_route_verified = bool(
+        reference_calls
+        and all(
+            call["hook_mode"] == "bash_reference_v1"
+            and call["reference_handle_created"]
+            and call["public_retrieval_path"]
+            for call in reference_calls
+        )
+        and legacy_calls
+        and all(
+            call["hook_mode"] == "legacy_trim"
+            and not call["reference_handle_created"]
+            and not call["public_retrieval_path"]
+            for call in legacy_calls
+        )
     )
-    schedule_seed = plan["schedule_seed"]
-    schedule = runner.generate_benchmark_study_v2_schedule(
-        task_ids, repetitions=3, schedule_seed=schedule_seed,
-    )
-    slots = runner.generate_benchmark_study_v2_slots(
-        task_ids, schedule,
-        candidate_hash=hashlib.sha256(CANONICAL_RUNNER.read_bytes()).hexdigest(),
-        namespace="ts12-suite-v2",
-    )
-    readiness = runner.evaluate_benchmark_study_v2_claim_readiness(
-        plan=plan, task_ids=task_ids,
-        binary_inference={
-            "method": "not_run_offline", "degenerate_all_success": False,
-            "noninferiority_pass": False,
-        },
-        effects={
-            "quality_gate": False, "failure_gate": False,
-            "correction_gate": False, "retrieval_gate": False,
-            "shifted_cost_gate": False,
-        },
-        provenance={
-            "source": "offline_fake", "complete_provider_export": False,
-            "contaminated": False, "missing_primary_data": True,
-        },
+    fake_host_lifecycle_verified = bool(terminals) and all(
+        (
+            json.loads(
+                (output_root / "artifacts" / "runs" / row["run_id"] / "receipt.json")
+                .read_text(encoding="utf-8")
+            )["hook_summary"]["event_class_counts"]
+            == ([] if row["arm"] == "host_unmodified" else [
+                {"hook_event": "PreToolUse", "count": 1},
+            ])
+        )
+        for row in terminals
     )
     report = {
         "schema_version": "contextguard.bench.rehearsal-report.v2",
-        "study_version": "v2",
-        "arms": list(runner.BENCHMARK_STUDY_V2_ARMS),
-        "schedule": {
-            "algorithm": runner.BENCHMARK_STUDY_V2_SCHEDULE_ALGORITHM,
-            "blocks": len(schedule), "slots": len(slots),
-            "schedule_sha256": hashlib.sha256(json.dumps(
-                schedule, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-            ).encode("utf-8")).hexdigest(),
-        },
-        "claim_ready": readiness["claim_ready"],
-        "descriptive_only": readiness["descriptive_only"],
-        "unmet_gates": readiness["unmet_gates"],
-        "backend_revision": "unavailable",
-        "model_revision": "unavailable",
+        "study_version": "v2", "arms": list(study_manifest["plan"]["arms"]),
+        "schedule": {"blocks": len(study_manifest["schedule"]), "slots": len(study_manifest["slots"])},
+        "initial_calls": len(initial), "retry_calls": len(retries),
+        "fake_cli_process_calls": len(calls), "candidate_install_calls": len(npm_calls),
+        "discarded_canary_provider_calls": len(canary_calls),
+        "total_fake_cli_process_calls": len(all_calls),
+        "run_without_canary_refused_before_attempts": run_without_canary_refused,
+        "retry_failure_count": sum(row["terminal_status"] == "valid_task_failure_v1" for row in retries),
+        "later_schedule_continued_after_retry_failure": later_schedule_continued,
+        "fake_host_pretooluse_lifecycle_verified": (
+            reference_route_verified and fake_host_lifecycle_verified
+        ),
+        "resume_replayed_launched_identity": False,
+        "identity_state_counts": identity_state_counts,
+        "descriptive_only": study_report["descriptive_only"],
+        "claim_allowed": study_report["claim_allowed"], "claim": study_report["claim"],
+        "claim_ready": False, "unmet_gates": ["power"],
+        "backend_revision": "unavailable", "model_revision": "unavailable",
         "zero_cost_evidence": {
             "provider_calls": 0, "network_calls": 0, "usd_spent": 0.0,
-            "credential_access": "none",
+            "credential_access": "none", "fake_cli_process_calls": len(calls),
         },
     }
+    if not (
+        len(initial) == 108 and len(retries) == 12 and len(calls) == 120
+        and len(npm_calls) == 1 and len(canary_calls) == 2
+        and run_without_canary_refused and report["retry_failure_count"] == 1
+        and later_schedule_continued and reference_route_verified
+        and fake_host_lifecycle_verified
+        and identity_state_counts == {"not_needed": 96, "terminal": 120}
+    ):
+        raise SystemExit("v2 executable rehearsal counts or continuation evidence failed")
     report_path = output_root / "rehearsal-report.json"
     report_path.write_text(
         json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
