@@ -33,6 +33,22 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Normalize hosted runtime permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
+          case "${RUNNER_OS}:${python_runtime}" in
+            Linux:/opt/hostedtoolcache/*) ;;
+            *) echo "unexpected hosted Python runtime" >&2; exit 1 ;;
+          esac
+          case "${RUNNER_OS}:${node_runtime}" in
+            Linux:/opt/hostedtoolcache/*) ;;
+            *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
+          esac
+          sudo chmod go-w -- "$python_runtime" "$node_runtime"
+
       - name: Verify hosted runtime trust
         run: >-
           python -m unittest -v
@@ -66,6 +82,22 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "22"
+
+      - name: Normalize hosted runtime permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
+          case "${RUNNER_OS}:${python_runtime}" in
+            macOS:/Library/Frameworks/Python.framework/Versions/*) ;;
+            *) echo "unexpected hosted Python runtime" >&2; exit 1 ;;
+          esac
+          case "${RUNNER_OS}:${node_runtime}" in
+            macOS:/opt/homebrew/*|macOS:/usr/local/*|macOS:/Users/runner/hostedtoolcache/*) ;;
+            *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
+          esac
+          sudo chmod go-w -- "$python_runtime" "$node_runtime"
 
       - name: Verify hosted runtime trust
         run: >-

@@ -47,9 +47,14 @@ Setup writes the opt-in flag only when the paired topology is present. Doctor
 and source/plugin setup report it as unavailable otherwise and retain the
 legacy Bash trim hook. Runtime discovery never launches Node by name from
 `PATH`: it binds an absolute interpreter from fixed system locations, with a
-GitHub Actions-only fallback restricted to fixed hosted-toolcache roots, and
-rechecks the pinned Receipt files before starting one private broker. Before
-Bash starts, that broker has
+GitHub Actions-only Node fallback restricted to fixed hosted-toolcache roots,
+and rechecks the pinned Receipt files before starting one private broker. Before
+Bash starts, every interpreter must be a regular, single-link executable owned
+by root or the current user, executable, and not group- or world-writable. The
+CI workflow validates the canonical hosted Python and Node locations, removes
+group/world write permission from exactly those two ephemeral targets, and then
+runs the same production preflight; `GITHUB_ACTIONS` never weakens this policy.
+The broker has
 already loaded its code and retained the repository, store, expiry, journal,
 and anonymous owner-only capture descriptors. `COMMIT` therefore performs no
 later package-path, interpreter, or Git lookup. Even a below-threshold command

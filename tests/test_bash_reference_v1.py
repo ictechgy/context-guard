@@ -176,12 +176,31 @@ class BashReferenceV1Tests(unittest.TestCase):
 
             self.assertIsNone(result)
 
-    def test_executable_identity_accepts_trusted_github_toolcache_hardlink(self):
-        """GitHub's stable hardlinked toolcache interpreter remains eligible."""
+    def test_executable_identity_rejects_writable_github_runtime(self):
+        """A spoofed GHA marker cannot admit a writable interpreter."""
         policy = load_policy()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            trusted_root = root / "trusted-toolcache"
+            trusted_root = root / "trusted-runtime"
+            trusted_root.mkdir()
+            node = trusted_root / "node"
+            node.write_bytes(b"trusted runtime")
+            node.chmod(0o777)
+
+            with mock.patch.object(
+                policy, "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES", (trusted_root,)
+            ), mock.patch.dict(
+                os.environ, {"GITHUB_ACTIONS": "true"}, clear=False
+            ):
+                identity = policy._executable_identity(node)
+
+            self.assertIsNone(identity)
+
+    def test_executable_identity_rejects_hardlink_inside_github_toolcache(self):
+        """A spoofed GHA marker cannot admit hardlinked aliases."""
+        policy = load_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            trusted_root = Path(tmp) / "trusted-runtime"
             trusted_root.mkdir()
             source = trusted_root / "node-source"
             node = trusted_root / "node"
@@ -199,8 +218,7 @@ class BashReferenceV1Tests(unittest.TestCase):
             ):
                 identity = policy._executable_identity(node)
 
-            self.assertIsNotNone(identity)
-            self.assertEqual(node.stat().st_nlink, 2)
+            self.assertIsNone(identity)
 
     def test_github_runner_python_runtime_is_policy_eligible(self):
         """The real setup-python runtime must satisfy the production policy."""
@@ -249,10 +267,15 @@ class BashReferenceV1Tests(unittest.TestCase):
             "under_trusted_root": policy._path_is_under(executable, roots),
         }
 
-        self.assertIsNotNone(
-            policy._trusted_node_interpreter(ROOT),
-            json.dumps(details, sort_keys=True),
-        )
+        identity = policy._executable_identity(executable)
+        self.assertIsNotNone(identity, json.dumps(details, sort_keys=True))
+        binding = policy._trusted_node_interpreter(ROOT)
+        self.assertIsNotNone(binding, json.dumps(details, sort_keys=True))
+        self.assertEqual(binding, (executable, identity))
+        if policy._path_is_under(executable, roots):
+            with mock.patch.object(policy, "_TRUSTED_NODE_CANDIDATES", ()):
+                fallback_binding = policy._trusted_node_interpreter(ROOT)
+            self.assertEqual(fallback_binding, (executable, identity))
 
     def test_executable_identity_rejects_hardlinks_outside_trusted_github_toolcache(self):
         """Local and prefix-external hardlinks retain the single-link policy."""
@@ -282,48 +305,34 @@ class BashReferenceV1Tests(unittest.TestCase):
                 ):
                     self.assertIsNone(policy._executable_identity(node))
 
-    def test_hardlinked_interpreter_replacement_is_detected_before_launch(self):
-        """Changing a hardlinked interpreter after binding still fails closed."""
+    def test_interpreter_mutation_after_binding_is_detected_before_launch(self):
+        """A changed single-link interpreter never reaches subprocess launch."""
         policy = load_policy()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
-            trusted_root = root / "trusted-toolcache"
-            trusted_root.mkdir()
-            source = trusted_root / "node-source"
-            node = trusted_root / "node"
+            node = root / "node"
             cli = root / "verified-cli"
-            source.write_bytes(b"trusted runtime")
-            source.chmod(0o700)
+            node.write_bytes(b"trusted runtime")
+            node.chmod(0o700)
             cli.write_bytes(b"trusted cli")
-            try:
-                os.link(source, node)
-            except OSError:
-                self.skipTest("hardlinks unavailable on this filesystem")
-            with mock.patch.object(
-                policy, "_TRUSTED_GITHUB_TOOLCACHE_PREFIXES", (trusted_root,)
-            ), mock.patch.dict(
-                os.environ, {"GITHUB_ACTIONS": "true"}, clear=False
-            ):
-                adapter = policy.NpmReceiptCliAdapter(
-                    cli,
-                    node_path=node,
-                    protected_paths=(cli,),
-                )
-                source.write_bytes(b"replaced through alias")
+            adapter = policy.NpmReceiptCliAdapter(
+                cli,
+                node_path=node,
+                protected_paths=(cli,),
+            )
+            node.write_bytes(b"changed runtime")
 
-                with tempfile.TemporaryFile(
-                    "w+b", buffering=0
-                ) as capture, mock.patch.object(
-                    policy.subprocess, "Popen"
-                ) as popen:
-                    os.fchmod(capture.fileno(), 0o600)
-                    broker, reason = adapter.start_broker(
-                        capture.fileno(),
-                        root=str(root),
-                        transaction_id="d" * 64,
-                        disclosure_days=7,
-                        timeout_seconds=8,
-                    )
+            with tempfile.TemporaryFile(
+                "w+b", buffering=0
+            ) as capture, mock.patch.object(policy.subprocess, "Popen") as popen:
+                os.fchmod(capture.fileno(), 0o600)
+                broker, reason = adapter.start_broker(
+                    capture.fileno(),
+                    root=str(root),
+                    transaction_id="d" * 64,
+                    disclosure_days=7,
+                    timeout_seconds=8,
+                )
 
         self.assertIsNone(broker)
         self.assertEqual(reason, "receipt_node_interpreter_changed_before_launch")

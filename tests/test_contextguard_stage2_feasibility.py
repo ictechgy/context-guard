@@ -55,6 +55,7 @@ PROVIDER_FREE_HEAD_REF = "HEAD"
 PROVIDER_FREE_SUPPORT_PATHS = frozenset(
     {
         ".claude-plugin/marketplace.json",
+        ".github/workflows/ci.yml",
         ".github/workflows/npm-candidate.yml",
         ".github/workflows/npm-promote.yml",
         ".github/workflows/npm-publish.yml",

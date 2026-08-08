@@ -685,10 +685,7 @@ def _executable_identity(path: Path) -> tuple[int, ...] | None:
     if (
         not path.is_absolute()
         or not stat.S_ISREG(status.st_mode)
-        or (
-            status.st_nlink != 1
-            and not _path_is_under(path, _trusted_github_toolcache_roots())
-        )
+        or status.st_nlink != 1
         or status.st_uid not in {0, os.geteuid()}
         or status.st_mode & 0o022
         or not status.st_mode & 0o111

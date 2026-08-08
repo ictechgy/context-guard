@@ -373,6 +373,35 @@ class WorkflowSecurityTests(unittest.TestCase):
             self.assertLess(job.index("name: Set up Node"), job.index("name: Run prepublish release gate"))
             self.assertLess(job.index("name: Set up Node"), job.index("name: Run staged plugin release smoke"))
 
+    def test_ci_normalizes_only_expected_hosted_runtime_targets_before_preflight(self):
+        ci = read(".github/workflows/ci.yml")
+        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
+
+        self.assertEqual(ci.count("name: Normalize hosted runtime permissions"), 2)
+        self.assertEqual(
+            ci.count('sudo chmod go-w -- "$python_runtime" "$node_runtime"'),
+            2,
+        )
+        self.assertNotIn("chmod -R", ci)
+        self.assertNotIn('chmod go-w -- "$python_runtime" *', ci)
+        self.assertIn("Linux:/opt/hostedtoolcache/*", ubuntu_job)
+        self.assertNotIn("/Library/Frameworks", ubuntu_job)
+        self.assertIn(
+            "macOS:/Library/Frameworks/Python.framework/Versions/*",
+            macos_job,
+        )
+        self.assertIn(
+            "macOS:/opt/homebrew/*|macOS:/usr/local/*|macOS:/Users/runner/hostedtoolcache/*",
+            macos_job,
+        )
+        for job in (ubuntu_job, macos_job):
+            normalize = job.index("name: Normalize hosted runtime permissions")
+            preflight = job.index("name: Verify hosted runtime trust")
+            prepublish = job.index("name: Run prepublish release gate")
+            self.assertLess(job.index("name: Set up Node"), normalize)
+            self.assertLess(normalize, preflight)
+            self.assertLess(preflight, prepublish)
+
     def test_homebrew_formula_template_uses_release_placeholders(self):
         template = read("packaging/homebrew/context-guard.rb.template")
         docs = read("docs/distribution.md")
