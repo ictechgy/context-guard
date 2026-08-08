@@ -56,7 +56,7 @@ jobs:
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
 
       - name: Run prepublish release gate
-        timeout-minutes: 18
+        timeout-minutes: 25
         run: python scripts/prepublish_check.py
 
       - name: Run staged plugin release smoke

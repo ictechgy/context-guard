@@ -358,7 +358,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         ubuntu_job = job_blocks["test-and-prepublish"]
         macos_job = job_blocks["test-and-prepublish-macos"]
 
-        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python scripts/prepublish_check.py", ubuntu_job)
+        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 25\n        run: python scripts/prepublish_check.py", ubuntu_job)
         self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python scripts/release_smoke.py", ubuntu_job)
         self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 25\n        run: python scripts/prepublish_check.py", macos_job)
         self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 8\n        run: python scripts/release_smoke.py", macos_job)
