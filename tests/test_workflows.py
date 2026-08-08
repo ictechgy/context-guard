@@ -124,6 +124,28 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("WORKFLOW_COMMIT: ${{ github.sha }}", workflow)
         self.assertIn('test "$WORKFLOW_COMMIT" = "$CANDIDATE_COMMIT"', workflow)
 
+    def test_npm_candidate_workflow_checks_gate_b_before_build_and_attestation(self):
+        workflow = read(".github/workflows/npm-candidate.yml")
+
+        checkout = workflow.index("- name: Checkout the exact candidate commit")
+        checkout_end = workflow.index("\n      - name:", checkout + 1)
+        checkout_step = workflow[checkout:checkout_end]
+        self.assertIn("fetch-depth: 0", checkout_step)
+
+        proof_step = workflow.index("- name: Verify Gate-B rollback proof")
+        proof_step_end = workflow.index("\n      - name:", proof_step + 1)
+        proof_step_text = workflow[proof_step:proof_step_end]
+        gate_b = "python3 scripts/verify_gate_b_rollback.py --json"
+        self.assertEqual(workflow.count(gate_b), 1)
+        self.assertIn("CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}", proof_step_text)
+        self.assertIn('proof.get("status") != "ok"', proof_step_text)
+        self.assertIn('proof.get("source_head") != expected', proof_step_text)
+        gate_b_index = workflow.index(gate_b)
+        build_index = workflow.index("python3 scripts/build_npm_candidates.py")
+        attestation_index = workflow.index("actions/attest-build-provenance@")
+        self.assertLess(gate_b_index, build_index)
+        self.assertLess(gate_b_index, attestation_index)
+
     def test_npm_publish_workflow_uses_approved_exact_candidate_assets(self):
         workflow = read(".github/workflows/npm-publish.yml")
         jobs = workflow_job_blocks(workflow)

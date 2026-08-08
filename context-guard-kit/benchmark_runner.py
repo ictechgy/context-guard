@@ -13630,15 +13630,7 @@ def _analyze_benchmark_study_v2_executable_unlocked(
     }
 
 
-BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION = "contextguard.bench.provider-export-manifest.v2"
-BENCHMARK_STUDY_V2_PROVIDER_EXPORT_SCHEMA_VERSION = "contextguard.bench.provider-export.v2"
-BENCHMARK_STUDY_V2_PRIVATE_REPORT_SCHEMA_VERSION = "contextguard.bench.provider-export-report.v2"
 BENCHMARK_STUDY_V2_NAMESPACE = "contextguard.bench.v2"
-BENCHMARK_STUDY_V2_EVIDENCE_KEYS = frozenset({
-    "schema_version", "manifest_sha256", "run_id", "task_id", "repetition", "arm", "attempt",
-    "candidate_hash", "terminal_status", "success", "tokens", "correction", "retrieval", "source",
-    "backend_revision", "model_revision", "cli_version",
-})
 
 
 def _benchmark_study_v2_task_ids_from_corpus(corpus_bytes: bytes) -> list[str]:
@@ -13693,193 +13685,6 @@ def benchmark_study_v2_checker_binding(checkers_dir: Path) -> dict[str, Any]:
     return binding
 
 
-def prepare_benchmark_study_v2_provider_export(
-    *, plan_path: Path, tasks_path: Path, checkers_dir: Path, candidate_hash: str,
-) -> dict[str, Any]:
-    """Build the private, immutable handoff for an operator-run provider study."""
-    if SHA256_HEX_PATTERN.fullmatch(candidate_hash) is None:
-        raise ValueError("v2 candidate hash is invalid")
-    plan = load_benchmark_study_v2_plan(plan_path)
-    corpus_bytes = _read_bytes_no_follow(tasks_path, max_bytes=MAX_FIXTURE_FILE_BYTES)
-    checker_binding = benchmark_study_v2_checker_binding(checkers_dir)
-    validate_benchmark_study_v2_bindings(
-        plan, corpus_bytes=corpus_bytes, checker_binding=checker_binding,
-    )
-    task_ids = _benchmark_study_v2_task_ids_from_corpus(corpus_bytes)
-    schedule = generate_benchmark_study_v2_schedule(
-        task_ids, repetitions=3, schedule_seed=plan["schedule_seed"],
-    )
-    slots = generate_benchmark_study_v2_slots(
-        task_ids, schedule, candidate_hash=candidate_hash,
-        namespace=BENCHMARK_STUDY_V2_NAMESPACE,
-    )
-    return {
-        "schema_version": BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION,
-        "plan": plan,
-        "plan_sha256": _study_sha256_bytes(_study_canonical_json_bytes(plan)),
-        "inputs": {
-            "candidate_hash": candidate_hash,
-            "checker_sha256": checker_binding["sha256"],
-            "corpus_sha256": _study_sha256_bytes(corpus_bytes),
-            "namespace": BENCHMARK_STUDY_V2_NAMESPACE,
-            "task_ids": task_ids,
-            "task_ids_sha256": _benchmark_study_v2_task_ids_sha256(task_ids),
-        },
-        "schedule": schedule,
-        "slots": slots,
-    }
-
-
-def load_benchmark_study_v2_provider_manifest(path: Path) -> dict[str, Any]:
-    raw = _measurement_read_private_file(path, maximum=1_000_000)
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("v2 provider manifest is invalid JSON") from exc
-    if not isinstance(manifest, dict) or raw != _study_canonical_json_bytes(manifest):
-        raise ValueError("v2 provider manifest must be canonical private JSON")
-    required = {"schema_version", "plan", "plan_sha256", "inputs", "schedule", "slots"}
-    if set(manifest) != required or manifest.get("schema_version") != BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION:
-        raise ValueError("v2 provider manifest schema mismatch")
-    plan = manifest["plan"]
-    validate_benchmark_study_v2_plan(plan)
-    if manifest["plan_sha256"] != _study_sha256_bytes(_study_canonical_json_bytes(plan)):
-        raise ValueError("v2 provider manifest plan binding mismatch")
-    inputs = manifest["inputs"]
-    if not isinstance(inputs, Mapping) or set(inputs) != {
-        "candidate_hash", "checker_sha256", "corpus_sha256", "namespace", "task_ids",
-        "task_ids_sha256",
-    }:
-        raise ValueError("v2 provider manifest inputs schema mismatch")
-    task_ids = _benchmark_study_v2_task_ids(inputs["task_ids"])
-    if (
-        SHA256_HEX_PATTERN.fullmatch(inputs["candidate_hash"]) is None
-        or inputs["checker_sha256"] != plan["checker_sha256"]
-        or inputs["corpus_sha256"] != plan["corpus_sha256"]
-        or inputs["task_ids_sha256"] != plan["task_ids_sha256"]
-        or inputs["task_ids_sha256"]
-        != _benchmark_study_v2_task_ids_sha256(task_ids)
-        or inputs["namespace"] != BENCHMARK_STUDY_V2_NAMESPACE
-    ):
-        raise ValueError("v2 provider manifest task-order binding mismatch")
-    schedule = generate_benchmark_study_v2_schedule(
-        task_ids, repetitions=3, schedule_seed=plan["schedule_seed"],
-    )
-    slots = generate_benchmark_study_v2_slots(
-        task_ids, schedule, candidate_hash=inputs["candidate_hash"],
-        namespace=inputs["namespace"],
-    )
-    if manifest["schedule"] != schedule or manifest["slots"] != slots:
-        raise ValueError("v2 provider manifest schedule or slot binding mismatch")
-    return manifest
-
-
-def _benchmark_study_v2_load_provider_export(
-    path: Path, *, manifest: Mapping[str, Any], manifest_sha256: str,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    raw = _read_bytes_no_follow(path, max_bytes=1_000_000)
-    if not raw or not raw.endswith(b"\n"):
-        raise ValueError("v2 provider export must be non-empty newline-delimited JSON")
-    rows: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        try:
-            row = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("v2 provider export row is invalid JSON") from exc
-        if not isinstance(row, dict) or line + b"\n" != _study_canonical_json_bytes(row):
-            raise ValueError("v2 provider export rows must be canonical JSON")
-        validate_benchmark_study_v2_evidence_metadata(row)
-        if set(row) != BENCHMARK_STUDY_V2_EVIDENCE_KEYS:
-            raise ValueError("v2 provider export row schema mismatch")
-        rows.append(row)
-    if len(rows) > 216:
-        raise ValueError("v2 provider export has too many rows")
-    slots_by_run_id = {slot["run_id"]: slot for slot in manifest["slots"]}
-    seen: set[str] = set()
-    revisions: dict[str, set[str]] = {key: set() for key in ("backend_revision", "model_revision", "cli_version")}
-    initial_success: dict[tuple[str, int, str], bool] = {}
-    for row in rows:
-        run_id = row["run_id"]
-        slot = slots_by_run_id.get(run_id)
-        if run_id in seen or slot is None:
-            raise ValueError("v2 provider export has duplicate or unknown slot")
-        seen.add(run_id)
-        if any(row[key] != slot[key] for key in ("task_id", "repetition", "arm", "attempt")):
-            raise ValueError("v2 provider export slot identity mismatch")
-        if row["schema_version"] != BENCHMARK_STUDY_V2_PROVIDER_EXPORT_SCHEMA_VERSION or row["manifest_sha256"] != manifest_sha256:
-            raise ValueError("v2 provider export manifest binding mismatch")
-        if row["candidate_hash"] != manifest["inputs"]["candidate_hash"] or row["source"] != "provider_export":
-            raise ValueError("v2 provider export provenance binding mismatch")
-        if not isinstance(row["success"], bool) or row["terminal_status"] != ("success" if row["success"] else "valid_task_failure_v1"):
-            raise ValueError("v2 provider export terminal outcome is invalid")
-        for field in ("tokens", "correction", "retrieval"):
-            value = row[field]
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0:
-                raise ValueError("v2 provider export metric is invalid")
-        for field in revisions:
-            value = row[field]
-            if (
-                not isinstance(value, str)
-                or BENCHMARK_STUDY_V2_REVISION_RE.fullmatch(value) is None
-            ):
-                raise ValueError("v2 provider export revision is invalid")
-            revisions[field].add(value)
-        key = (row["task_id"], row["repetition"], row["arm"])
-        if row["attempt"] == 0:
-            initial_success[key] = row["success"]
-    expected_initial = {
-        (slot["task_id"], slot["repetition"], slot["arm"])
-        for slot in manifest["slots"] if slot["attempt"] == 0
-    }
-    if set(initial_success) != expected_initial:
-        raise ValueError("v2 provider export initial slot coverage is incomplete")
-    expected_run_ids = {
-        slot["run_id"] for slot in manifest["slots"]
-        if slot["attempt"] == 0
-        or not initial_success[(slot["task_id"], slot["repetition"], slot["arm"])]
-    }
-    if seen != expected_run_ids:
-        raise ValueError("v2 provider export retry coverage is incomplete or replaced")
-    if any(len(values) != 1 for values in revisions.values()):
-        raise ValueError("v2 provider export has mixed revisions")
-    provenance = {
-        "source": "provider_export", "complete_provider_export": True,
-        "backend_revision": next(iter(revisions["backend_revision"])),
-        "model_revision": next(iter(revisions["model_revision"])),
-        "cli_version": next(iter(revisions["cli_version"])),
-        "contaminated": False, "mixed_versions": False, "missing_primary_data": False,
-    }
-    return rows, provenance
-
-
-def analyze_benchmark_study_v2_provider_export(
-    *, manifest_path: Path, evidence_path: Path,
-) -> dict[str, Any]:
-    """Validate a complete provider export locally; never calls a provider or CLI."""
-    del manifest_path, evidence_path
-    raise ValueError(
-        "provider-declared success is not executable evidence; use the v2 "
-        "output-root run/resume/analyze lifecycle with a bound checker"
-    )
-
-
-def run_benchmark_study_v2_provider_export_action(args: argparse.Namespace) -> int:
-    if args.study_v2_action == "prepare":
-        manifest = prepare_benchmark_study_v2_provider_export(
-            plan_path=args.study_v2_plan, tasks_path=args.study_v2_tasks,
-            checkers_dir=args.study_v2_checkers_dir, candidate_hash=args.study_v2_candidate_hash,
-        )
-        _study_write_private(args.study_v2_manifest, manifest)
-        print(f"prepared v2 provider-export manifest: {args.study_v2_manifest}")
-        return 0
-    report = analyze_benchmark_study_v2_provider_export(
-        manifest_path=args.study_v2_manifest, evidence_path=args.study_v2_evidence_jsonl,
-    )
-    _study_write_private(args.study_v2_report, report)
-    print(f"analyzed v2 provider export: {args.study_v2_report}")
-    return 0
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tasks", default=None, type=Path, help="task fixture JSON")
@@ -13929,12 +13734,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="frozen v2 checker directory used only by --study-v2-action prepare")
     parser.add_argument("--study-v2-candidate-hash", default=None,
                         help="exact candidate SHA-256 used only by --study-v2-action prepare")
-    parser.add_argument("--study-v2-manifest", default=None, type=Path,
-                        help="private v2 provider-export manifest")
-    parser.add_argument("--study-v2-evidence-jsonl", default=None, type=Path,
-                        help="canonical provider-export JSONL used only by --study-v2-action analyze")
-    parser.add_argument("--study-v2-report", default=None, type=Path,
-                        help="new private v2 analysis report used only by --study-v2-action analyze")
     parser.add_argument("--study-v2-output-root", default=None, type=Path,
                         help="private executable v2 lifecycle directory")
     parser.add_argument("--study-v2-candidate-manifest", default=None, type=Path,
@@ -13949,7 +13748,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     v2_values = (
         args.study_v2_action, args.study_v2_plan, args.study_v2_tasks,
         args.study_v2_checkers_dir, args.study_v2_candidate_hash,
-        args.study_v2_manifest, args.study_v2_evidence_jsonl, args.study_v2_report,
         args.study_v2_output_root, args.study_v2_candidate_manifest,
         args.study_v2_candidate_checksums,
     )
@@ -13971,92 +13769,65 @@ def main(argv: Sequence[str] | None = None) -> int:
             ) if active
         ]
         if conflicts:
-            parser.error(f"v2 provider-export mode conflicts with {', '.join(conflicts)}")
-        if args.study_v2_output_root is not None:
-            forbidden_legacy = (
-                args.study_v2_candidate_hash, args.study_v2_manifest,
-                args.study_v2_evidence_jsonl, args.study_v2_report,
-            )
-            if args.study_v2_action == "prepare":
-                required = (
-                    args.study_v2_plan, args.study_v2_tasks,
-                    args.study_v2_checkers_dir, args.study_v2_candidate_manifest,
-                    args.study_v2_candidate_hash,
-                )
-                forbidden = forbidden_legacy[1:]
-            else:
-                required = (args.study_v2_output_root,)
-                forbidden = forbidden_legacy + (
-                    args.study_v2_plan, args.study_v2_tasks,
-                    args.study_v2_checkers_dir, args.study_v2_candidate_manifest,
-                    args.study_v2_candidate_checksums,
-                )
-            if not all(value is not None for value in required) or any(value is not None for value in forbidden):
-                parser.error("v2 executable action has incomplete or conflicting arguments")
-            try:
-                if args.study_v2_action == "prepare":
-                    prepare_benchmark_study_v2_executable(
-                        output_root=args.study_v2_output_root,
-                        plan_path=args.study_v2_plan, tasks_path=args.study_v2_tasks,
-                        checkers_dir=args.study_v2_checkers_dir,
-                        candidate_manifest_path=args.study_v2_candidate_manifest,
-                        candidate_checksum_path=args.study_v2_candidate_checksums,
-                        expected_candidate_hash=args.study_v2_candidate_hash,
-                        npm_bin=args.study_v2_npm_bin,
-                        claude_bin=args.claude_bin,
-                    )
-                    print(f"prepared executable v2 study: {args.study_v2_output_root}")
-                elif args.study_v2_action == "canary":
-                    summary = execute_benchmark_study_v2_canary(
-                        output_root=args.study_v2_output_root,
-                        claude_bin=args.claude_bin,
-                    )
-                    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
-                elif args.study_v2_action in {"run", "resume"}:
-                    summary = execute_benchmark_study_v2(
-                        output_root=args.study_v2_output_root,
-                        claude_bin=args.claude_bin,
-                        resume=args.study_v2_action == "resume",
-                    )
-                    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
-                else:
-                    report = analyze_benchmark_study_v2_executable(
-                        output_root=args.study_v2_output_root,
-                        claude_bin=args.claude_bin,
-                    )
-                    _study_write_private(
-                        args.study_v2_output_root / "study-report.json", report,
-                    )
-                    print(f"analyzed executable v2 study: {args.study_v2_output_root / 'study-report.json'}")
-                return 0
-            except (OSError, SystemExit, TypeError, ValueError) as exc:
-                print(f"v2 executable study refused: {exc}", file=sys.stderr)
-                return 2
-        if args.study_v2_action not in {"prepare", "analyze"}:
-            parser.error("v2 run/resume requires --study-v2-output-root")
+            parser.error(f"v2 executable mode conflicts with {', '.join(conflicts)}")
+        if args.study_v2_output_root is None:
+            parser.error("v2 executable actions require --study-v2-output-root")
         if args.study_v2_action == "prepare":
             required = (
                 args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
-                args.study_v2_candidate_hash, args.study_v2_manifest,
+                args.study_v2_candidate_hash, args.study_v2_candidate_manifest,
             )
-            forbidden = (args.study_v2_evidence_jsonl, args.study_v2_report)
+            forbidden = ()
         else:
-            required = (
-                args.study_v2_manifest, args.study_v2_evidence_jsonl, args.study_v2_report,
-            )
+            required = (args.study_v2_output_root,)
             forbidden = (
                 args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
-                args.study_v2_candidate_hash,
+                args.study_v2_candidate_hash, args.study_v2_candidate_manifest,
+                args.study_v2_candidate_checksums,
             )
         if not all(value is not None for value in required) or any(value is not None for value in forbidden):
-            parser.error("v2 provider-export action has incomplete or conflicting arguments")
+            parser.error("v2 executable action has incomplete or conflicting arguments")
         try:
-            return run_benchmark_study_v2_provider_export_action(args)
-        except (OSError, TypeError, ValueError) as exc:
-            print(f"v2 provider-export study refused: {exc}", file=sys.stderr)
+            if args.study_v2_action == "prepare":
+                prepare_benchmark_study_v2_executable(
+                    output_root=args.study_v2_output_root,
+                    plan_path=args.study_v2_plan, tasks_path=args.study_v2_tasks,
+                    checkers_dir=args.study_v2_checkers_dir,
+                    candidate_manifest_path=args.study_v2_candidate_manifest,
+                    candidate_checksum_path=args.study_v2_candidate_checksums,
+                    expected_candidate_hash=args.study_v2_candidate_hash,
+                    npm_bin=args.study_v2_npm_bin,
+                    claude_bin=args.claude_bin,
+                )
+                print(f"prepared executable v2 study: {args.study_v2_output_root}")
+            elif args.study_v2_action == "canary":
+                summary = execute_benchmark_study_v2_canary(
+                    output_root=args.study_v2_output_root,
+                    claude_bin=args.claude_bin,
+                )
+                print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+            elif args.study_v2_action in {"run", "resume"}:
+                summary = execute_benchmark_study_v2(
+                    output_root=args.study_v2_output_root,
+                    claude_bin=args.claude_bin,
+                    resume=args.study_v2_action == "resume",
+                )
+                print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+            else:
+                report = analyze_benchmark_study_v2_executable(
+                    output_root=args.study_v2_output_root,
+                    claude_bin=args.claude_bin,
+                )
+                _study_write_private(
+                    args.study_v2_output_root / "study-report.json", report,
+                )
+                print(f"analyzed executable v2 study: {args.study_v2_output_root / 'study-report.json'}")
+            return 0
+        except (OSError, SystemExit, TypeError, ValueError) as exc:
+            print(f"v2 executable study refused: {exc}", file=sys.stderr)
             return 2
     if args.tasks is None or args.variants is None:
-        parser.error("--tasks and --variants are required outside v2 provider-export mode")
+        parser.error("--tasks and --variants are required outside study modes")
     study_values = (
         args.measurement_study_plan,
         args.measurement_study_action,

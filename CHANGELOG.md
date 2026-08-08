@@ -25,11 +25,13 @@ All notable changes for the ContextGuard plugin are documented here.
   import recovery journal, 10,000,000-byte merged capture ceiling, and
   expired/revoked reference refusal. Installation and disablement never erase
   stored artifacts automatically.
-- Added an executable, provider-free three-arm study workflow for importing
-  operator-owned provider exports across `host_unmodified`, `legacy_trim`, and
-  `bash_reference_v1`. It binds a fixed 12-task corpus and reports the legacy
-  contrast diagnostically; without an independent power model the result is
-  explicitly descriptive-only and cannot authorize a savings claim.
+- Added an executable three-arm study across `host_unmodified`, `legacy_trim`,
+  and `bash_reference_v1`, with an explicit `prepare` → `canary` → `run`/`resume`
+  → `analyze` lifecycle that invokes the bound Claude CLI only during canary and
+  analytic execution. A separate provider-free offline rehearsal exercises the
+  lifecycle with a native fake CLI. The study binds a fixed 12-task corpus and
+  reports the legacy contrast diagnostically; without an independent power
+  model the result is descriptive-only and cannot authorize a savings claim.
 - Added build-once npm candidate manifests, exact cross-package hashes/SRI,
   paired clean-install discovery smoke, separate trusted publication to
   `next`, and preflight/rollback-aware promotion to `latest`. No package is

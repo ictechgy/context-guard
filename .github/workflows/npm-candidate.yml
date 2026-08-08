@@ -49,7 +49,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event.inputs.commit_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify the checked-out commit
@@ -65,6 +65,15 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
+
+      - name: Verify Gate-B rollback proof
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_gate_b_rollback.py --json |
+            python3 -c 'import json, os, sys; proof = json.load(sys.stdin); expected = os.environ["CANDIDATE_COMMIT"]; sys.exit("Gate-B proof is not bound to the candidate commit") if proof.get("status") != "ok" or proof.get("source_head") != expected else None'
 
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
