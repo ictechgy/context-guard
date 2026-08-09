@@ -10,37 +10,31 @@ activity, broader credential/data access, or any action outside this packet.
 
 ## Current readiness verdict
 
-- Local candidate construction and paired clean-install smoke passed against
-  the merged `0.5.0`/`0.2.0` package set before the canary-budget hardening.
-- The provider-free v2 lifecycle rehearsal passed with 108 initials, 12
-  deterministic retries, two discarded fake canaries, zero network/provider
-  calls, and `claim_allowed=false`. It exercised the live artifact contract:
-  `contextguard.bench.study-manifest.v3`,
-  `contextguard.bench.study-attempt.v3`,
-  `contextguard.bench.study-report.v3`, and
-  `contextguard.bench.study-invalid-decision.v1`.
-- Focused benchmark, npm/release, Receipt package, Gate-B, Stage2, and protected
-  surface tests passed.
-- Full offline `python3 scripts/prepublish_check.py` passed after hardening:
-  `1559` tests, `3` skips, `prepublish check: OK`.
-- A newly found live-safety gap was closed locally: both required canary calls
-  now carry the same hard `$0.75` per-call ceiling as analytic calls, and that
-  value is bound in the canary contract.
-- The worktree now differs from commit `12a8068...`. Therefore the earlier
-  development candidate manifest SHA-256
-  `06ccf257131d1442006f259aeb42d83cd7f1c66196f307edf20f2a03f37be452`
-  is invalidated for live use or publication.
-- A replacement development candidate containing the hard-budget change passed
-  paired clean-install smoke. Its manifest SHA-256 is
-  `98e23e3e501b783f16a418c2d36320ace921640b922367a155d33ed7c6b8a9d3`,
-  root tarball SHA-256 is
-  `9b063fd07df231f14c238d14b50d7891267dc2ee0a0040fef3bdad9d43adb20b`,
-  and Receipt tarball SHA-256 is
-  `a5844b35dd7ae3f52f522f1d6f1ac70d5e3a64996a44e9255ed80f98db45bcb9`.
-  It is also **not live/publish-authorized** because its manifest names the base
-  commit while the source tree contains uncommitted reviewed changes.
-- A reviewed committed source and one new immutable candidate must be selected
-  before live `prepare` or any publication action.
+- PR #287 merged the v3 accounting/budget hardening; PR #288 merged the bounded
+  GitHub-hosted runtime normalization required by the candidate workflow.
+- Candidate run `31314422888` succeeded for retained ref
+  `refs/heads/candidate/p1-v3-2489f9995822` at exact source
+  `2489f9995822325d273bbc4406299469214aba02`. Both tarballs, the canonical
+  manifest, checksums, SRI values, and all three GitHub attestations were
+  independently verified. npm `next`/`latest` were not invoked.
+- Provider-free rehearsal passed with 108 initials, 12 deterministic retries,
+  two discarded fake canaries, zero network/provider calls, and
+  `claim_allowed=false`.
+- The first live root completed `prepare`, then terminally accounted one failed
+  `legacy_trim` canary. The exact Claude CLI reported that it was not logged in;
+  provider API duration, input/output tokens, and cost were all zero. No second
+  canary or analytic identity launched.
+- The failed root exposed a provider-free closure bug: `analyze` refused the
+  terminal failed canary instead of writing the promised P1-X. The minimal fix
+  now emits a ledger-bound `failed_canary_terminal_evidence` P1-X without
+  replay. Full offline verification after the fix passed: `1561` tests,
+  `3` skips, `prepublish check: OK`.
+- The source now differs from candidate `2489f999...`; one new reviewed
+  immutable candidate is required before another live `prepare`.
+- P1 remains blocked. The recorded 218-identity authorization has one terminally
+  accounted identity and 217 remaining, which is insufficient for a fresh
+  complete 218-identity lifecycle. A new live attempt requires operator login
+  and separate authorization increasing the total ceiling to at least 219.
 
 ## Frozen study shape
 
@@ -130,7 +124,8 @@ The runner must continue to:
    permanently closes the root, forbids every later provider launch, and
    permits only `P1-X` analysis.
 6. Run `analyze` to emit `P1-F` for the complete valid population or the
-   canonical `P1-X` invalid decision for a stopped ambiguous root.
+   canonical `P1-X` invalid decision for a stopped ambiguous root or terminal
+   failed canary.
 7. Keep `claim_allowed=false` and report the P1 feasibility verdict. No
    successful subset or universal savings statement is allowed.
 

@@ -544,6 +544,101 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             self.assertEqual(canary_path.read_bytes(), canary_raw)
             self.assertEqual(attempts_path.read_bytes(), attempts_raw)
 
+    def test_v2_analyze_writes_bound_p1_x_decision_for_failed_canary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp), run_canary=False,
+            )
+            config_path = output_root / "fake-cli-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["canary_marker"] = "wrong-canary-marker\n"
+            config_path.write_text(
+                json.dumps(config, sort_keys=True), encoding="utf-8",
+            )
+            canary = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "canary",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(canary.returncode, 2, canary.stderr)
+            canary_path = output_root / "canary-events.jsonl"
+            canary_raw = canary_path.read_bytes()
+            attempts_path = output_root / "attempts.jsonl"
+            self.assertFalse(attempts_path.exists())
+            provider_log = output_root / "fake-cli-calls.jsonl"
+            provider_calls_before = provider_log.read_bytes()
+
+            resumed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "resume",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(resumed.returncode, 2, resumed.stderr)
+            self.assertEqual(canary_path.read_bytes(), canary_raw)
+            self.assertFalse(attempts_path.exists())
+            self.assertEqual(provider_log.read_bytes(), provider_calls_before)
+
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "analyze",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            self.assertFalse((output_root / "study-report.json").exists())
+            decision_path = output_root / "study-invalid-decision.json"
+            decision_raw = decision_path.read_bytes()
+            decision = json.loads(decision_raw)
+            self.assertEqual(
+                decision_raw, self.runner._study_canonical_json_bytes(decision),
+            )
+            self.assertEqual(
+                decision["schema_version"],
+                "contextguard.bench.study-invalid-decision.v1",
+            )
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertTrue(decision["descriptive_only"])
+            self.assertFalse(decision["claim_allowed"])
+            self.assertIsNone(decision["claim"])
+            self.assertEqual(
+                decision["stop_reason"], "failed_canary_terminal_evidence",
+            )
+            self.assertEqual(decision["consumed_identity_count"], 1)
+            self.assertEqual(decision["accounted_identity_count"], 1)
+            self.assertEqual(decision["ambiguous_identities"], [])
+            expected_run_id = self.runner._benchmark_study_v2_canary_variants(
+                manifest, output_root.resolve(),
+            )["legacy_trim"].measurement.identity.run_id(
+                self.runner.BENCHMARK_STUDY_V2_CANARY_TASK_ID
+            )
+            self.assertEqual(
+                decision["failed_canary_identities"],
+                [{
+                    "arm": "legacy_trim",
+                    "run_id": expected_run_id,
+                    "state": "terminal",
+                }],
+            )
+            self.assertEqual(
+                decision["ledgers"]["canary_events"]["sha256"],
+                hashlib.sha256(canary_raw).hexdigest(),
+            )
+            self.assertEqual(
+                decision["ledgers"]["attempts"],
+                {"bytes": 0, "record_count": 0, "sha256": None},
+            )
+            self.assertEqual(canary_path.read_bytes(), canary_raw)
+            self.assertFalse(attempts_path.exists())
+            self.assertEqual(provider_log.read_bytes(), provider_calls_before)
+
     def test_v3_attempt_schema_rejects_false_zero_recovered_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             output_root, _fake_cli, manifest = prepare_v2_canary_fixture(
