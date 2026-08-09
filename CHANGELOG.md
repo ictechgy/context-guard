@@ -4,6 +4,13 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added an explicit `--study-v2-use-existing-login` gate for executable v2
+  provider actions. `prepare` now verifies and pseudonymously binds the exact
+  first-party Claude login plus its owned, non-writable HOME identity without
+  persisting email or organization text. Every provider reservation rechecks
+  that binding, keeps XDG/session paths isolated, excludes credential-shaped
+  environment variables, and omits `CLAUDE_CONFIG_DIR`; `analyze` remains
+  provider- and auth-independent.
 - Bound both discarded v2 Bash-routing canary calls to the same hard `$0.75`
   per-call Claude CLI budget as each analytic task. The value is part of the
   immutable canary contract, so prepare/resume rejects drift; the frozen study's

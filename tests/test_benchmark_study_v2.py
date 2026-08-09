@@ -202,6 +202,126 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "native executable"):
                 self.runner._benchmark_study_v2_cli_binding(str(cli))
 
+    def test_v2_prepare_binds_existing_login_without_persisting_identity_text(self) -> None:
+        rehearsal = load_rehearsal()
+        suite = ROOT / "bench" / "token-savings-12task"
+        with tempfile.TemporaryDirectory() as temp:
+            temporary_root = Path(temp)
+            fixture_root = temporary_root / "fixture"
+            fixture_root.mkdir()
+            manifest_path, checksum_path, fake_npm, fake_cli = (
+                rehearsal._v2_candidate_fixture(fixture_root)
+            )
+            auth_home = fixture_root / "auth-home"
+            self.assertTrue(
+                (auth_home / ".contextguard-v2-fake-login").is_file()
+            )
+            output_root = temporary_root / "study"
+            environment = os.environ.copy()
+            environment["HOME"] = str(auth_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER),
+                    "--study-v2-action", "prepare",
+                    "--study-v2-output-root", str(output_root),
+                    "--study-v2-plan", str(suite / "study-plan-v2.json"),
+                    "--study-v2-tasks", str(suite / "tasks.json"),
+                    "--study-v2-checkers-dir", str(suite / "checkers"),
+                    "--study-v2-candidate-manifest", str(manifest_path),
+                    "--study-v2-candidate-checksums", str(checksum_path),
+                    "--study-v2-candidate-hash",
+                    hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                    "--study-v2-npm-bin", str(fake_npm),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=120,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            raw_manifest = (output_root / "study-manifest.json").read_bytes()
+            prepared = json.loads(raw_manifest)
+            binding = prepared["inputs"]["auth_context"]
+            self.assertEqual(
+                set(binding),
+                {
+                    "schema_version", "mode", "home_path_sha256",
+                    "home_stat", "identity_sha256", "auth_method",
+                    "api_provider", "credential_environment",
+                },
+            )
+            self.assertEqual(binding["mode"], "existing_cli_login_v1")
+            self.assertEqual(binding["auth_method"], "claude.ai")
+            self.assertEqual(binding["api_provider"], "firstParty")
+            self.assertEqual(binding["credential_environment"], "forbidden")
+            self.assertNotIn(b"v2-rehearsal@example.invalid", raw_manifest)
+            self.assertNotIn(b"v2-rehearsal-org", raw_manifest)
+
+    def test_v2_provider_process_gets_bound_home_without_config_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp),
+            )
+            calls = [
+                json.loads(line)
+                for line in (output_root / "fake-cli-calls.jsonl")
+                .read_text(encoding="utf-8").splitlines()
+            ]
+            expected_home = (fake_cli.parents[1] / "auth-home").resolve()
+            expected_home_sha256 = hashlib.sha256(
+                str(expected_home).encode("utf-8")
+            ).hexdigest()
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(call["canary"] for call in calls))
+            self.assertTrue(all(
+                call["auth_home_sha256"] == expected_home_sha256
+                for call in calls
+            ))
+            self.assertTrue(all(
+                call["claude_config_dir_present"] is False for call in calls
+            ))
+            self.assertEqual(
+                manifest["inputs"]["auth_context"]["home_path_sha256"],
+                self.runner._study_domain_hash(
+                    "contextguard.bench.v2.auth-home-path.v1",
+                    str(expected_home),
+                ),
+            )
+
+    def test_v2_auth_home_drift_refuses_before_canary_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temporary_root = Path(temp)
+            output_root, fake_cli, _manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=temporary_root,
+                run_canary=False,
+            )
+            changed_home = temporary_root / "changed-auth-home"
+            changed_home.mkdir(mode=0o700)
+            changed_home.joinpath(".contextguard-v2-fake-login").write_text(
+                "logged-in\n", encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["HOME"] = str(changed_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER),
+                    "--study-v2-action", "canary",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=30,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("login binding drift", completed.stderr)
+            self.assertNotIn("v2-rehearsal@example.invalid", completed.stderr)
+            self.assertNotIn("v2-rehearsal-org", completed.stderr)
+            self.assertFalse((output_root / "canary-events.jsonl").exists())
+            self.assertFalse((output_root / "fake-cli-calls.jsonl").exists())
+
     def test_v2_install_rejects_files_and_bins_outside_exact_tarballs(self) -> None:
         rehearsal = load_rehearsal()
         with tempfile.TemporaryDirectory() as temp:
@@ -361,6 +481,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 ):
                     self.runner.execute_benchmark_study_v2(
                         output_root=output_root, claude_bin=str(fake_cli), resume=True,
+                        auth_home=fake_cli.parents[1] / "auth-home",
                     )
             finally:
                 self.runner._benchmark_study_v2_run_slot = original_run_slot
@@ -440,7 +561,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 runner=self.runner, temporary_root=Path(temp),
             )
             self.assertEqual(
-                manifest["schema_version"], "contextguard.bench.study-manifest.v3",
+                manifest["schema_version"], "contextguard.bench.study-manifest.v4",
             )
             self.assertEqual(
                 manifest["execution"]["attempt_schema_version"],
@@ -555,13 +676,18 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             config_path.write_text(
                 json.dumps(config, sort_keys=True), encoding="utf-8",
             )
+            environment = os.environ.copy()
+            environment["HOME"] = str(fake_cli.parents[1] / "auth-home")
+            environment.pop("CLAUDE_CONFIG_DIR", None)
             canary = subprocess.run(
                 [
                     sys.executable, str(RUNNER), "--study-v2-action", "canary",
                     "--study-v2-output-root", str(output_root),
                     "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
                 ],
-                cwd=ROOT, text=True, capture_output=True, timeout=30,
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=30,
             )
             self.assertEqual(canary.returncode, 2, canary.stderr)
             canary_path = output_root / "canary-events.jsonl"
@@ -576,8 +702,10 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                     sys.executable, str(RUNNER), "--study-v2-action", "resume",
                     "--study-v2-output-root", str(output_root),
                     "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
                 ],
-                cwd=ROOT, text=True, capture_output=True, timeout=30,
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=30,
             )
             self.assertEqual(resumed.returncode, 2, resumed.stderr)
             self.assertEqual(canary_path.read_bytes(), canary_raw)
@@ -1303,7 +1431,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         self.assertIsNone(report["claim"])
         self.assertTrue(study_report["descriptive_only"])
         self.assertEqual(
-            study_report["schema_version"], "contextguard.bench.study-report.v3",
+            study_report["schema_version"], "contextguard.bench.study-report.v4",
         )
         self.assertEqual(study_report["decision"], "P1-F")
         self.assertFalse(study_report["claim_allowed"])
@@ -1395,6 +1523,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                             action,
                             "--study-v2-output-root",
                             str(output_root),
+                            "--study-v2-use-existing-login",
                         ],
                         cwd=ROOT,
                         text=True,

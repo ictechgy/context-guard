@@ -268,6 +268,7 @@ V2_FAKE_CLI = '''#!/usr/bin/env python3
 """Local-only fake Claude process used by the executable v2 rehearsal."""
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -279,6 +280,21 @@ if sys.argv[1:] == ["--version"]:
 if sys.argv[1:] == ["--help"]:
     print("--settings --setting-sources --include-hook-events --no-session-persistence stream-json")
     raise SystemExit(0)
+if sys.argv[1:] == ["auth", "status", "--json"]:
+    logged_in = Path.home().joinpath(".contextguard-v2-fake-login").is_file()
+    if logged_in:
+        print(json.dumps({
+            "loggedIn": True, "authMethod": "claude.ai",
+            "apiProvider": "firstParty",
+            "email": "v2-rehearsal@example.invalid",
+            "orgId": "v2-rehearsal-org", "orgName": "v2-rehearsal-org",
+            "subscriptionType": "fake",
+        }, separators=(",", ":")))
+        raise SystemExit(0)
+    print(json.dumps({
+        "loggedIn": False, "authMethod": "none", "apiProvider": "firstParty",
+    }, separators=(",", ":")))
+    raise SystemExit(1)
 
 settings = Path(sys.argv[sys.argv.index("--settings") + 1])
 config_path = next(
@@ -367,6 +383,8 @@ with open(config["state_path"], "a", encoding="utf-8") as handle:
         "hook_mode": hook_mode,
         "reference_handle_created": reference_handle_created,
         "public_retrieval_path": public_retrieval_path,
+        "auth_home_sha256": hashlib.sha256(str(Path.home()).encode()).hexdigest(),
+        "claude_config_dir_present": "CLAUDE_CONFIG_DIR" in os.environ,
     }, sort_keys=True) + "\\n")
 if is_canary:
     Path.cwd().joinpath("contextguard-v2-canary.txt").write_text(
@@ -990,6 +1008,11 @@ def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
     cli_bin_dir.mkdir(mode=0o700)
     fake_cli = cli_bin_dir / "fake-claude-v2"
     _compile_v2_fake_cli(fake_cli)
+    auth_home = root / "auth-home"
+    auth_home.mkdir(mode=0o700)
+    auth_home.joinpath(".contextguard-v2-fake-login").write_text(
+        "logged-in\n", encoding="utf-8",
+    )
     return manifest_path, checksum_path, fake_npm, fake_cli
 
 
@@ -1001,6 +1024,7 @@ def _run_v2_action(
     argv = [
         sys.executable, str(CANONICAL_RUNNER), "--study-v2-action", action,
         "--study-v2-output-root", str(output_root), "--claude-bin", str(fake_cli),
+        "--study-v2-use-existing-login",
     ]
     if action == "prepare":
         assert manifest_path is not None and checksum_path is not None and fake_npm is not None
@@ -1013,7 +1037,13 @@ def _run_v2_action(
             "--study-v2-candidate-hash", hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
             "--study-v2-npm-bin", str(fake_npm),
         ])
-    completed = subprocess.run(argv, cwd=REPO_ROOT, text=True, capture_output=True, timeout=120)
+    environment = os.environ.copy()
+    environment["HOME"] = str(fake_cli.parents[1] / "auth-home")
+    environment.pop("CLAUDE_CONFIG_DIR", None)
+    completed = subprocess.run(
+        argv, cwd=REPO_ROOT, env=environment, text=True,
+        capture_output=True, timeout=120,
+    )
     if expect_canary_refusal:
         if completed.returncode == 0 or "canary" not in completed.stderr.lower():
             raise SystemExit("v2 run did not refuse missing canary evidence")

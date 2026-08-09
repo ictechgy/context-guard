@@ -118,16 +118,27 @@ python3 context-guard-kit/benchmark_runner.py \
   --study-v2-candidate-checksums /private/candidate/candidate-sha256sums.txt \
   --study-v2-candidate-hash <sha256-of-exact-manifest-bytes> \
   --claude-bin /exact/path/to/claude \
+  --study-v2-use-existing-login \
   --study-v2-output-root /private/location/v2-study
 ```
 
 `prepare` makes no model/provider request, but it does execute the selected CLI's
-local `--version` and `--help` probes. It accepts only a native CLI executable;
+local `--version`, `--help`, and `auth status --json` probes. The auth probe
+requires an existing first-party `claude.ai` login and stores only a safe method/
+provider projection plus domain-separated hashes of the login identity and
+canonical HOME path; email and organization text are never persisted. It accepts
+only a native CLI executable;
 script launchers are rejected because their external dependency closure cannot
 be proven. It binds the resolved executable bytes, probe output, runner and
 runner-Python bytes, task/fixture/checker bytes, and the frozen PATH/locale plus
-hook interpreter bytes. The remaining trust boundary is the exact native Claude
-artifact plus the host OS substrate; backend and model revisions remain
+hook interpreter bytes. Existing-login mode passes the bound HOME to the exact
+CLI, keeps XDG/cache/tmp paths per-attempt, omits `CLAUDE_CONFIG_DIR`, passes no
+credential-shaped environment variable, and continues to load only the explicit
+project settings snapshot through `--setting-sources project`. It is an explicit
+trusted-host operating mode, not an OS filesystem sandbox: the exact CLI and its
+allowed tools run as the operator account. Use it only with the frozen synthetic
+corpus and reviewed candidate. The remaining trust boundary is the exact native
+Claude artifact plus the host OS substrate; backend and model revisions remain
 unavailable rather than inferred.
 
 Run the two-call discarded host-routing canary before any analytic call, then
@@ -137,17 +148,26 @@ same `--claude-bin`:
 ```bash
 python3 context-guard-kit/benchmark_runner.py \
   --study-v2-action canary --study-v2-output-root /private/location/v2-study \
+  --study-v2-use-existing-login \
   --claude-bin /exact/path/to/claude
 python3 context-guard-kit/benchmark_runner.py \
   --study-v2-action run --study-v2-output-root /private/location/v2-study \
+  --study-v2-use-existing-login \
   --claude-bin /exact/path/to/claude
 python3 context-guard-kit/benchmark_runner.py \
   --study-v2-action resume --study-v2-output-root /private/location/v2-study \
+  --study-v2-use-existing-login \
   --claude-bin /exact/path/to/claude
 python3 context-guard-kit/benchmark_runner.py \
   --study-v2-action analyze --study-v2-output-root /private/location/v2-study \
   --claude-bin /exact/path/to/claude
 ```
+
+`prepare`, `canary`, `run`, and `resume` require the explicit existing-login
+flag and the same bound HOME/login identity. Any drift is rejected before the
+next identity reservation. `analyze` makes no provider call and deliberately
+does not require current login access, so a completed or stopped root remains
+analyzable after logout.
 
 The explicit `canary` action makes two provider calls, one with each hook arm.
 Each must create the exact marker through Bash and produce a successful

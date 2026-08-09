@@ -2638,7 +2638,12 @@ def collect_self_hosted_metrics(payload: Any) -> dict[str, Any] | None:
     return None
 
 
-def _measurement_child_env(spec: MeasurementVariant, context: MeasurementRunContext | None = None) -> dict[str, str]:
+def _measurement_child_env(
+    spec: MeasurementVariant,
+    context: MeasurementRunContext | None = None,
+    *,
+    existing_login_home: Path | None = None,
+) -> dict[str, str]:
     env: dict[str, str] = {}
     for name in spec.environment_allow:
         # Names were validated before this function; do not inspect values for
@@ -2650,7 +2655,7 @@ def _measurement_child_env(spec: MeasurementVariant, context: MeasurementRunCont
         env["PATH"] = os.defpath
     if context is not None:
         env.update({
-            "HOME": str(context.home),
+            "HOME": str(existing_login_home or context.home),
             "XDG_CONFIG_HOME": str(context.xdg_config),
             "XDG_CACHE_HOME": str(context.xdg_cache),
             "XDG_DATA_HOME": str(context.xdg_data),
@@ -2658,6 +2663,8 @@ def _measurement_child_env(spec: MeasurementVariant, context: MeasurementRunCont
             "TMPDIR": str(context.tmp),
             "CLAUDE_CONFIG_DIR": str(context.session),
         })
+        if existing_login_home is not None:
+            env.pop("CLAUDE_CONFIG_DIR", None)
     return env
 
 
@@ -3526,6 +3533,7 @@ def _run_measurement_fixture_locked(
     workspace_overlay: Path | None = None,
     on_workspace_prepared: Callable[[Path], None] | None = None,
     checker_interpreter_binding: Mapping[str, Any] | None = None,
+    existing_login_home: Path | None = None,
 ) -> RunResult:
     spec = variant.measurement
     assert spec is not None
@@ -3570,7 +3578,9 @@ def _run_measurement_fixture_locked(
         variant,
         measurement_settings_file=settings_snapshot,
     )
-    env = _measurement_child_env(spec, context)
+    env = _measurement_child_env(
+        spec, context, existing_login_home=existing_login_home,
+    )
     try:
         try:
             proc = run_bounded_command(
@@ -11184,9 +11194,9 @@ def evaluate_benchmark_study_v2_claim_readiness(
     }
 
 
-BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v3"
+BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v4"
 BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v3"
-BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v3"
+BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v4"
 BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION = (
     "contextguard.bench.study-invalid-decision.v1"
 )
@@ -11201,6 +11211,9 @@ BENCHMARK_STUDY_V2_REWRITE_COMMAND = (
 BENCHMARK_STUDY_V2_CLI_BINDING_SCHEMA_VERSION = (
     "contextguard.bench.cli-binding.v2"
 )
+BENCHMARK_STUDY_V2_AUTH_CONTEXT_SCHEMA_VERSION = (
+    "contextguard.bench.auth-context.v1"
+)
 BENCHMARK_STUDY_V2_CLI_CAPABILITIES = (
     "--settings", "--setting-sources", "--include-hook-events",
     "--no-session-persistence", "stream-json",
@@ -11210,7 +11223,7 @@ BENCHMARK_STUDY_V2_CANARY_EVENT_SCHEMA_VERSION = (
     "contextguard.bench.canary-event.v2"
 )
 BENCHMARK_STUDY_V2_CANARY_EVIDENCE_SCHEMA_VERSION = (
-    "contextguard.bench.canary-evidence.v2"
+    "contextguard.bench.canary-evidence.v3"
 )
 BENCHMARK_STUDY_V2_CANARY_ARMS = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_CANARY_TASK_ID = "contextguard-v2-bash-canary"
@@ -11594,6 +11607,167 @@ def _benchmark_study_v2_assert_runtime_stat_guards(
             ) != dict(guard)
         ):
             raise ValueError("v2 runtime interpreter changed before launch")
+
+
+def _benchmark_study_v2_auth_home_binding(home: Path) -> tuple[Path, dict[str, Any]]:
+    if "CLAUDE_CONFIG_DIR" in os.environ:
+        raise ValueError("v2 existing-login mode requires CLAUDE_CONFIG_DIR to be unset")
+    if not home.is_absolute() or "\0" in str(home):
+        raise ValueError("v2 existing-login HOME must be an absolute path")
+    resolved = home.resolve(strict=True)
+    directory_fd = _ensure_directory_no_symlink(resolved, create=False)
+    try:
+        item = os.fstat(directory_fd)
+    finally:
+        os.close(directory_fd)
+    mode = stat.S_IMODE(item.st_mode)
+    if (
+        not stat.S_ISDIR(item.st_mode)
+        or item.st_uid != os.geteuid()
+        or mode & 0o022
+    ):
+        raise ValueError("v2 existing-login HOME is not a private owned directory")
+    return resolved, {
+        "device": item.st_dev,
+        "inode": item.st_ino,
+        "uid": item.st_uid,
+        "mode": mode,
+    }
+
+
+def _benchmark_study_v2_validate_auth_context(binding: Mapping[str, Any]) -> None:
+    if (
+        set(binding) != {
+            "schema_version", "mode", "home_path_sha256", "home_stat",
+            "identity_sha256", "auth_method", "api_provider",
+            "credential_environment",
+        }
+        or binding.get("schema_version")
+        != BENCHMARK_STUDY_V2_AUTH_CONTEXT_SCHEMA_VERSION
+        or binding.get("mode") != "existing_cli_login_v1"
+        or not isinstance(binding.get("home_path_sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(str(binding["home_path_sha256"])) is None
+        or not isinstance(binding.get("identity_sha256"), str)
+        or SHA256_HEX_PATTERN.fullmatch(str(binding["identity_sha256"])) is None
+        or binding.get("auth_method") != "claude.ai"
+        or binding.get("api_provider") != "firstParty"
+        or binding.get("credential_environment") != "forbidden"
+    ):
+        raise ValueError("v2 auth context binding schema mismatch")
+    home_stat = binding.get("home_stat")
+    if (
+        not isinstance(home_stat, Mapping)
+        or set(home_stat) != {"device", "inode", "uid", "mode"}
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in home_stat.values())
+        or int(home_stat["uid"]) != os.geteuid()
+        or int(home_stat["mode"]) & 0o022
+    ):
+        raise ValueError("v2 auth HOME binding schema mismatch")
+
+
+def _benchmark_study_v2_auth_context(
+    claude_bin: str,
+    execution_environment: Mapping[str, Any],
+    auth_home: Path,
+) -> tuple[Path, dict[str, Any]]:
+    _benchmark_study_v2_validate_execution_environment(execution_environment)
+    resolved_home, home_stat = _benchmark_study_v2_auth_home_binding(auth_home)
+    with tempfile.TemporaryDirectory(prefix="contextguard-v2-auth-probe-") as temporary:
+        root = Path(temporary)
+        os.chmod(root, 0o700)
+        paths = {
+            name: root / name
+            for name in (
+                "cwd", "xdg-config", "xdg-cache", "xdg-data", "xdg-state", "tmp",
+            )
+        }
+        for path in paths.values():
+            path.mkdir(mode=0o700)
+        env = dict(execution_environment["values"])
+        env.update({
+            "HOME": str(resolved_home),
+            "XDG_CONFIG_HOME": str(paths["xdg-config"]),
+            "XDG_CACHE_HOME": str(paths["xdg-cache"]),
+            "XDG_DATA_HOME": str(paths["xdg-data"]),
+            "XDG_STATE_HOME": str(paths["xdg-state"]),
+            "TMPDIR": str(paths["tmp"]),
+            "NO_COLOR": "1",
+        })
+        result = run_bounded_command(
+            [executable_argv0(claude_bin), "auth", "status", "--json"],
+            cwd=paths["cwd"], timeout_seconds=10,
+            max_output_bytes=MEASUREMENT_CLI_PROBE_OUTPUT_MAX_BYTES, env=env,
+        )
+    if (
+        result.returncode != 0 or result.timed_out or result.output_truncated
+        or result.launch_error or result.stderr_bytes
+        or not 0 < len(result.stdout_bytes) <= 4096
+    ):
+        raise ValueError("v2 existing Claude login is unavailable")
+    try:
+        status_payload = json.loads(result.stdout_bytes.decode("utf-8", "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("v2 existing Claude login status is invalid") from None
+    identity_keys = {
+        "loggedIn", "authMethod", "apiProvider", "email", "orgId",
+        "orgName", "subscriptionType",
+    }
+    if (
+        not isinstance(status_payload, Mapping)
+        or set(status_payload) != identity_keys
+        or status_payload.get("loggedIn") is not True
+        or status_payload.get("authMethod") != "claude.ai"
+        or status_payload.get("apiProvider") != "firstParty"
+        or any(
+            not isinstance(status_payload.get(key), str)
+            or len(str(status_payload[key]).encode("utf-8")) > 1024
+            or "\0" in str(status_payload[key])
+            for key in ("email", "orgId", "orgName", "subscriptionType")
+        )
+    ):
+        raise ValueError("v2 existing Claude login status is unsupported")
+    private_identity = {
+        key: status_payload[key]
+        for key in (
+            "authMethod", "apiProvider", "email", "orgId", "orgName",
+            "subscriptionType",
+        )
+    }
+    binding = {
+        "schema_version": BENCHMARK_STUDY_V2_AUTH_CONTEXT_SCHEMA_VERSION,
+        "mode": "existing_cli_login_v1",
+        "home_path_sha256": _study_domain_hash(
+            "contextguard.bench.v2.auth-home-path.v1", str(resolved_home),
+        ),
+        "home_stat": home_stat,
+        "identity_sha256": _study_domain_hash(
+            "contextguard.bench.v2.auth-identity.v1", private_identity,
+        ),
+        "auth_method": "claude.ai",
+        "api_provider": "firstParty",
+        "credential_environment": "forbidden",
+    }
+    _benchmark_study_v2_validate_auth_context(binding)
+    return resolved_home, binding
+
+
+def _benchmark_study_v2_assert_auth_context(
+    claude_bin: str,
+    execution_environment: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    auth_home: Path,
+) -> Path:
+    _benchmark_study_v2_validate_auth_context(expected)
+    try:
+        resolved_home, actual = _benchmark_study_v2_auth_context(
+            claude_bin, execution_environment, auth_home,
+        )
+    except (OSError, SystemExit, TypeError, ValueError) as exc:
+        raise ValueError("v2 existing Claude login binding drift") from exc
+    if actual != dict(expected):
+        raise ValueError("v2 existing Claude login binding drift")
+    return resolved_home
 
 
 def _benchmark_study_v2_cli_binding(claude_bin: str) -> dict[str, Any]:
@@ -12267,6 +12441,7 @@ def prepare_benchmark_study_v2_executable(
     *, output_root: Path, plan_path: Path, tasks_path: Path, checkers_dir: Path,
     candidate_manifest_path: Path, candidate_checksum_path: Path | None,
     expected_candidate_hash: str, npm_bin: str, claude_bin: str,
+    auth_home: Path,
 ) -> dict[str, Any]:
     output_root = _benchmark_study_v2_output_root(output_root)
     if output_root.exists() and (
@@ -12295,6 +12470,9 @@ def prepare_benchmark_study_v2_executable(
     cli_binding = _benchmark_study_v2_cli_binding(claude_bin)
     execution_environment = _benchmark_study_v2_execution_environment(cli_binding)
     _benchmark_study_v2_assert_execution_environment(execution_environment)
+    _resolved_auth_home, auth_context = _benchmark_study_v2_auth_context(
+        claude_bin, execution_environment, auth_home,
+    )
     runner_binding = _benchmark_study_v2_runner_binding()
     schedule = generate_benchmark_study_v2_schedule(
         task_ids, repetitions=3, schedule_seed=plan["schedule_seed"],
@@ -12322,6 +12500,7 @@ def prepare_benchmark_study_v2_executable(
             "checker_binding": checker_binding,
             "cli_binding": cli_binding,
             "execution_environment": execution_environment,
+            "auth_context": auth_context,
             "runner_binding": runner_binding,
             "canary_contract": _benchmark_study_v2_canary_contract(),
             "candidate": candidate,
@@ -12370,7 +12549,7 @@ def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate
     required_inputs = {
         "plan_path", "tasks_path", "tasks_sha256", "task_definitions",
         "checkers_dir", "checker_binding", "cli_binding", "execution_environment",
-        "runner_binding", "canary_contract", "candidate",
+        "auth_context", "runner_binding", "canary_contract", "candidate",
         "candidate_install_root", "candidate_install_receipt_sha256",
         "candidate_overlay_inventory", "settings", "namespace", "task_ids",
         "task_ids_sha256",
@@ -12381,6 +12560,7 @@ def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate
     _benchmark_study_v2_validate_execution_environment(
         inputs["execution_environment"]
     )
+    _benchmark_study_v2_validate_auth_context(inputs["auth_context"])
     if inputs["runner_binding"] != _benchmark_study_v2_runner_binding():
         raise ValueError("v2 benchmark runner binding drift")
     if inputs["canary_contract"] != _benchmark_study_v2_canary_contract():
@@ -12840,6 +13020,10 @@ def _benchmark_study_v2_expected_canary_evidence(
             "contextguard.bench.v2.cli-binding.v1",
             manifest["inputs"]["cli_binding"],
         ),
+        "auth_context_sha256": _study_domain_hash(
+            "contextguard.bench.v2.auth-context.v1",
+            manifest["inputs"]["auth_context"],
+        ),
         "candidate_manifest_sha256": manifest["inputs"]["candidate"][
             "manifest_sha256"
         ],
@@ -12877,6 +13061,7 @@ def _benchmark_study_v2_run_canary_arm(
     arm: str, variant: Variant, task: TaskFixture, claude_bin: str,
     cli_stat_guard: Mapping[str, Any],
     runtime_stat_guards: Mapping[str, Mapping[str, int | str]],
+    auth_home: Path,
 ) -> dict[str, Any]:
     spec = variant.measurement
     assert spec is not None
@@ -12887,6 +13072,10 @@ def _benchmark_study_v2_run_canary_arm(
     )
     _benchmark_study_v2_assert_runtime_stat_guards(
         manifest["inputs"]["execution_environment"], runtime_stat_guards,
+    )
+    resolved_auth_home = _benchmark_study_v2_assert_auth_context(
+        claude_bin, manifest["inputs"]["execution_environment"],
+        manifest["inputs"]["auth_context"], auth_home,
     )
     append_study_attempt_event(
         ledger_path,
@@ -12938,6 +13127,7 @@ def _benchmark_study_v2_run_canary_arm(
             checker_interpreter_binding=manifest["inputs"]["runner_binding"][
                 "python"
             ],
+            existing_login_home=resolved_auth_home,
         )
     finally:
         os.close(root_fd)
@@ -12961,16 +13151,17 @@ def _benchmark_study_v2_run_canary_arm(
 
 
 def execute_benchmark_study_v2_canary(
-    *, output_root: Path, claude_bin: str,
+    *, output_root: Path, claude_bin: str, auth_home: Path,
 ) -> dict[str, Any]:
     with _benchmark_study_v2_action_lock(output_root):
         return _execute_benchmark_study_v2_canary_unlocked(
             output_root=output_root, claude_bin=claude_bin,
+            auth_home=auth_home,
         )
 
 
 def _execute_benchmark_study_v2_canary_unlocked(
-    *, output_root: Path, claude_bin: str,
+    *, output_root: Path, claude_bin: str, auth_home: Path,
 ) -> dict[str, Any]:
     output_root = _benchmark_study_v2_output_root(output_root)
     manifest, manifest_sha256 = load_benchmark_study_v2_executable_manifest(
@@ -12986,6 +13177,10 @@ def _execute_benchmark_study_v2_canary_unlocked(
         manifest["inputs"]["execution_environment"]
     )
     bound_claude_bin = str(cli_stat_guard["executable"])
+    resolved_auth_home = _benchmark_study_v2_assert_auth_context(
+        bound_claude_bin, manifest["inputs"]["execution_environment"],
+        manifest["inputs"]["auth_context"], auth_home,
+    )
     variants = _benchmark_study_v2_canary_variants(manifest, output_root)
     task = _benchmark_study_v2_canary_task()
     ledger_path = output_root / "canary-events.jsonl"
@@ -13019,6 +13214,7 @@ def _execute_benchmark_study_v2_canary_unlocked(
             output_root=output_root, arm=arm, variant=variants[arm], task=task,
             claude_bin=bound_claude_bin, cli_stat_guard=cli_stat_guard,
             runtime_stat_guards=runtime_stat_guards,
+            auth_home=resolved_auth_home,
         )
         launched_now += 1
     rows = _benchmark_study_v2_read_canary_events(
@@ -13268,6 +13464,8 @@ def _benchmark_study_v2_run_slot(
     execution_environment: Mapping[str, Any],
     runtime_stat_guards: Mapping[str, Mapping[str, int | str]],
     checker_interpreter_binding: Mapping[str, Any],
+    auth_context: Mapping[str, Any],
+    auth_home: Path,
 ) -> str:
     study_variant = _study_variant_for_slot(variant, slot)
     spec = study_variant.measurement
@@ -13294,6 +13492,9 @@ def _benchmark_study_v2_run_slot(
     _benchmark_study_v2_assert_runtime_stat_guards(
         execution_environment, runtime_stat_guards,
     )
+    resolved_auth_home = _benchmark_study_v2_assert_auth_context(
+        claude_bin, execution_environment, auth_context, auth_home,
+    )
     append_study_attempt_event(
         attempts_path,
         _benchmark_study_v2_event(slot, manifest_sha256, "launch_reserved"),
@@ -13309,6 +13510,7 @@ def _benchmark_study_v2_run_slot(
             measurement_study=True, workspace_overlay=install_root,
             on_workspace_prepared=prepared,
             checker_interpreter_binding=checker_interpreter_binding,
+            existing_login_home=resolved_auth_home,
         )
     finally:
         os.close(root_fd)
@@ -13359,16 +13561,17 @@ def _benchmark_study_v2_run_slot(
 
 
 def execute_benchmark_study_v2(
-    *, output_root: Path, claude_bin: str, resume: bool,
+    *, output_root: Path, claude_bin: str, resume: bool, auth_home: Path,
 ) -> dict[str, int]:
     with _benchmark_study_v2_action_lock(output_root):
         return _execute_benchmark_study_v2_unlocked(
             output_root=output_root, claude_bin=claude_bin, resume=resume,
+            auth_home=auth_home,
         )
 
 
 def _execute_benchmark_study_v2_unlocked(
-    *, output_root: Path, claude_bin: str, resume: bool,
+    *, output_root: Path, claude_bin: str, resume: bool, auth_home: Path,
 ) -> dict[str, int]:
     output_root = _benchmark_study_v2_output_root(output_root)
     # Revalidate every inert candidate byte and installed overlay before a provider launch.
@@ -13382,6 +13585,10 @@ def _execute_benchmark_study_v2_unlocked(
         manifest["inputs"]["execution_environment"]
     )
     bound_claude_bin = str(cli_stat_guard["executable"])
+    resolved_auth_home = _benchmark_study_v2_assert_auth_context(
+        bound_claude_bin, manifest["inputs"]["execution_environment"],
+        manifest["inputs"]["auth_context"], auth_home,
+    )
     attempts_path = output_root / "attempts.jsonl"
     if not resume and attempts_path.exists() and attempts_path.stat().st_size:
         raise ValueError("v2 run requires an absent or empty attempt index")
@@ -13436,6 +13643,8 @@ def _execute_benchmark_study_v2_unlocked(
                 checker_interpreter_binding=manifest["inputs"]["runner_binding"][
                     "python"
                 ],
+                auth_context=manifest["inputs"]["auth_context"],
+                auth_home=resolved_auth_home,
             )
             launched.add(initial["run_id"])
             terminal = {
@@ -13479,6 +13688,8 @@ def _execute_benchmark_study_v2_unlocked(
             checker_interpreter_binding=manifest["inputs"]["runner_binding"][
                 "python"
             ],
+            auth_context=manifest["inputs"]["auth_context"],
+            auth_home=resolved_auth_home,
         )
         launched.add(retry["run_id"])
         accounted.add(retry["run_id"])
@@ -13736,6 +13947,10 @@ def _analyze_benchmark_study_v2_executable_unlocked(
                 "contextguard.bench.v2.cli-binding.v1",
                 manifest["inputs"]["cli_binding"],
             ),
+            "auth_context_sha256": _study_domain_hash(
+                "contextguard.bench.v2.auth-context.v1",
+                manifest["inputs"]["auth_context"],
+            ),
             "cli_version_stdout_sha256": manifest["inputs"]["cli_binding"][
                 "probe"
             ]["version_stdout_sha256"],
@@ -13859,6 +14074,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="exact candidate checksum document (default: manifest sibling)")
     parser.add_argument("--study-v2-npm-bin", default="npm",
                         help="npm executable used once for the offline candidate install")
+    parser.add_argument(
+        "--study-v2-use-existing-login", action="store_true",
+        help=(
+            "allow executable v2 provider actions to reuse the exact CLI's "
+            "existing first-party login without importing credential environment variables"
+        ),
+    )
     args = parser.parse_args(argv)
 
     require_no_follow_file_ops_supported()
@@ -13868,6 +14090,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.study_v2_output_root, args.study_v2_candidate_manifest,
         args.study_v2_candidate_checksums,
     )
+    if args.study_v2_use_existing_login and args.study_v2_action is None:
+        parser.error("--study-v2-use-existing-login requires --study-v2-action")
     if any(value is not None for value in v2_values):
         if args.study_v2_action is None:
             parser.error("--study-v2-action is required when any --study-v2-* option is used")
@@ -13889,6 +14113,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"v2 executable mode conflicts with {', '.join(conflicts)}")
         if args.study_v2_output_root is None:
             parser.error("v2 executable actions require --study-v2-output-root")
+        if (
+            args.study_v2_action != "analyze"
+            and not args.study_v2_use_existing_login
+        ):
+            parser.error(
+                "v2 prepare/canary/run/resume requires "
+                "--study-v2-use-existing-login"
+            )
+        auth_home = Path(os.environ.get("HOME", ""))
         if args.study_v2_action == "prepare":
             required = (
                 args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
@@ -13915,12 +14148,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_candidate_hash=args.study_v2_candidate_hash,
                     npm_bin=args.study_v2_npm_bin,
                     claude_bin=args.claude_bin,
+                    auth_home=auth_home,
                 )
                 print(f"prepared executable v2 study: {args.study_v2_output_root}")
             elif args.study_v2_action == "canary":
                 summary = execute_benchmark_study_v2_canary(
                     output_root=args.study_v2_output_root,
                     claude_bin=args.claude_bin,
+                    auth_home=auth_home,
                 )
                 print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
             elif args.study_v2_action in {"run", "resume"}:
@@ -13928,6 +14163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_root=args.study_v2_output_root,
                     claude_bin=args.claude_bin,
                     resume=args.study_v2_action == "resume",
+                    auth_home=auth_home,
                 )
                 print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
             else:
