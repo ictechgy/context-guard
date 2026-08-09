@@ -154,15 +154,42 @@ Each must create the exact marker through Bash and produce a successful
 host-emitted `PreToolUse` lifecycle. Its canonical evidence is mandatory for
 `run`, `resume`, and `analyze`, but its calls and tokens never enter the 216
 analytic identities, retry policy, effects, or record count. A reserved or
-launched canary identity is never replayed.
+launched canary identity is never replayed. A `launched` canary may be recovered
+without another provider process only if its immutable terminal artifacts fully
+validate. A merely reserved/workspace-prepared canary or a launched canary
+without valid recoverable evidence permanently closes that root to provider
+activity and permits only `P1-X` analysis.
+
+Each canary call is contract-bound to `--max-budget-usd 0.75` and at most two
+turns. Every analytic identity is also capped at `$0.75`; the frozen schedule is
+108 initials, up to 108 failure-triggered retries, and two discarded canaries,
+so at most 218 identities may be consumed or reserved. The CLI enforces the
+`$0.75` per-process cap; multiplying those independent caps gives a `$163.50`
+arithmetic maximum, but there is no separate aggregate CLI limiter. That maximum
+is not an expected cost or standing spend authorization. A smaller approved
+budget requires a separately frozen plan rather than partial execution or
+optional stopping.
+
+Any open analytic `launch_reserved` or `launched` state produces a `P1-X`
+invalid decision and permanently closes that prepared root to later provider
+launches. `P1-F` means complete valid feasibility evidence and remains
+descriptive-only; `P1-D` is bounded diagnostic evidence and unlocks no
+dependent promotion. None of the three states authorizes a public savings
+claim.
 
 All 216 initial/retry identities are fixed before launch. Every cold workspace
 receives a physical copy of the same verified `node_modules` overlay; safe
 internal npm symlinks are preserved and regular files are not hardlinked.
 `host_unmodified` has no ContextGuard Bash hook. `legacy_trim` uses the
 workspace-local `PreToolUse(Bash)` rewrite, and `bash_reference_v1` uses the same
-command plus `--bash-reference-v1`. Resume conservatively consumes every
-reserved or launched identity and never replays it.
+command plus `--bash-reference-v1`. Analytic resume is allowed only when every
+consumed identity has valid terminal evidence and no reservation remains open;
+it never converts ambiguity into zero usage or launches a later identity.
+
+Executable manifests and analytic attempt ledgers are v3. Roots created with
+v2 manifest or attempt schemas are retired: there is no migration, repair,
+ledger-copy, or reuse path. After selecting the final commit and candidate,
+prepare a fresh owner-private v3 root and never copy an old ledger into it.
 
 Analytic attempts intentionally do not require a Bash event: tool choice is part
 of the randomized intention-to-treat outcome, so filtering to attempts that
