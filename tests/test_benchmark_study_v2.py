@@ -566,8 +566,23 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             self.assertEqual(canary.returncode, 2, canary.stderr)
             canary_path = output_root / "canary-events.jsonl"
             canary_raw = canary_path.read_bytes()
+            attempts_path = output_root / "attempts.jsonl"
+            self.assertFalse(attempts_path.exists())
             provider_log = output_root / "fake-cli-calls.jsonl"
             provider_calls_before = provider_log.read_bytes()
+
+            resumed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "resume",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(resumed.returncode, 2, resumed.stderr)
+            self.assertEqual(canary_path.read_bytes(), canary_raw)
+            self.assertFalse(attempts_path.exists())
+            self.assertEqual(provider_log.read_bytes(), provider_calls_before)
 
             completed = subprocess.run(
                 [
@@ -585,6 +600,14 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             self.assertEqual(
                 decision_raw, self.runner._study_canonical_json_bytes(decision),
             )
+            self.assertEqual(
+                decision["schema_version"],
+                "contextguard.bench.study-invalid-decision.v1",
+            )
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertTrue(decision["descriptive_only"])
+            self.assertFalse(decision["claim_allowed"])
+            self.assertIsNone(decision["claim"])
             self.assertEqual(
                 decision["stop_reason"], "failed_canary_terminal_evidence",
             )
@@ -608,7 +631,12 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 decision["ledgers"]["canary_events"]["sha256"],
                 hashlib.sha256(canary_raw).hexdigest(),
             )
+            self.assertEqual(
+                decision["ledgers"]["attempts"],
+                {"bytes": 0, "record_count": 0, "sha256": None},
+            )
             self.assertEqual(canary_path.read_bytes(), canary_raw)
+            self.assertFalse(attempts_path.exists())
             self.assertEqual(provider_log.read_bytes(), provider_calls_before)
 
     def test_v3_attempt_schema_rejects_false_zero_recovered_terminal(self) -> None:

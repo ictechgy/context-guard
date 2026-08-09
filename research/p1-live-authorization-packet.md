@@ -124,7 +124,8 @@ The runner must continue to:
    permanently closes the root, forbids every later provider launch, and
    permits only `P1-X` analysis.
 6. Run `analyze` to emit `P1-F` for the complete valid population or the
-   canonical `P1-X` invalid decision for a stopped ambiguous root.
+   canonical `P1-X` invalid decision for a stopped ambiguous root or terminal
+   failed canary.
 7. Keep `claim_allowed=false` and report the P1 feasibility verdict. No
    successful subset or universal savings statement is allowed.
 
