@@ -175,7 +175,9 @@ invalid decision and permanently closes that prepared root to later provider
 launches. `P1-F` means complete valid feasibility evidence and remains
 descriptive-only; `P1-D` is bounded diagnostic evidence and unlocks no
 dependent promotion. None of the three states authorizes a public savings
-claim.
+claim. The `analyze` action writes the canonical P1-X artifact and exits `3`;
+valid P1-F analysis exits `0`, so automation cannot confuse invalid evidence
+with a valid report by checking only the process status.
 
 All 216 initial/retry identities are fixed before launch. Every cold workspace
 receives a physical copy of the same verified `node_modules` overlay; safe

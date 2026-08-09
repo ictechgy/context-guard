@@ -14,7 +14,11 @@ activity, broader credential/data access, or any action outside this packet.
   the merged `0.5.0`/`0.2.0` package set before the canary-budget hardening.
 - The provider-free v2 lifecycle rehearsal passed with 108 initials, 12
   deterministic retries, two discarded fake canaries, zero network/provider
-  calls, and `claim_allowed=false`.
+  calls, and `claim_allowed=false`. It exercised the live artifact contract:
+  `contextguard.bench.study-manifest.v3`,
+  `contextguard.bench.study-attempt.v3`,
+  `contextguard.bench.study-report.v3`, and
+  `contextguard.bench.study-invalid-decision.v1`.
 - Focused benchmark, npm/release, Receipt package, Gate-B, Stage2, and protected
   surface tests passed.
 - Full offline `python3 scripts/prepublish_check.py` passed after hardening:
@@ -70,14 +74,14 @@ estimate or a request to spend that amount. The user may authorize a smaller
 amount only by approving a new frozen plan; silently truncating this plan would
 make the complete population unreachable and keep P1 failed.
 
-## Proposed exact Claude executable
+## Frozen Claude executable identity
 
-No CLI probe or provider request has been executed from this worktree.
-Read-only local filesystem identity currently resolves as:
+The private `prepare` record retains and revalidates the exact invoked and
+resolved filesystem paths. This committed packet retains only the portable
+identity fields:
 
-- invoked path: `/Users/jinhongan/.local/bin/claude`
-- resolved native path:
-  `/Users/jinhongan/.local/share/claude/versions/2.1.226`
+- executable: `claude`
+- resolved version: `2.1.226`
 - type: Mach-O 64-bit arm64 native executable
 - size: `279661952` bytes
 - SHA-256:

@@ -13508,13 +13508,13 @@ def analyze_benchmark_study_v2_executable(
 
 
 def _benchmark_study_v2_ledger_binding(
-    path: Path, *, record_count: int, maximum: int,
+    path: Path, *, maximum: int,
 ) -> dict[str, Any]:
     if not path.exists():
         return {"bytes": 0, "record_count": 0, "sha256": None}
     raw = _measurement_read_private_file(path, maximum=maximum)
     return {
-        "bytes": len(raw), "record_count": record_count,
+        "bytes": len(raw), "record_count": len(raw.splitlines()),
         "sha256": _study_sha256_bytes(raw),
     }
 
@@ -13546,12 +13546,10 @@ def _benchmark_study_v2_invalid_canary_decision(
         } for row in ambiguous],
         "ledgers": {
             "attempts": _benchmark_study_v2_ledger_binding(
-                output_root / "attempts.jsonl", record_count=0,
-                maximum=4_000_000,
+                output_root / "attempts.jsonl", maximum=4_000_000,
             ),
             "canary_events": _benchmark_study_v2_ledger_binding(
-                output_root / "canary-events.jsonl",
-                record_count=len(rows), maximum=200_000,
+                output_root / "canary-events.jsonl", maximum=200_000,
             ),
         },
         "canary_evidence_sha256": None,
@@ -13574,10 +13572,6 @@ def _benchmark_study_v2_invalid_analytic_decision(
     ]
     if not ambiguous:
         return None
-    canary_rows = _benchmark_study_v2_read_canary_events(
-        output_root / "canary-events.jsonl", manifest_sha256=manifest_sha256,
-        variants=_benchmark_study_v2_canary_variants(manifest, output_root),
-    )
     attempts_path = output_root / "attempts.jsonl"
     return {
         "schema_version": BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION,
@@ -13597,11 +13591,10 @@ def _benchmark_study_v2_invalid_analytic_decision(
         } for row in ambiguous],
         "ledgers": {
             "attempts": _benchmark_study_v2_ledger_binding(
-                attempts_path, record_count=len(rows), maximum=4_000_000,
+                attempts_path, maximum=4_000_000,
             ),
             "canary_events": _benchmark_study_v2_ledger_binding(
-                output_root / "canary-events.jsonl",
-                record_count=len(canary_rows), maximum=200_000,
+                output_root / "canary-events.jsonl", maximum=200_000,
             ),
         },
         "canary_evidence_sha256": canary_evidence_sha256,
@@ -13942,6 +13935,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "analyzed executable v2 study: "
                     f"{args.study_v2_output_root / report_name}"
                 )
+                if report_name == "study-invalid-decision.json":
+                    return 3
             return 0
         except (OSError, SystemExit, TypeError, ValueError) as exc:
             print(f"v2 executable study refused: {exc}", file=sys.stderr)

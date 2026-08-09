@@ -64,6 +64,10 @@ met.
 
 - The v2 study freezes three arms, corpus/checkers, schedule, CLI/runtime,
   candidate overlay, environment, receipts, and crash-safe attempt identity.
+- Its provider-free rehearsal exercises the live v3 artifact contract:
+  `study-manifest.v3`, `study-attempt.v3`, `study-report.v3`, and the
+  `study-invalid-decision.v1` P1-X record. Rehearsal evidence itself remains
+  descriptive and cannot substitute for provider-backed evidence.
 - A mandatory discarded canary proves host-emitted `PreToolUse(Bash)` for both
   hook arms without filtering analytic intention-to-treat attempts.
 - Offline rehearsal uses no provider/network/credentials and cannot support a
