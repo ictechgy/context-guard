@@ -146,6 +146,30 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertLess(gate_b_index, build_index)
         self.assertLess(gate_b_index, attestation_index)
 
+    def test_npm_candidate_normalizes_and_verifies_hosted_runtimes_before_release_gates(self):
+        workflow = read(".github/workflows/npm-candidate.yml")
+
+        setup_node = workflow.index("- name: Set up Node")
+        normalize = workflow.index("- name: Normalize hosted runtime permissions")
+        verify_trust = workflow.index("- name: Verify hosted runtime trust")
+        release_gate = workflow.index("- name: Verify root package release gates")
+        self.assertLess(setup_node, normalize)
+        self.assertLess(normalize, verify_trust)
+        self.assertLess(verify_trust, release_gate)
+        self.assertIn("Linux:/opt/hostedtoolcache/*", workflow)
+        self.assertIn('sudo chmod go-w "$python_runtime" "$node_runtime"', workflow)
+        self.assertNotIn('sudo chmod go-w -- "$python_runtime" "$node_runtime"', workflow)
+        self.assertIn(
+            "tests.test_bash_reference_v1.BashReferenceV1Tests."
+            "test_github_runner_python_runtime_is_policy_eligible",
+            workflow,
+        )
+        self.assertIn(
+            "tests.test_bash_reference_v1.BashReferenceV1Tests."
+            "test_github_runner_node_runtime_is_policy_eligible",
+            workflow,
+        )
+
     def test_npm_publish_workflow_uses_approved_exact_candidate_assets(self):
         workflow = read(".github/workflows/npm-publish.yml")
         jobs = workflow_job_blocks(workflow)

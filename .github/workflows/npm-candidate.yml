@@ -81,6 +81,28 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
+      - name: Normalize hosted runtime permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
+          case "${RUNNER_OS}:${python_runtime}" in
+            Linux:/opt/hostedtoolcache/*) ;;
+            *) echo "unexpected hosted Python runtime" >&2; exit 1 ;;
+          esac
+          case "${RUNNER_OS}:${node_runtime}" in
+            Linux:/opt/hostedtoolcache/*) ;;
+            *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
+          esac
+          sudo chmod go-w "$python_runtime" "$node_runtime"
+
+      - name: Verify hosted runtime trust
+        run: >-
+          python -m unittest -v
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_python_runtime_is_policy_eligible
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
+
       - name: Verify synchronized package sources
         run: python3 scripts/sync_plugin_copies.py --check
 
