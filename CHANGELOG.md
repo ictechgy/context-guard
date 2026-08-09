@@ -4,6 +4,11 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Bound both discarded v2 Bash-routing canary calls to the same hard `$0.75`
+  per-call Claude CLI budget as each analytic task. The value is part of the
+  immutable canary contract, so prepare/resume rejects drift; the frozen study's
+  218 consumed/reserved identities imply a `$163.50` arithmetic maximum. The
+  CLI enforces each process cap; there is no separate aggregate CLI limiter.
 - Published the sanitized result of the first frozen 12-task live study. The
   study is explicitly `inconclusive`: one arm-unit exhausted its fixed retry,
   no favorable subset or correction assessment was analyzed, and no token or

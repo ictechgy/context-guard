@@ -44,6 +44,61 @@ def load_rehearsal():
     return module
 
 
+def prepare_v2_canary_fixture(
+    *, runner, temporary_root: Path, run_canary: bool = True,
+):
+    rehearsal = load_rehearsal()
+    suite = ROOT / "bench" / "token-savings-12task"
+    fixture_root = temporary_root / "fixture"
+    fixture_root.mkdir()
+    manifest_path, checksum_path, fake_npm, fake_cli = (
+        rehearsal._v2_candidate_fixture(fixture_root)
+    )
+    output_root = temporary_root / "study"
+    rehearsal._run_v2_action(
+        "prepare", output_root=output_root, suite=suite,
+        fake_cli=fake_cli, manifest_path=manifest_path,
+        checksum_path=checksum_path, fake_npm=fake_npm,
+    )
+    manifest = json.loads(
+        (output_root / "study-manifest.json").read_text(encoding="utf-8")
+    )
+    tasks = json.loads((suite / "tasks.json").read_text(encoding="utf-8"))
+    solutions = json.loads(
+        (suite / "rehearsal" / "solutions.json").read_text(encoding="utf-8")
+    )["solutions"]
+    (output_root / "fake-cli-config.json").write_text(
+        json.dumps({
+            "prompt_sha256_to_task": {
+                hashlib.sha256(task["prompt"].encode("utf-8")).hexdigest(): task["id"]
+                for task in tasks
+            },
+            "run_id_to_unit": {
+                slot["run_id"]: {
+                    "task_id": slot["task_id"], "arm": slot["arm"],
+                    "repetition": slot["repetition"], "attempt": slot["attempt"],
+                }
+                for slot in manifest["slots"]
+            },
+            "solutions": solutions,
+            "scripted_retry_units": [
+                list(unit) for unit in rehearsal.V2_SCRIPTED_RETRY_UNITS
+            ],
+            "persistent_failure_unit": list(rehearsal.V2_PERSISTENT_FAILURE_UNIT),
+            "state_path": str(output_root / "fake-cli-calls.jsonl"),
+            "canary_prompt": runner.BENCHMARK_STUDY_V2_CANARY_PROMPT,
+            "canary_task_id": runner.BENCHMARK_STUDY_V2_CANARY_TASK_ID,
+            "canary_marker": runner.BENCHMARK_STUDY_V2_CANARY_MARKER.decode("utf-8"),
+        }, sort_keys=True),
+        encoding="utf-8",
+    )
+    if run_canary:
+        rehearsal._run_v2_action(
+            "canary", output_root=output_root, suite=suite, fake_cli=fake_cli,
+        )
+    return output_root, fake_cli, manifest
+
+
 class BenchmarkStudyV2Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -258,6 +313,305 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 ),
                 "success_checker_infra_invalid",
             )
+
+    def test_v2_canary_has_a_hard_per_call_budget(self) -> None:
+        task = self.runner._benchmark_study_v2_canary_task()
+        self.assertEqual(task.max_budget_usd, 0.75)
+        self.assertEqual(
+            self.runner._benchmark_study_v2_canary_contract()["max_budget_usd"],
+            0.75,
+        )
+        argv = self.runner.build_claude_argv(
+            "/bound/native/claude", task, self.runner.Variant(name="canary")
+        )
+        budget_index = argv.index("--max-budget-usd")
+        self.assertEqual(argv[budget_index + 1], "0.75")
+
+    def test_v2_resume_refuses_ambiguous_reservation_before_any_later_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temporary_root = Path(temp)
+            output_root, fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=temporary_root,
+            )
+            manifest_sha256 = hashlib.sha256(
+                (output_root / "study-manifest.json").read_bytes()
+            ).hexdigest()
+            first_initial = next(
+                slot for slot in manifest["slots"] if slot["attempt"] == 0
+            )
+            attempts_path = output_root / "attempts.jsonl"
+            self.runner.append_study_attempt_event(
+                attempts_path,
+                self.runner._benchmark_study_v2_event(
+                    first_initial, manifest_sha256, "launch_reserved",
+                ),
+            )
+            attempts_before = attempts_path.read_bytes()
+            provider_log = output_root / "fake-cli-calls.jsonl"
+            provider_calls_before = provider_log.read_bytes()
+            original_run_slot = self.runner._benchmark_study_v2_run_slot
+
+            def reject_later_launch(**_kwargs):
+                raise AssertionError("resume reached a later provider slot")
+
+            self.runner._benchmark_study_v2_run_slot = reject_later_launch
+            try:
+                with self.assertRaisesRegex(
+                    ValueError, "ambiguous provider process state",
+                ):
+                    self.runner.execute_benchmark_study_v2(
+                        output_root=output_root, claude_bin=str(fake_cli), resume=True,
+                    )
+            finally:
+                self.runner._benchmark_study_v2_run_slot = original_run_slot
+            self.assertEqual(attempts_path.read_bytes(), attempts_before)
+            self.assertEqual(provider_log.read_bytes(), provider_calls_before)
+
+    def test_v2_analyze_writes_bound_p1_x_decision_for_ambiguous_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp),
+            )
+            manifest_raw = (output_root / "study-manifest.json").read_bytes()
+            manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+            first_initial = next(
+                slot for slot in manifest["slots"] if slot["attempt"] == 0
+            )
+            attempts_path = output_root / "attempts.jsonl"
+            self.runner.append_study_attempt_event(
+                attempts_path,
+                self.runner._benchmark_study_v2_event(
+                    first_initial, manifest_sha256, "launch_reserved",
+                ),
+            )
+            attempts_raw = attempts_path.read_bytes()
+            provider_log = output_root / "fake-cli-calls.jsonl"
+            provider_calls_before = provider_log.read_bytes()
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "analyze",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            self.assertFalse((output_root / "study-report.json").exists())
+            decision_path = output_root / "study-invalid-decision.json"
+            decision_raw = decision_path.read_bytes()
+            decision = json.loads(decision_raw)
+            self.assertEqual(
+                decision_raw, self.runner._study_canonical_json_bytes(decision),
+            )
+            self.assertEqual(stat.S_IMODE(decision_path.stat().st_mode), 0o600)
+            self.assertEqual(
+                decision["schema_version"],
+                "contextguard.bench.study-invalid-decision.v1",
+            )
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertEqual(
+                decision["stop_reason"], "ambiguous_analytic_process_state",
+            )
+            self.assertEqual(decision["manifest_sha256"], manifest_sha256)
+            self.assertEqual(decision["consumed_identity_count"], 1)
+            self.assertEqual(decision["claim_allowed"], False)
+            self.assertIsNone(decision["claim"])
+            self.assertEqual(
+                decision["ledgers"]["attempts"]["sha256"],
+                hashlib.sha256(attempts_raw).hexdigest(),
+            )
+            self.assertEqual(
+                decision["ambiguous_identities"],
+                [{
+                    "arm": first_initial["arm"],
+                    "attempt": 0,
+                    "repetition": first_initial["repetition"],
+                    "run_id": first_initial["run_id"],
+                    "state": "launch_reserved",
+                    "task_id": first_initial["task_id"],
+                }],
+            )
+            self.assertEqual(attempts_path.read_bytes(), attempts_raw)
+            self.assertEqual(provider_log.read_bytes(), provider_calls_before)
+
+    def test_v2_prepare_versions_stop_safe_ledger_and_decision_schemas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, _fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp),
+            )
+            self.assertEqual(
+                manifest["schema_version"], "contextguard.bench.study-manifest.v3",
+            )
+            self.assertEqual(
+                manifest["execution"]["attempt_schema_version"],
+                "contextguard.bench.study-attempt.v3",
+            )
+            self.assertEqual(
+                manifest["execution"]["invalid_decision_schema_version"],
+                "contextguard.bench.study-invalid-decision.v1",
+            )
+            old_manifest = json.loads(json.dumps(manifest))
+            old_manifest["schema_version"] = "contextguard.bench.study-manifest.v2"
+            old_manifest["execution"].pop("attempt_schema_version")
+            old_manifest["execution"].pop("invalid_decision_schema_version")
+            manifest_path = output_root / "study-manifest.json"
+            manifest_path.write_bytes(
+                self.runner._study_canonical_json_bytes(old_manifest)
+            )
+            os.chmod(manifest_path, 0o600)
+            with self.assertRaisesRegex(ValueError, "manifest schema mismatch"):
+                self.runner.load_benchmark_study_v2_executable_manifest(
+                    output_root, revalidate_external=False,
+                )
+            drifted = json.loads(json.dumps(manifest))
+            drifted["execution"].pop("invalid_decision_schema_version")
+            manifest_path.write_bytes(
+                self.runner._study_canonical_json_bytes(drifted)
+            )
+            os.chmod(manifest_path, 0o600)
+            with self.assertRaisesRegex(ValueError, "lifecycle contract drift"):
+                self.runner.load_benchmark_study_v2_executable_manifest(
+                    output_root, revalidate_external=False,
+                )
+
+    def test_v2_analyze_writes_bound_p1_x_decision_for_ambiguous_canary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp), run_canary=False,
+            )
+            manifest_sha256 = hashlib.sha256(
+                (output_root / "study-manifest.json").read_bytes()
+            ).hexdigest()
+            variants = self.runner._benchmark_study_v2_canary_variants(
+                manifest, output_root.resolve(),
+            )
+            arm = "legacy_trim"
+            run_id = variants[arm].measurement.identity.run_id(
+                self.runner.BENCHMARK_STUDY_V2_CANARY_TASK_ID
+            )
+            canary_path = output_root / "canary-events.jsonl"
+            self.runner.append_study_attempt_event(
+                canary_path,
+                self.runner._benchmark_study_v2_canary_base_event(
+                    arm=arm, run_id=run_id, manifest_sha256=manifest_sha256,
+                    state="launch_reserved",
+                ),
+            )
+            first_initial = next(
+                slot for slot in manifest["slots"] if slot["attempt"] == 0
+            )
+            attempts_path = output_root / "attempts.jsonl"
+            self.runner.append_study_attempt_event(
+                attempts_path,
+                self.runner._benchmark_study_v2_event(
+                    first_initial, manifest_sha256, "launch_reserved",
+                ),
+            )
+            attempts_raw = attempts_path.read_bytes()
+            canary_raw = canary_path.read_bytes()
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "analyze",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            decision_path = output_root / "study-invalid-decision.json"
+            decision = json.loads(decision_path.read_bytes())
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertEqual(
+                decision["stop_reason"], "ambiguous_canary_process_state",
+            )
+            self.assertEqual(decision["consumed_identity_count"], 1)
+            self.assertEqual(
+                decision["ambiguous_identities"],
+                [{"arm": arm, "run_id": run_id, "state": "launch_reserved"}],
+            )
+            self.assertEqual(
+                decision["ledgers"]["canary_events"]["sha256"],
+                hashlib.sha256(canary_raw).hexdigest(),
+            )
+            self.assertEqual(
+                decision["ledgers"]["attempts"],
+                {
+                    "bytes": len(attempts_raw),
+                    "record_count": 1,
+                    "sha256": hashlib.sha256(attempts_raw).hexdigest(),
+                },
+            )
+            self.assertEqual(canary_path.read_bytes(), canary_raw)
+            self.assertEqual(attempts_path.read_bytes(), attempts_raw)
+
+    def test_v3_attempt_schema_rejects_false_zero_recovered_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, _fake_cli, manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp), run_canary=False,
+            )
+            manifest_sha256 = hashlib.sha256(
+                (output_root / "study-manifest.json").read_bytes()
+            ).hexdigest()
+            slot = next(slot for slot in manifest["slots"] if slot["attempt"] == 0)
+            attempts_path = output_root / "attempts.jsonl"
+            self.runner.append_study_attempt_event(
+                attempts_path,
+                self.runner._benchmark_study_v2_event(
+                    slot, manifest_sha256, "launch_reserved",
+                ),
+            )
+            self.runner.append_study_attempt_event(
+                attempts_path,
+                self.runner._benchmark_study_v2_event(
+                    slot, manifest_sha256, "terminal",
+                    terminal_status="recovered_process_status_unknown",
+                    provider_terminal_status="unknown", checker_status="not_run",
+                    success=False,
+                    token_buckets={
+                        key: 0 for key in self.runner.MEASUREMENT_STUDY_USAGE_KEYS
+                    },
+                    primary_tokens=0, correction=None, retrieval=None,
+                    shifted_cost=None, pre_workspace_inventory_sha256=None,
+                    post_workspace_inventory_sha256=None,
+                    pre_overlay_inventory_sha256=None,
+                    post_overlay_inventory_sha256=None, receipt_sha256=None,
+                ),
+            )
+            with self.assertRaisesRegex(
+                ValueError, "success/classification binding",
+            ):
+                self.runner._benchmark_study_v2_read_attempts(
+                    attempts_path, manifest=manifest,
+                    manifest_sha256=manifest_sha256,
+                )
+
+    def test_v2_canary_p1_x_counts_terminal_and_ambiguous_identities_as_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, _manifest = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp),
+            )
+            canary_path = output_root / "canary-events.jsonl"
+            rows = [
+                json.loads(line)
+                for line in canary_path.read_text(encoding="utf-8").splitlines()
+            ]
+            retained = [
+                row for row in rows
+                if row["arm"] == "legacy_trim"
+                or (
+                    row["arm"] == "bash_reference_v1"
+                    and row["state"] == "launch_reserved"
+                )
+            ]
+            canary_path.write_bytes(b"".join(
+                self.runner._study_canonical_json_bytes(row) for row in retained
+            ))
+            os.chmod(canary_path, 0o600)
+            decision = self.runner.analyze_benchmark_study_v2_executable(
+                output_root=output_root, claude_bin=str(fake_cli),
+            )
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertEqual(decision["consumed_identity_count"], 2)
 
     def test_task_clustered_binary_inference_rejects_all_success_degeneracy(self) -> None:
         tasks = [f"task-{index:02d}" for index in range(12)]
@@ -853,6 +1207,10 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         self.assertFalse(report["claim_allowed"])
         self.assertIsNone(report["claim"])
         self.assertTrue(study_report["descriptive_only"])
+        self.assertEqual(
+            study_report["schema_version"], "contextguard.bench.study-report.v3",
+        )
+        self.assertEqual(study_report["decision"], "P1-F")
         self.assertFalse(study_report["claim_allowed"])
         self.assertIsNone(study_report["claim"])
         self.assertEqual(

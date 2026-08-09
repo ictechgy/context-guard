@@ -11184,9 +11184,12 @@ def evaluate_benchmark_study_v2_claim_readiness(
     }
 
 
-BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v2"
-BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v2"
-BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v2"
+BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v3"
+BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v3"
+BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v3"
+BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION = (
+    "contextguard.bench.study-invalid-decision.v1"
+)
 BENCHMARK_STUDY_V2_CANDIDATE_SCHEMA_VERSION = "contextguard-npm-candidate-set/v1"
 BENCHMARK_STUDY_V2_CANDIDATE_NAMES = (
     "@ictechgy/context-guard-receipt", "@ictechgy/context-guard",
@@ -11211,6 +11214,7 @@ BENCHMARK_STUDY_V2_CANARY_EVIDENCE_SCHEMA_VERSION = (
 )
 BENCHMARK_STUDY_V2_CANARY_ARMS = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_CANARY_TASK_ID = "contextguard-v2-bash-canary"
+BENCHMARK_STUDY_V2_CANARY_MAX_BUDGET_USD = 0.75
 BENCHMARK_STUDY_V2_CANARY_MARKER = b"contextguard-v2-host-pretooluse-canary\n"
 BENCHMARK_STUDY_V2_CANARY_PROMPT = (
     "Use the Bash tool exactly once to run this command, then reply done: "
@@ -11240,6 +11244,7 @@ def _benchmark_study_v2_canary_contract() -> dict[str, Any]:
         "marker_sha256": _study_sha256_bytes(BENCHMARK_STUDY_V2_CANARY_MARKER),
         "arms": list(BENCHMARK_STUDY_V2_CANARY_ARMS),
         "required_event_classes": ["PreToolUse"],
+        "max_budget_usd": BENCHMARK_STUDY_V2_CANARY_MAX_BUDGET_USD,
         "provider_calls": 2,
         "discarded": True,
         "excluded_from_analysis": True,
@@ -11251,7 +11256,9 @@ def _benchmark_study_v2_canary_task() -> TaskFixture:
     return TaskFixture(
         id=BENCHMARK_STUDY_V2_CANARY_TASK_ID,
         prompt=BENCHMARK_STUDY_V2_CANARY_PROMPT,
-        model="sonnet", max_turns=2, allowed_tools=["Bash"],
+        model="sonnet", max_turns=2,
+        max_budget_usd=BENCHMARK_STUDY_V2_CANARY_MAX_BUDGET_USD,
+        allowed_tools=["Bash"],
         fixture_tree="inline-canary-fixture",
         success_checker="inline-canary-checker.py",
         fixture_tree_entries=(
@@ -12334,6 +12341,10 @@ def prepare_benchmark_study_v2_executable(
             "identities": 216, "initial_calls": 108,
             "retry": "exactly_after_valid_initial_failure_v1",
             "resume": "never_replay_launched_identity_v1",
+            "attempt_schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
+            "invalid_decision_schema_version": (
+                BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION
+            ),
             "candidate_imported": False, "candidate_install_count": 1,
             "overlay_copy": "physical_copy_no_hardlinks_v1",
         },
@@ -12400,6 +12411,10 @@ def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate
         "identities": 216, "initial_calls": 108,
         "retry": "exactly_after_valid_initial_failure_v1",
         "resume": "never_replay_launched_identity_v1",
+        "attempt_schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
+        "invalid_decision_schema_version": (
+            BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION
+        ),
         "candidate_imported": False, "candidate_install_count": 1,
         "overlay_copy": "physical_copy_no_hardlinks_v1",
     }:
@@ -13169,7 +13184,6 @@ def _benchmark_study_v2_read_attempts(path: Path, *, manifest: Mapping[str, Any]
             status = row["terminal_status"]
             if status not in {
                 "success", "valid_task_failure_v1", "study_infra_invalid",
-                "recovered_process_status_unknown",
             } or not isinstance(row["success"], bool) or row["success"] is not (status == "success"):
                 raise ValueError("v2 attempt success/classification binding is invalid")
             buckets = row["token_buckets"]
@@ -13190,32 +13204,24 @@ def _benchmark_study_v2_read_attempts(path: Path, *, manifest: Mapping[str, Any]
                 "pre_overlay_inventory_sha256", "post_overlay_inventory_sha256",
                 "receipt_sha256",
             )
-            if status == "recovered_process_status_unknown":
-                if (
-                    row["provider_terminal_status"] != "unknown"
-                    or row["checker_status"] != "not_run" or total != 0
-                    or any(row[field] is not None for field in hash_fields)
-                ):
-                    raise ValueError("v2 recovered terminal row is invalid")
-            else:
-                if any(
-                    not isinstance(row[field], str)
-                    or SHA256_HEX_PATTERN.fullmatch(row[field]) is None
-                    for field in hash_fields
-                ):
-                    raise ValueError("v2 terminal evidence hash is invalid")
-                if row["pre_overlay_inventory_sha256"] != manifest["inputs"]["candidate_overlay_inventory"]["sha256"] or row["post_overlay_inventory_sha256"] != row["pre_overlay_inventory_sha256"]:
-                    raise ValueError("v2 terminal overlay binding is invalid")
-                if status == "success" and not (
-                    row["provider_terminal_status"] == "success"
-                    and row["checker_status"] == "task_success"
-                ):
-                    raise ValueError("v2 successful outcome lacks provider/checker evidence")
-                if status == "valid_task_failure_v1" and not (
-                    row["provider_terminal_status"] == "success"
-                    and row["checker_status"] == "valid_task_failure_v1"
-                ):
-                    raise ValueError("v2 valid failure lacks provider/checker evidence")
+            if any(
+                not isinstance(row[field], str)
+                or SHA256_HEX_PATTERN.fullmatch(row[field]) is None
+                for field in hash_fields
+            ):
+                raise ValueError("v2 terminal evidence hash is invalid")
+            if row["pre_overlay_inventory_sha256"] != manifest["inputs"]["candidate_overlay_inventory"]["sha256"] or row["post_overlay_inventory_sha256"] != row["pre_overlay_inventory_sha256"]:
+                raise ValueError("v2 terminal overlay binding is invalid")
+            if status == "success" and not (
+                row["provider_terminal_status"] == "success"
+                and row["checker_status"] == "task_success"
+            ):
+                raise ValueError("v2 successful outcome lacks provider/checker evidence")
+            if status == "valid_task_failure_v1" and not (
+                row["provider_terminal_status"] == "success"
+                and row["checker_status"] == "valid_task_failure_v1"
+            ):
+                raise ValueError("v2 valid failure lacks provider/checker evidence")
         rows.append(row)
     terminal_by_unit = {
         (row["task_id"], row["repetition"], row["arm"]): row
@@ -13232,9 +13238,7 @@ def _benchmark_study_v2_read_attempts(path: Path, *, manifest: Mapping[str, Any]
             raise ValueError("v2 not-needed retry lacks a successful initial")
         if row["state"] == "blocked_study_invalid" and (
             initial is None
-            or initial["terminal_status"] not in {
-                "study_infra_invalid", "recovered_process_status_unknown",
-            }
+            or initial["terminal_status"] != "study_infra_invalid"
         ):
             raise ValueError("v2 blocked retry lacks an invalid initial")
         if row["state"] in {"launch_reserved", "launched", "terminal"} and (
@@ -13406,25 +13410,11 @@ def _execute_benchmark_study_v2_unlocked(
     }
     accounted = {row["run_id"] for row in rows}
     terminal = {row["run_id"]: row for row in rows if row["state"] == "terminal"}
-    if resume:
-        for slot in manifest["slots"]:
-            run_id = slot["run_id"]
-            if run_id in launched and run_id not in terminal:
-                recovered = _benchmark_study_v2_event(
-                    slot, manifest_sha256, "terminal",
-                    terminal_status="recovered_process_status_unknown",
-                    provider_terminal_status="unknown", checker_status="not_run",
-                    success=False,
-                    token_buckets={key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS},
-                    primary_tokens=0, correction=None, retrieval=None, shifted_cost=None,
-                    pre_workspace_inventory_sha256=None,
-                    post_workspace_inventory_sha256=None,
-                    pre_overlay_inventory_sha256=None,
-                    post_overlay_inventory_sha256=None, receipt_sha256=None,
-                )
-                append_study_attempt_event(attempts_path, recovered)
-                terminal[run_id] = recovered
-                accounted.add(run_id)
+    ambiguous_run_ids = sorted(launched - set(terminal))
+    if ambiguous_run_ids:
+        raise ValueError(
+            "v2 ambiguous provider process state permanently blocks this study root"
+        )
     retry_by_unit = {
         (slot["task_id"], slot["repetition"], slot["arm"]): slot
         for slot in manifest["slots"] if slot["attempt"] == 1
@@ -13517,6 +13507,101 @@ def analyze_benchmark_study_v2_executable(
         )
 
 
+def _benchmark_study_v2_ledger_binding(
+    path: Path, *, maximum: int,
+) -> dict[str, Any]:
+    if not path.exists():
+        return {"bytes": 0, "record_count": 0, "sha256": None}
+    raw = _measurement_read_private_file(path, maximum=maximum)
+    return {
+        "bytes": len(raw), "record_count": len(raw.splitlines()),
+        "sha256": _study_sha256_bytes(raw),
+    }
+
+
+def _benchmark_study_v2_invalid_canary_decision(
+    *, output_root: Path, manifest: Mapping[str, Any],
+    manifest_sha256: str, rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    final_by_arm = {str(row["arm"]): row for row in rows}
+    ambiguous = [
+        final_by_arm[arm] for arm in BENCHMARK_STUDY_V2_CANARY_ARMS
+        if arm in final_by_arm and final_by_arm[arm]["state"] != "terminal"
+    ]
+    if not ambiguous:
+        return None
+    return {
+        "schema_version": BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION,
+        "study_version": "v2", "decision": "P1-X",
+        "stop_reason": "ambiguous_canary_process_state",
+        "manifest_sha256": manifest_sha256,
+        "attempt_schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
+        "consumed_identity_count": len(final_by_arm),
+        "accounted_identity_count": sum(
+            row["state"] == "terminal" for row in final_by_arm.values()
+        ),
+        "ambiguous_identities": [{
+            "arm": row["arm"], "run_id": row["run_id"],
+            "state": row["state"],
+        } for row in ambiguous],
+        "ledgers": {
+            "attempts": _benchmark_study_v2_ledger_binding(
+                output_root / "attempts.jsonl", maximum=4_000_000,
+            ),
+            "canary_events": _benchmark_study_v2_ledger_binding(
+                output_root / "canary-events.jsonl", maximum=200_000,
+            ),
+        },
+        "canary_evidence_sha256": None,
+        "descriptive_only": True, "claim_allowed": False, "claim": None,
+    }
+
+
+def _benchmark_study_v2_invalid_analytic_decision(
+    *, output_root: Path, manifest: Mapping[str, Any],
+    manifest_sha256: str, rows: Sequence[Mapping[str, Any]],
+    canary_evidence_sha256: str,
+) -> dict[str, Any] | None:
+    final_by_run = {str(row["run_id"]): row for row in rows}
+    ambiguous = [
+        final_by_run[str(slot["run_id"])]
+        for slot in manifest["slots"]
+        if str(slot["run_id"]) in final_by_run
+        and final_by_run[str(slot["run_id"])]["state"]
+        in {"launch_reserved", "launched"}
+    ]
+    if not ambiguous:
+        return None
+    attempts_path = output_root / "attempts.jsonl"
+    return {
+        "schema_version": BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION,
+        "study_version": "v2", "decision": "P1-X",
+        "stop_reason": "ambiguous_analytic_process_state",
+        "manifest_sha256": manifest_sha256,
+        "attempt_schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
+        "consumed_identity_count": sum(
+            row["state"] in {"launch_reserved", "launched", "terminal"}
+            for row in final_by_run.values()
+        ),
+        "accounted_identity_count": len(final_by_run),
+        "ambiguous_identities": [{
+            "arm": row["arm"], "attempt": row["attempt"],
+            "repetition": row["repetition"], "run_id": row["run_id"],
+            "state": row["state"], "task_id": row["task_id"],
+        } for row in ambiguous],
+        "ledgers": {
+            "attempts": _benchmark_study_v2_ledger_binding(
+                attempts_path, maximum=4_000_000,
+            ),
+            "canary_events": _benchmark_study_v2_ledger_binding(
+                output_root / "canary-events.jsonl", maximum=200_000,
+            ),
+        },
+        "canary_evidence_sha256": canary_evidence_sha256,
+        "descriptive_only": True, "claim_allowed": False, "claim": None,
+    }
+
+
 def _analyze_benchmark_study_v2_executable_unlocked(
     *, output_root: Path, claude_bin: str,
 ) -> dict[str, Any]:
@@ -13527,6 +13612,17 @@ def _analyze_benchmark_study_v2_executable_unlocked(
     _benchmark_study_v2_assert_cli_binding(
         claude_bin, manifest["inputs"]["cli_binding"],
     )
+    canary_variants = _benchmark_study_v2_canary_variants(manifest, output_root)
+    canary_rows = _benchmark_study_v2_read_canary_events(
+        output_root / "canary-events.jsonl",
+        manifest_sha256=manifest_sha256, variants=canary_variants,
+    )
+    invalid_canary_decision = _benchmark_study_v2_invalid_canary_decision(
+        output_root=output_root, manifest=manifest,
+        manifest_sha256=manifest_sha256, rows=canary_rows,
+    )
+    if invalid_canary_decision is not None:
+        return invalid_canary_decision
     _canary_evidence, canary_evidence_sha256 = (
         _benchmark_study_v2_verify_canary_evidence(
             manifest=manifest, manifest_sha256=manifest_sha256,
@@ -13546,6 +13642,13 @@ def _analyze_benchmark_study_v2_executable_unlocked(
         tasks_by_id={task.id: task for task in tasks},
         variants=_benchmark_study_v2_variants(manifest, output_root),
     )
+    invalid_decision = _benchmark_study_v2_invalid_analytic_decision(
+        output_root=output_root, manifest=manifest,
+        manifest_sha256=manifest_sha256, rows=rows,
+        canary_evidence_sha256=canary_evidence_sha256,
+    )
+    if invalid_decision is not None:
+        return invalid_decision
     terminal_rows = [row for row in rows if row["state"] == "terminal"]
     final_states = {row["run_id"]: row["state"] for row in rows}
     if len(final_states) != 216 or any(
@@ -13596,7 +13699,8 @@ def _analyze_benchmark_study_v2_executable_unlocked(
     unavailable = {"available": False, "value": None, "reason": "observer_absent"}
     return {
         "schema_version": BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION,
-        "study_version": "v2", "manifest_sha256": manifest_sha256,
+        "study_version": "v2", "decision": "P1-F",
+        "manifest_sha256": manifest_sha256,
         "record_count": len(terminal_rows), "initial_provider_calls": 108,
         "retry_provider_calls": len(retry_rows),
         "discarded_canary_provider_calls": 2,
@@ -13818,10 +13922,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_root=args.study_v2_output_root,
                     claude_bin=args.claude_bin,
                 )
-                _study_write_private(
-                    args.study_v2_output_root / "study-report.json", report,
+                report_name = (
+                    "study-invalid-decision.json"
+                    if report.get("schema_version")
+                    == BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION
+                    else "study-report.json"
                 )
-                print(f"analyzed executable v2 study: {args.study_v2_output_root / 'study-report.json'}")
+                _study_write_private(
+                    args.study_v2_output_root / report_name, report,
+                )
+                print(
+                    "analyzed executable v2 study: "
+                    f"{args.study_v2_output_root / report_name}"
+                )
+                if report_name == "study-invalid-decision.json":
+                    return 3
             return 0
         except (OSError, SystemExit, TypeError, ValueError) as exc:
             print(f"v2 executable study refused: {exc}", file=sys.stderr)

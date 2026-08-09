@@ -429,6 +429,7 @@ int main(int argc, char **argv) {{
             env={
                 "PATH": os.environ.get("PATH", os.defpath),
                 "LANG": "C", "LC_ALL": "C",
+                "TMPDIR": str(path.parent),
             },
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
