@@ -18,7 +18,7 @@ Current position:
 | --- | --- |
 | Shipped-code readiness | Narrow P3-style opt-in Bash-output reference route is merged. |
 | Evidence readiness | P1 live feasibility/effect gate is not passed. |
-| Release readiness | Candidate/publish/promote machinery exists; npm publication has not occurred. |
+| Release readiness | An attested immutable candidate exists; npm publication has not occurred. |
 | Public claim | Forbidden: no provider-backed v3 decision record exists. |
 
 The roadmap is dependency-gated:
@@ -90,9 +90,10 @@ met.
 Current provider-free progress: candidate construction, paired clean-install
 smoke, post-hardening v2 rehearsal, focused benchmark/npm/Receipt/Gate-B/Stage2
 verification, the authorization packet, and full offline
-`python3 scripts/prepublish_check.py` (`1559` tests, `3` skips) have passed. A
-reviewed immutable source commit/candidate and the network-backed durable
-review/checkpoint remain before live P1 can start.
+`python3 scripts/prepublish_check.py` (`1561` tests, `3` skips) have passed.
+GitHub candidate run `31314422888` attested both package tarballs and the
+canonical manifest for merged source `2489f999...`; no npm registry publication
+occurred.
 
 ### External gate
 
@@ -104,6 +105,25 @@ and `analyze` using the same exact native Claude CLI and candidate.
 The candidate workflow must be dispatched from a retained remote branch or tag
 whose tip is verified to equal the reviewed merge SHA; a detached local build
 is diagnostic-only and cannot replace workflow attestation.
+
+### 2026-08-09 live checkpoint
+
+- Exact candidate `2489f999...` completed provider-free `prepare` in a new
+  owner-private root.
+- The first `legacy_trim` canary identity reached a terminal process failure
+  because the exact native Claude CLI was not logged in. The CLI reported zero
+  input/output tokens, zero provider API duration, and `$0` cost. The second
+  canary and all analytic identities were not launched.
+- The failed root is permanently closed to provider activity. During evidence
+  closure, a contract bug was found: `analyze` refused a terminal failed canary
+  before writing the promised P1-X record. A provider-free regression test and
+  minimal fix now make failed canaries emit a bound
+  `failed_canary_terminal_evidence` P1-X without any replay.
+- P1 remains blocked. One of the approved 218 consumed/reserved identities is
+  accounted for, leaving 217 under the recorded authorization; a fresh complete
+  218-identity lifecycle therefore requires operator login and a separately
+  recorded total ceiling of at least 219. P2-P6 active promotion remains
+  stopped.
 
 ### Exit gate
 

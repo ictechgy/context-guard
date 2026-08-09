@@ -13528,12 +13528,21 @@ def _benchmark_study_v2_invalid_canary_decision(
         final_by_arm[arm] for arm in BENCHMARK_STUDY_V2_CANARY_ARMS
         if arm in final_by_arm and final_by_arm[arm]["state"] != "terminal"
     ]
-    if not ambiguous:
+    failed = [
+        final_by_arm[arm] for arm in BENCHMARK_STUDY_V2_CANARY_ARMS
+        if arm in final_by_arm
+        and final_by_arm[arm]["state"] == "terminal"
+        and final_by_arm[arm]["passed"] is not True
+    ]
+    if not ambiguous and not failed:
         return None
     return {
         "schema_version": BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION,
         "study_version": "v2", "decision": "P1-X",
-        "stop_reason": "ambiguous_canary_process_state",
+        "stop_reason": (
+            "ambiguous_canary_process_state" if ambiguous
+            else "failed_canary_terminal_evidence"
+        ),
         "manifest_sha256": manifest_sha256,
         "attempt_schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
         "consumed_identity_count": len(final_by_arm),
@@ -13544,6 +13553,10 @@ def _benchmark_study_v2_invalid_canary_decision(
             "arm": row["arm"], "run_id": row["run_id"],
             "state": row["state"],
         } for row in ambiguous],
+        "failed_canary_identities": [{
+            "arm": row["arm"], "run_id": row["run_id"],
+            "state": row["state"],
+        } for row in failed],
         "ledgers": {
             "attempts": _benchmark_study_v2_ledger_binding(
                 output_root / "attempts.jsonl", maximum=4_000_000,
