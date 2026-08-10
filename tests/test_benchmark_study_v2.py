@@ -260,7 +260,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
 
     def test_v2_provider_process_gets_bound_home_without_config_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            output_root, fake_cli, manifest, auth_home = prepare_v2_canary_fixture(
+            output_root, _fake_cli, manifest, auth_home = prepare_v2_canary_fixture(
                 runner=self.runner, temporary_root=Path(temp),
             )
             calls = [
