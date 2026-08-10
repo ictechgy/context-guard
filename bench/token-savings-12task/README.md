@@ -215,11 +215,11 @@ command plus `--bash-reference-v1`. Analytic resume is allowed only when every
 consumed identity has valid terminal evidence and no reservation remains open;
 it never converts ambiguity into zero usage or launches a later identity.
 
-Executable manifests are `contextguard.bench.study-manifest.v4`; analytic
-attempt ledgers remain `contextguard.bench.study-attempt-ledger.v3`. Roots
-created with older manifest or attempt schemas are retired: there is no
+Executable manifests are `contextguard.bench.study-manifest.v5`; analytic
+attempt rows are `contextguard.bench.study-attempt.v4`. Roots created with
+older manifest or attempt schemas are retired: there is no
 migration, repair, ledger-copy, or reuse path. After selecting the final commit
-and candidate, prepare a fresh owner-private v4 root and never copy an old
+and candidate, prepare a fresh owner-private v5 root and never copy an old
 ledger into it.
 
 Analytic attempts intentionally do not require a Bash event: tool choice is part
@@ -232,7 +232,12 @@ Success is derived only from a valid provider terminal usage record plus the
 manifest-bound checker executed outside the writable workspace. Provider
 `success` booleans are not evidence. Raw output, receipt, artifact index, token
 buckets, checker result, and pre/post inventories are revalidated on resume and
-analysis. A retry is launched only after a valid initial task failure; a failed
+analysis. An exact nonzero `error_max_turns` or `error_max_budget_usd` terminal
+with complete usage and a valid hook lifecycle is retained as a bounded task
+failure: the provider `process_error` stays truthful, the checker is explicitly
+not run, and the measured usage remains in the estimator. Other provider
+errors, missing usage, and hook failures remain infrastructure-invalid. A retry
+is launched only after a valid initial task failure; a failed
 retry is retained and does not stop the schedule. Missing correction, retrieval,
 or shifted-cost observers remain unavailable/null, never zero or token proxies.
 Every report sets `descriptive_only=true`, `claim_allowed=false`, and

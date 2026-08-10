@@ -744,17 +744,166 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 len(canary_calls) + 1,
             )
 
+    def test_v2_bounded_provider_failure_keeps_usage_retries_and_continues(self) -> None:
+        # Mutation guarded: classifying exact error_max_turns as infrastructure
+        # invalid, or zeroing its complete usage, must fail this test.
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, manifest, auth_home = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp),
+            )
+            retry_units = {
+                tuple(unit) for unit in load_rehearsal().V2_SCRIPTED_RETRY_UNITS
+            }
+            first_initial = next(
+                slot for slot in manifest["slots"]
+                if slot["attempt"] == 0
+                and (
+                    slot["task_id"], slot["arm"], slot["repetition"]
+                ) not in retry_units
+            )
+            unit = [
+                first_initial["task_id"], first_initial["arm"],
+                first_initial["repetition"],
+            ]
+            config_path = output_root / "fake-cli-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["bounded_provider_failure_units"] = [unit]
+            config_path.write_text(
+                json.dumps(config, sort_keys=True), encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["HOME"] = str(auth_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "run",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=120,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            rows = [
+                json.loads(line)
+                for line in (output_root / "attempts.jsonl")
+                .read_text(encoding="utf-8").splitlines()
+            ]
+            terminal = {
+                row["run_id"]: row for row in rows if row["state"] == "terminal"
+            }
+            initial_row = terminal[first_initial["run_id"]]
+            retry_slot = next(
+                slot for slot in manifest["slots"]
+                if slot["task_id"] == first_initial["task_id"]
+                and slot["arm"] == first_initial["arm"]
+                and slot["repetition"] == first_initial["repetition"]
+                and slot["attempt"] == 1
+            )
+            self.assertEqual(
+                initial_row["terminal_status"], "valid_task_failure_v1",
+            )
+            self.assertEqual(initial_row["provider_terminal_status"], "process_error")
+            self.assertEqual(
+                initial_row["checker_status"],
+                "not_run_provider_bounded_failure_v1",
+            )
+            self.assertEqual(initial_row["primary_tokens"], 4600)
+            self.assertEqual(
+                initial_row["token_buckets"],
+                {
+                    "input_tokens": 4100,
+                    "cache_creation_input_tokens": 120,
+                    "cache_read_input_tokens": 80,
+                    "output_tokens": 300,
+                },
+            )
+            self.assertEqual(terminal[retry_slot["run_id"]]["terminal_status"], "success")
+            later_initials = [
+                slot for slot in manifest["slots"]
+                if slot["attempt"] == 0
+                and manifest["slots"].index(slot) > manifest["slots"].index(first_initial)
+            ]
+            self.assertTrue(later_initials)
+            self.assertTrue(any(slot["run_id"] in terminal for slot in later_initials))
+
+    def test_v2_bounded_provider_failure_is_an_exact_fail_closed_contract(self) -> None:
+        # Mutation guarded: broadening the allowlist, accepting incomplete usage,
+        # or accepting an invalid hook lifecycle must fail these cases.
+        receipt = {
+            "process_status": "exited_nonzero",
+            "terminal_status": "process_error",
+        }
+
+        def terminal(subtype: str, *, usage: object = None) -> bytes:
+            payload = {
+                "type": "result", "subtype": subtype, "is_error": True,
+            }
+            if usage is not None:
+                payload["usage"] = usage
+            return json.dumps(payload, separators=(",", ":")).encode() + b"\n"
+
+        complete_usage = {
+            "input_tokens": 11,
+            "cache_creation_input_tokens": 12,
+            "cache_read_input_tokens": 13,
+            "output_tokens": 14,
+        }
+        helper = self.runner._benchmark_study_v2_bounded_failure_usage
+        keyword = {
+            "receipt": receipt,
+            "arm": "host_unmodified",
+            "allowed_event_classes": (),
+            "required_event_classes": (),
+        }
+        self.assertEqual(
+            helper(raw=terminal("error_max_turns", usage=complete_usage), **keyword),
+            {**complete_usage, "primary_tokens": 50},
+        )
+        self.assertEqual(
+            helper(raw=terminal("error_max_budget_usd", usage=complete_usage), **keyword),
+            {**complete_usage, "primary_tokens": 50},
+        )
+        self.assertIsNone(
+            helper(raw=terminal("error_during_execution", usage=complete_usage), **keyword),
+        )
+        self.assertIsNone(
+            helper(raw=terminal("error_max_turns", usage={"input_tokens": 11}), **keyword),
+        )
+        success = json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "usage": complete_usage,
+        }, separators=(",", ":")).encode() + b"\n"
+        self.assertIsNone(helper(raw=success, **keyword))
+        incomplete_hook = (
+            json.dumps({
+                "type": "system", "subtype": "hook_started",
+                "session_id": "s", "hook_id": "h", "hook_name": "n",
+                "hook_event": "PreToolUse", "uuid": "u",
+            }, separators=(",", ":")).encode() + b"\n"
+            + terminal("error_max_turns", usage=complete_usage)
+        )
+        self.assertIsNone(
+            helper(
+                raw=incomplete_hook, receipt=receipt, arm="legacy_trim",
+                allowed_event_classes=("PreToolUse",),
+                required_event_classes=(),
+            ),
+        )
+
     def test_v2_prepare_versions_stop_safe_ledger_and_decision_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             output_root, _fake_cli, manifest, _auth_home = prepare_v2_canary_fixture(
                 runner=self.runner, temporary_root=Path(temp),
             )
             self.assertEqual(
-                manifest["schema_version"], "contextguard.bench.study-manifest.v4",
+                manifest["schema_version"], "contextguard.bench.study-manifest.v5",
             )
             self.assertEqual(
                 manifest["execution"]["attempt_schema_version"],
-                "contextguard.bench.study-attempt.v3",
+                "contextguard.bench.study-attempt.v4",
             )
             self.assertEqual(
                 manifest["execution"]["invalid_decision_schema_version"],
@@ -956,7 +1105,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             self.assertFalse(attempts_path.exists())
             self.assertEqual(provider_log.read_bytes(), provider_calls_before)
 
-    def test_v3_attempt_schema_rejects_false_zero_recovered_terminal(self) -> None:
+    def test_v4_attempt_schema_rejects_false_zero_recovered_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             output_root, _fake_cli, manifest, _auth_home = prepare_v2_canary_fixture(
                 runner=self.runner, temporary_root=Path(temp), run_canary=False,

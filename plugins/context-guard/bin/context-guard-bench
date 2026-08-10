@@ -11261,8 +11261,14 @@ def evaluate_benchmark_study_v2_claim_readiness(
     }
 
 
-BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v4"
-BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v3"
+BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v5"
+BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v4"
+BENCHMARK_STUDY_V2_BOUNDED_FAILURE_RESULT_CODES = frozenset({
+    "error_max_turns", "error_max_budget_usd",
+})
+BENCHMARK_STUDY_V2_BOUNDED_FAILURE_CHECKER_STATUS = (
+    "not_run_provider_bounded_failure_v1"
+)
 BENCHMARK_STUDY_V2_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v4"
 BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION = (
     "contextguard.bench.study-invalid-decision.v1"
@@ -13321,6 +13327,49 @@ def _execute_benchmark_study_v2_canary_unlocked(
     }
 
 
+def _benchmark_study_v2_bounded_failure_usage(
+    *, receipt: Mapping[str, Any], raw: bytes, arm: str,
+    allowed_event_classes: Sequence[str],
+    required_event_classes: Sequence[str],
+) -> dict[str, int] | None:
+    """Return usage only for an exact policy-bounded provider task failure."""
+    if (
+        receipt.get("process_status") != "exited_nonzero"
+        or receipt.get("terminal_status") != "process_error"
+    ):
+        return None
+    parsed = parse_claude_stream_output(
+        raw, max_line_bytes=MEASUREMENT_RAW_MAX_LINE_BYTES,
+    )
+    if (
+        parsed.status != "terminal_error"
+        or parsed.result_code not in BENCHMARK_STUDY_V2_BOUNDED_FAILURE_RESULT_CODES
+    ):
+        return None
+    hooks = _parse_measurement_hook_events(raw)
+    completed_classes = {item["hook_event"] for item in hooks["hooks"]}
+    allowed_classes = set(allowed_event_classes)
+    required_classes = set(required_event_classes)
+    hook_arms = {"legacy_trim", "bash_reference_v1"}
+    if (
+        hooks["classification"] is not None
+        or hooks["failure_flags"]
+        or (arm in hook_arms and completed_classes - allowed_classes)
+        or (arm == "host_unmodified" and hooks["observed"])
+        or required_classes - completed_classes
+        or any(
+            item["hook_process_outcome"] != "success"
+            or item["hook_process_exit_code"] not in (None, 0)
+            for item in hooks["hooks"]
+        )
+    ):
+        return None
+    try:
+        return parse_measurement_terminal_usage(raw)
+    except ValueError:
+        return None
+
+
 def _benchmark_study_v2_revalidate_terminal_evidence(
     *, manifest: Mapping[str, Any], output_root: Path,
     rows: Sequence[Mapping[str, Any]], tasks_by_id: Mapping[str, TaskFixture],
@@ -13358,6 +13407,15 @@ def _benchmark_study_v2_revalidate_terminal_evidence(
             raise ValueError("v2 attempt receipt hash differs from immutable receipt")
         if receipt["terminal_status"] != row["provider_terminal_status"]:
             raise ValueError("v2 attempt provider terminal differs from immutable receipt")
+        bounded_failure_usage = _benchmark_study_v2_bounded_failure_usage(
+            receipt=receipt, raw=raw, arm=str(slot["arm"]),
+            allowed_event_classes=tuple(
+                dict.fromkeys(
+                    event for event, _command in spec.pair_registered_bindings
+                )
+            ),
+            required_event_classes=spec.required_event_classes,
+        )
         if receipt["terminal_status"] == "success":
             usage = parse_measurement_terminal_usage(raw)
             expected_buckets = {
@@ -13369,6 +13427,12 @@ def _benchmark_study_v2_revalidate_terminal_evidence(
                     "python"
                 ],
             )
+        elif bounded_failure_usage is not None:
+            expected_buckets = {
+                key: bounded_failure_usage[key]
+                for key in MEASUREMENT_STUDY_USAGE_KEYS
+            }
+            checker = BENCHMARK_STUDY_V2_BOUNDED_FAILURE_CHECKER_STATUS
         else:
             expected_buckets = {key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS}
             checker = "not_run"
@@ -13380,6 +13444,8 @@ def _benchmark_study_v2_revalidate_terminal_evidence(
             "success" if receipt["terminal_status"] == "success" and checker == "task_success"
             else "valid_task_failure_v1"
             if receipt["terminal_status"] == "success" and checker == "valid_task_failure_v1"
+            else "valid_task_failure_v1"
+            if bounded_failure_usage is not None
             else "study_infra_invalid"
         )
         if (
@@ -13512,8 +13578,15 @@ def _benchmark_study_v2_read_attempts(path: Path, *, manifest: Mapping[str, Any]
             ):
                 raise ValueError("v2 successful outcome lacks provider/checker evidence")
             if status == "valid_task_failure_v1" and not (
-                row["provider_terminal_status"] == "success"
-                and row["checker_status"] == "valid_task_failure_v1"
+                (
+                    row["provider_terminal_status"] == "success"
+                    and row["checker_status"] == "valid_task_failure_v1"
+                )
+                or (
+                    row["provider_terminal_status"] == "process_error"
+                    and row["checker_status"]
+                    == BENCHMARK_STUDY_V2_BOUNDED_FAILURE_CHECKER_STATUS
+                )
             ):
                 raise ValueError("v2 valid failure lacks provider/checker evidence")
         rows.append(row)
@@ -13622,21 +13695,45 @@ def _benchmark_study_v2_run_slot(
     receipt_raw = _measurement_read_private_file(context.receipt_path)
     receipt = _measurement_parse_canonical_json_bytes(receipt_raw, owner="v2 measurement receipt")
     provider_terminal = str(receipt["terminal_status"])
-    checker_status = result.notes if provider_terminal == "success" else "not_run"
+    raw = _measurement_read_private_raw(context.raw_path)
+    bounded_failure_usage = _benchmark_study_v2_bounded_failure_usage(
+        receipt=receipt, raw=raw, arm=str(slot["arm"]),
+        allowed_event_classes=tuple(
+            dict.fromkeys(
+                event for event, _command in spec.pair_registered_bindings
+            )
+        ),
+        required_event_classes=spec.required_event_classes,
+    )
+    checker_status = (
+        result.notes if provider_terminal == "success"
+        else BENCHMARK_STUDY_V2_BOUNDED_FAILURE_CHECKER_STATUS
+        if bounded_failure_usage is not None
+        else "not_run"
+    )
     if provider_terminal == "success" and checker_status == "task_success":
         classification = "success"
     elif provider_terminal == "success" and checker_status == "valid_task_failure_v1":
+        classification = "valid_task_failure_v1"
+    elif bounded_failure_usage is not None:
         classification = "valid_task_failure_v1"
     else:
         classification = "study_infra_invalid"
     if post_overlay != pre.get("overlay"):
         classification = "study_infra_invalid"
-    token_buckets = {
-        "input_tokens": result.tokens["input_tokens"],
-        "cache_creation_input_tokens": result.tokens["cache_creation"],
-        "cache_read_input_tokens": result.tokens["cache_read"],
-        "output_tokens": result.tokens["output_tokens"],
-    }
+    token_buckets = (
+        {
+            key: bounded_failure_usage[key]
+            for key in MEASUREMENT_STUDY_USAGE_KEYS
+        }
+        if bounded_failure_usage is not None
+        else {
+            "input_tokens": result.tokens["input_tokens"],
+            "cache_creation_input_tokens": result.tokens["cache_creation"],
+            "cache_read_input_tokens": result.tokens["cache_read"],
+            "output_tokens": result.tokens["output_tokens"],
+        }
+    )
     append_study_attempt_event(
         attempts_path,
         _benchmark_study_v2_event(
