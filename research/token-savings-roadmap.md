@@ -90,7 +90,7 @@ met.
 Current provider-free progress: candidate construction, paired clean-install
 smoke, post-hardening v2 rehearsal, focused benchmark/npm/Receipt/Gate-B/Stage2
 verification, the authorization packet, and full offline
-`python3 scripts/prepublish_check.py` (`1561` tests, `3` skips) have passed.
+`python3 scripts/prepublish_check.py` (`1564` tests, `3` skips) have passed.
 GitHub candidate run `31314422888` attested both package tarballs and the
 canonical manifest for merged source `2489f999...`; no npm registry publication
 occurred.

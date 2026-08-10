@@ -2661,10 +2661,9 @@ def _measurement_child_env(
             "XDG_DATA_HOME": str(context.xdg_data),
             "XDG_STATE_HOME": str(context.xdg_state),
             "TMPDIR": str(context.tmp),
-            "CLAUDE_CONFIG_DIR": str(context.session),
         })
-        if existing_login_home is not None:
-            env.pop("CLAUDE_CONFIG_DIR", None)
+        if existing_login_home is None:
+            env["CLAUDE_CONFIG_DIR"] = str(context.session)
     return env
 
 

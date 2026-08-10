@@ -208,10 +208,12 @@ command plus `--bash-reference-v1`. Analytic resume is allowed only when every
 consumed identity has valid terminal evidence and no reservation remains open;
 it never converts ambiguity into zero usage or launches a later identity.
 
-Executable manifests and analytic attempt ledgers are v3. Roots created with
-v2 manifest or attempt schemas are retired: there is no migration, repair,
-ledger-copy, or reuse path. After selecting the final commit and candidate,
-prepare a fresh owner-private v3 root and never copy an old ledger into it.
+Executable manifests are `contextguard.bench.study-manifest.v4`; analytic
+attempt ledgers remain `contextguard.bench.study-attempt-ledger.v3`. Roots
+created with older manifest or attempt schemas are retired: there is no
+migration, repair, ledger-copy, or reuse path. After selecting the final commit
+and candidate, prepare a fresh owner-private v4 root and never copy an old
+ledger into it.
 
 Analytic attempts intentionally do not require a Bash event: tool choice is part
 of the randomized intention-to-treat outcome, so filtering to attempts that

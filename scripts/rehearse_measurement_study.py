@@ -908,7 +908,7 @@ def collect_validation_problems(report: dict) -> list[str]:
     return problems
 
 
-def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
+def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
     candidate_dir = root / "candidate"
     candidate_dir.mkdir(mode=0o700)
     rewrite = (
@@ -1013,11 +1013,12 @@ def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
     auth_home.joinpath(".contextguard-v2-fake-login").write_text(
         "logged-in\n", encoding="utf-8",
     )
-    return manifest_path, checksum_path, fake_npm, fake_cli
+    return manifest_path, checksum_path, fake_npm, fake_cli, auth_home
 
 
 def _run_v2_action(
     action: str, *, output_root: Path, suite: Path, fake_cli: Path,
+    auth_home: Path,
     manifest_path: Path | None = None, checksum_path: Path | None = None,
     fake_npm: Path | None = None, expect_canary_refusal: bool = False,
 ) -> subprocess.CompletedProcess[str]:
@@ -1038,7 +1039,7 @@ def _run_v2_action(
             "--study-v2-npm-bin", str(fake_npm),
         ])
     environment = os.environ.copy()
-    environment["HOME"] = str(fake_cli.parents[1] / "auth-home")
+    environment["HOME"] = str(auth_home)
     environment.pop("CLAUDE_CONFIG_DIR", None)
     completed = subprocess.run(
         argv, cwd=REPO_ROOT, env=environment, text=True,
@@ -1059,9 +1060,12 @@ def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
     """Execute two discarded canaries plus 120 analytic local fake processes."""
     with tempfile.TemporaryDirectory(prefix="contextguard-v2-rehearsal-") as temporary:
         temporary_root = Path(temporary)
-        manifest_path, checksum_path, fake_npm, fake_cli = _v2_candidate_fixture(temporary_root)
+        manifest_path, checksum_path, fake_npm, fake_cli, auth_home = (
+            _v2_candidate_fixture(temporary_root)
+        )
         _run_v2_action(
             "prepare", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
             manifest_path=manifest_path, checksum_path=checksum_path, fake_npm=fake_npm,
         )
         study_manifest = json.loads((output_root / "study-manifest.json").read_text(encoding="utf-8"))
@@ -1092,17 +1096,30 @@ def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
         )
         _run_v2_action(
             "run", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
             expect_canary_refusal=True,
         )
         run_without_canary_refused = not (output_root / "attempts.jsonl").exists()
-        _run_v2_action("canary", output_root=output_root, suite=suite, fake_cli=fake_cli)
-        _run_v2_action("run", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action(
+            "canary", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
+        _run_v2_action(
+            "run", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
         calls_after_run = (output_root / "fake-cli-calls.jsonl").read_text(encoding="utf-8").splitlines()
-        _run_v2_action("resume", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action(
+            "resume", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
         calls_after_resume = (output_root / "fake-cli-calls.jsonl").read_text(encoding="utf-8").splitlines()
         if calls_after_resume != calls_after_run:
             raise SystemExit("v2 resume replayed an already launched identity")
-        _run_v2_action("analyze", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action(
+            "analyze", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
         study_report = json.loads((output_root / "study-report.json").read_text(encoding="utf-8"))
         npm_calls = fake_npm.with_name("v2-npm-calls.jsonl").read_text(encoding="utf-8").splitlines()
     all_calls = [json.loads(line) for line in calls_after_run]

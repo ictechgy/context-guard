@@ -29,7 +29,7 @@ activity, broader credential/data access, or any action outside this packet.
 - The failed root exposed a provider-free closure bug: `analyze` refused the
   terminal failed canary instead of writing the promised P1-X. The minimal fix
   now emits a ledger-bound `failed_canary_terminal_evidence` P1-X without
-  replay. Full offline verification after the fix passed: `1561` tests,
+  replay. Full offline verification after the fix passed: `1564` tests,
   `3` skips, `prepublish check: OK`.
 - The source now differs from candidate `6bde86be...`; one new reviewed
   immutable candidate is required before another live `prepare`.
