@@ -1,13 +1,15 @@
 # P1 live-study and npm-release authorization packet
 
 _Drafted: 2026-08-09 KST; amended with explicit auth reuse, stopped-root
-checkpoints, and the exact 264-identity v6 ceiling approval on 2026-08-10 KST_
+checkpoints, the exact 264-identity v6 ceiling approval on 2026-08-10 KST,
+and the exact 307-identity v7 ceiling approval on 2026-08-11 KST_
 
 This packet is the controlling scope for the authorization recorded on
 2026-08-09. Approved actions are repository-scoped GitHub activity, candidate-
 only construction for the selected commit, and the bounded P1 Claude study.
 Not approved are npm `next`, npm `latest`, artifact deletion, P2-P6 provider
-activity, broader credential/data access, or any action outside this packet.
+activity before P1-F, broader credential/data access, or any action outside
+this packet.
 
 ## Current readiness verdict
 
@@ -82,6 +84,15 @@ activity, broader credential/data access, or any action outside this packet.
   Receipt remains `ec00b91dc8eebce14a676d0a48f1250edefe33fb1d5d57fcf37b0b7584b79ec0`.
   All three downloaded subjects passed GitHub attestation verification. No npm
   registry publish or dist-tag mutation occurred.
+- On 2026-08-11 the user approved one fresh v7 root under the unchanged study
+  shape below, raising the cumulative consumed/reserved ceiling from 264 to
+  exactly 307. The grant retains the 89 terminal identities and authorizes at
+  most 218 new identities: two discarded canaries, 108 initials, and up to 108
+  policy-valid retries. The model remains `sonnet`, every process remains
+  capped at `$0.75`, and the fresh-root arithmetic maximum remains `$163.50`.
+  Old-root reuse, replay, optional stopping, npm publication, and active P2-P6
+  work before P1-F remain forbidden. The mode-0600 authorization evidence has
+  SHA-256 `834214b36d30bb6c3a1174a37f073c2af84c65724f66d7f8247efd9bb71b0e76`.
 
 ## Frozen study shape
 
@@ -115,12 +126,11 @@ estimate or a request to spend that amount. The user may authorize a smaller
 amount only by approving a new frozen plan; silently truncating this plan would
 make the complete population unreachable and keep P1 failed.
 
-The approved cumulative ceiling is exactly 264 identities. Eighty-nine
-identities are now terminally consumed/reserved, leaving 175. That remainder
-does not authorize another maximum-size 218-identity root. No identity beyond
-the ceiling is authorized, and the implementation must stop immediately on the
-frozen integrity, privacy, ambiguity, or spend conditions rather than trying to
-consume the ceiling.
+The approved cumulative ceiling is exactly 307 identities. Eighty-nine
+identities are already terminally consumed/reserved, leaving exactly 218 for
+one fresh maximum-size root. No identity beyond the ceiling is authorized, and
+the implementation must stop immediately on the frozen integrity, privacy,
+ambiguity, or spend conditions rather than trying to consume the ceiling.
 
 ## Frozen Claude executable identity
 
@@ -233,16 +243,17 @@ decision.
 - [x] GitHub network use for fetch/push/PR/CI, limited to
       `ictechgy/context-guard`.
 - [x] Claude live study authority: executable above, `sonnet`, cumulative
-      ceiling exactly 264 consumed/reserved identities, `$0.75` per-process
+      ceiling exactly 307 consumed/reserved identities, `$0.75` per-process
       CLI caps, and explicit exact-CLI internal reuse of the bound existing
       first-party login under the prompt/data boundary and stop rules above.
-      Eighty-nine identities are terminally accounted; the remaining 175 do
-      not authorize another maximum-size 218-identity root.
+      Eighty-nine identities are terminally accounted; exactly 218 identities
+      remain for one fresh root under the frozen study shape.
 - [x] npm candidate workflow for the exact approved commit.
 - [ ] npm publication of the exact pair to `next`.
 - [ ] npm promotion of that exact reviewed pair to `latest`.
 
-The original approvals were recorded on 2026-08-09; auth reuse and the expanded
-identity ceiling were recorded on 2026-08-10. `next` and `latest` remain blocked.
-No credential value may be shown to or inspected by Codex; the exact CLI
-consumes the existing login internally without exposing values.
+The original approvals were recorded on 2026-08-09; auth reuse and the v6
+ceiling were recorded on 2026-08-10; the exact v7 ceiling was recorded on
+2026-08-11. `next` and `latest` remain blocked. No credential value may be shown
+to or inspected by Codex; the exact CLI consumes the existing login internally
+without exposing values.

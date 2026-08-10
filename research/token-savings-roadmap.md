@@ -200,6 +200,16 @@ is diagnostic-only and cannot replace workflow attestation.
   immutable artifacts. Manifest SHA-256 is `88670200...`; root tarball SHA-256
   is `fce70526...`; Receipt tarball SHA-256 remains `ec00b91d...`. No npm
   publication or dist-tag operation occurred.
+- On 2026-08-11 the user approved the exact v7 retry boundary: cumulative
+  ceiling 307, retaining the 89 prior terminal identities and authorizing at
+  most 218 new identities in one fresh root. The unchanged finite shape is two
+  canaries + 108 initials + up to 108 policy-valid retries, `sonnet`, `$0.75`
+  per process, `$163.50` arithmetic maximum, no optional stopping, no old-root
+  replay, and immediate P1-X on integrity, privacy, ambiguity, or spend
+  failure. npm remains candidate-only and active P2-P6 still require P1-F.
+  Provider-free preflight confirmed current `main` differs from candidate
+  source `5bf699bd...` only in these research documents and the exact native
+  Claude CLI bytes remain unchanged.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 
