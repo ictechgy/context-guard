@@ -994,6 +994,64 @@ def _stream_contains_nonfinite(value: Any) -> bool:
     return False
 
 
+def _stream_is_post_result_task_cleanup(
+    terminal_payload: dict[str, Any], events: list[dict[str, Any]],
+) -> bool:
+    """Recognize Claude Code's exact bounded background-task shutdown tail."""
+    if len(events) != 3:
+        return False
+    session_id = terminal_payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return False
+    changed, updated, notification = events
+    if (
+        set(changed) != {"type", "subtype", "session_id", "tasks", "uuid"}
+        or changed.get("type") != "system"
+        or changed.get("subtype") != "background_tasks_changed"
+        or changed.get("session_id") != session_id
+        or changed.get("tasks") != []
+        or not isinstance(changed.get("uuid"), str)
+        or not changed["uuid"]
+    ):
+        return False
+    patch = updated.get("patch")
+    task_id = updated.get("task_id")
+    if (
+        set(updated) != {"type", "subtype", "session_id", "task_id", "patch", "uuid"}
+        or updated.get("type") != "system"
+        or updated.get("subtype") != "task_updated"
+        or updated.get("session_id") != session_id
+        or not isinstance(task_id, str)
+        or not task_id
+        or not isinstance(patch, dict)
+        or set(patch) != {"end_time", "status"}
+        or isinstance(patch.get("end_time"), bool)
+        or not isinstance(patch.get("end_time"), int)
+        or patch["end_time"] < 0
+        or patch.get("status") != "killed"
+        or not isinstance(updated.get("uuid"), str)
+        or not updated["uuid"]
+    ):
+        return False
+    return (
+        set(notification) == {
+            "type", "subtype", "session_id", "task_id", "tool_use_id",
+            "status", "summary", "output_file", "uuid",
+        }
+        and notification.get("type") == "system"
+        and notification.get("subtype") == "task_notification"
+        and notification.get("session_id") == session_id
+        and notification.get("task_id") == task_id
+        and isinstance(notification.get("tool_use_id"), str)
+        and bool(notification["tool_use_id"])
+        and notification.get("status") == "stopped"
+        and isinstance(notification.get("summary"), str)
+        and isinstance(notification.get("output_file"), str)
+        and isinstance(notification.get("uuid"), str)
+        and bool(notification["uuid"])
+    )
+
+
 def parse_claude_stream_output(
     stdout: bytes | str,
     *,
@@ -1049,6 +1107,7 @@ def parse_claude_stream_output(
     terminal_payload: dict[str, Any] | None = None
     terminal_result_code: str | None = None
     terminal_status: str | None = None
+    post_result_events: list[dict[str, Any]] = []
     for raw_line in physical_lines:
         # CR in a CRLF record is a delimiter byte, not part of the JSON content.
         line = raw_line[:-1] if raw_line.endswith(b"\r") else raw_line
@@ -1107,11 +1166,14 @@ def parse_claude_stream_output(
 
         is_result = event.get("type") == "result"
         if terminal_payload is not None:
-            return _stream_result(
-                "invalid_stream",
-                result_code="invalid_stream",
-                error_code="stream_duplicate_result" if is_result else "stream_post_result",
-            )
+            if is_result:
+                return _stream_result(
+                    "invalid_stream",
+                    result_code="invalid_stream",
+                    error_code="stream_duplicate_result",
+                )
+            post_result_events.append(event)
+            continue
         if not is_result:
             continue
 
@@ -1146,6 +1208,12 @@ def parse_claude_stream_output(
             "missing_terminal",
             result_code="missing_terminal",
             error_code="stream_missing_terminal",
+        )
+    if post_result_events and not _stream_is_post_result_task_cleanup(
+        terminal_payload, post_result_events,
+    ):
+        return _stream_result(
+            "invalid_stream", result_code="invalid_stream", error_code="stream_post_result",
         )
     return _stream_result(
         terminal_status,

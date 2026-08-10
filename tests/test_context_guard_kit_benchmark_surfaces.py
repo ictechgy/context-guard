@@ -381,6 +381,79 @@ class BenchmarkStreamJsonTests(unittest.TestCase):
                     if raw_text:
                         self.assertNotIn(raw_text, parsed.error_code)
 
+    def test_stream_parser_accepts_same_session_post_result_task_cleanup(self):
+        terminal = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "session_id": "session-1",
+        }
+        cleanup_events = [
+            {
+                "type": "system",
+                "subtype": "background_tasks_changed",
+                "session_id": "session-1",
+                "tasks": [],
+                "uuid": "event-1",
+            },
+            {
+                "type": "system",
+                "subtype": "task_updated",
+                "session_id": "session-1",
+                "task_id": "task-1",
+                "patch": {"end_time": 1, "status": "killed"},
+                "uuid": "event-2",
+            },
+            {
+                "type": "system",
+                "subtype": "task_notification",
+                "session_id": "session-1",
+                "task_id": "task-1",
+                "tool_use_id": "tool-1",
+                "status": "stopped",
+                "summary": "",
+                "output_file": "",
+                "uuid": "event-3",
+            },
+        ]
+        raw = b"\n".join(
+            json.dumps(event, separators=(",", ":")).encode("utf-8")
+            for event in [terminal, *cleanup_events]
+        )
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                module = self._module(script, "post_result_task_cleanup")
+                parsed = module.parse_claude_stream_output(raw)
+                self.assertEqual(parsed.status, "success")
+                self.assertEqual(parsed.result_code, "success")
+                self.assertIsNone(parsed.error_code)
+                self.assertEqual(parsed.payload, terminal)
+                invalid_cleanup_tails = []
+                for index, key, value in (
+                    (0, "tasks", [{"status": "running"}]),
+                    (1, "session_id", "session-2"),
+                    (2, "status", "completed"),
+                ):
+                    mutated = json.loads(json.dumps(cleanup_events))
+                    mutated[index][key] = value
+                    invalid_cleanup_tails.append(mutated)
+                missing_uuid = json.loads(json.dumps(cleanup_events))
+                del missing_uuid[0]["uuid"]
+                invalid_cleanup_tails.append(missing_uuid)
+                invalid_cleanup_tails.append([
+                    *json.loads(json.dumps(cleanup_events)),
+                    {"type": "assistant", "session_id": "session-1"},
+                ])
+                for invalid_tail in invalid_cleanup_tails:
+                    with self.subTest(script=script, invalid_tail=invalid_tail):
+                        invalid_raw = b"\n".join(
+                            json.dumps(event, separators=(",", ":")).encode("utf-8")
+                            for event in [terminal, *invalid_tail]
+                        )
+                        rejected = module.parse_claude_stream_output(invalid_raw)
+                        self.assertEqual(rejected.status, "invalid_stream")
+                        self.assertEqual(rejected.error_code, "stream_post_result")
+
     def test_stream_parser_maps_runtime_decode_limits_to_fixed_codes(self):
         success = b'{"type":"result","subtype":"success","is_error":false}'
         huge_integer = b'{"type":"system","value":' + (b"1" * 5_000) + b"}\n" + success

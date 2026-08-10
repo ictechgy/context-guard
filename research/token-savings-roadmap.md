@@ -171,6 +171,29 @@ is diagnostic-only and cannot replace workflow attestation.
   no further provider run is authorized. A future retry requires an explicit
   cumulative ceiling of at least 264, a newly frozen finite call/spend plan,
   and a fresh exact candidate.
+- The user subsequently approved that exact retry boundary: cumulative ceiling
+  264, with the 46 prior identities retained and at most 218 new identities in
+  one fresh root. The new root keeps the frozen 2 canaries + 108 initials + up
+  to 108 policy-valid retries, `sonnet`, `$0.75` per process, `$163.50`
+  arithmetic maximum, no optional stopping, and the existing privacy/stop
+  rules. Candidate run `31357316775` attempt 2 is the fresh exact PR #292
+  candidate. npm `next`/`latest` and active P2-P6 work before P1-F remain
+  unauthorized.
+- Fresh v6 root `/private/tmp/contextguard-p1-live-v6.MS256a` passed both real
+  canaries and terminally accounted 41 analytic initials before a successful
+  baseline long-log result was followed by Claude Code's three local
+  background-task shutdown events. The frozen parser rejected any event after
+  `result`, so the runner correctly stopped later launches and wrote canonical
+  P1-X `cf09039a...` with no ambiguous identities. The root is closed.
+- Provider-free TDD now permits only the exact same-session bounded shutdown
+  triad while continuing to reject duplicate results, other sessions, running
+  tasks, other terminal statuses, missing fields, and arbitrary post-result
+  events. The actual frozen raw reparses as success; v2 and benchmark surfaces
+  passed 219/219 and full prepublish passed 1569/1569 with 3 skips. This fix
+  needs review, merge, and a fresh exact candidate before any future live root.
+- V6 consumed 43 identities including canaries. Cumulative accounting is now
+  89/264, leaving 175. Another maximum-size root requires an explicit ceiling
+  of at least 307 and a new finite call/spend freeze. P1-F remains unpassed.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 

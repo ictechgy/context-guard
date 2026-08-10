@@ -1,7 +1,7 @@
 # P1 live-study and npm-release authorization packet
 
-_Drafted: 2026-08-09 KST; amended with explicit auth reuse, 219-identity
-ceiling approval, and the second stopped-root checkpoint on 2026-08-10 KST_
+_Drafted: 2026-08-09 KST; amended with explicit auth reuse, stopped-root
+checkpoints, and the exact 264-identity v6 ceiling approval on 2026-08-10 KST_
 
 This packet is the controlling scope for the authorization recorded on
 2026-08-09. Approved actions are repository-scoped GitHub activity, candidate-
@@ -49,6 +49,30 @@ activity, broader credential/data access, or any action outside this packet.
   only 217 remain under that approval. A new complete root still requires up to
   218 identities and is not authorized unless the cumulative ceiling is
   explicitly raised to at least 220.
+- A later root bound to merged source `db415c7...` passed both live canaries,
+  then terminally accounted 42 analytic initials before candidate-overlay
+  bytecode drift stopped all later launches. Across all stopped roots and
+  canaries, 46 identities are consumed/reserved and none remain open.
+- PR #292 merged the provider-free closure as `0b35a8cb...`; candidate run
+  `31357316775` attempt 2 attested its exact package pair. The user has now
+  approved one fresh v6 root under the unchanged study shape below, raising
+  the cumulative ceiling from 220 to exactly 264 identities. This grants at
+  most 218 new identities, each capped at `$0.75`, for a fresh-root arithmetic
+  maximum of `$163.50`. It does not authorize replay of an old root, optional
+  stopping, npm publication, or active P2-P6 work before P1-F.
+- Fresh root `/private/tmp/contextguard-p1-live-v6.MS256a` passed provider-free
+  prepare and both host-mediated canaries, then terminally accounted 41
+  analytic initials before the baseline long-log call stopped the root as
+  `invalid_stream`. Provider-free analyze wrote canonical P1-X
+  `cf09039a...`; there are no ambiguous or open identities and no retry ran.
+  The exact CLI stream contained a valid successful result followed by three
+  same-session background-task shutdown events. The frozen runner's older
+  post-result rule rejected that tail. The root is permanently closed and is
+  not eligible for reinterpretation or replay.
+- This root consumed 43 identities including its two discarded canaries.
+  Cumulative accounting is now 89/264, leaving 175. A new maximum-size root
+  would require a separately approved cumulative ceiling of at least 307 plus
+  a reviewed parser fix and a fresh exact candidate.
 
 ## Frozen study shape
 
@@ -82,11 +106,12 @@ estimate or a request to spend that amount. The user may authorize a smaller
 amount only by approving a new frozen plan; silently truncating this plan would
 make the complete population unreachable and keep P1 failed.
 
-The approved cumulative ceiling remains 219 identities. The two stopped roots
-have consumed two identities and `$0.07436490000000001`; only 217 identities
-remain under the approval. A future complete root itself remains capped at 218
-identities and `$163.50`, so beginning it requires a separately recorded
-cumulative ceiling of at least 220. This packet does not grant that increase.
+The approved cumulative ceiling is exactly 264 identities. Eighty-nine
+identities are now terminally consumed/reserved, leaving 175. That remainder
+does not authorize another maximum-size 218-identity root. No identity beyond
+the ceiling is authorized, and the implementation must stop immediately on the
+frozen integrity, privacy, ambiguity, or spend conditions rather than trying to
+consume the ceiling.
 
 ## Frozen Claude executable identity
 
@@ -198,12 +223,12 @@ decision.
       repository and excluding secret files.
 - [x] GitHub network use for fetch/push/PR/CI, limited to
       `ictechgy/context-guard`.
-- [x] Claude live study authority already exercised: executable above,
-      `sonnet`, cumulative ceiling 219 consumed/reserved identities, `$0.75`
-      per-process CLI caps, and explicit exact-CLI internal reuse of the bound
-      existing first-party login under the prompt/data boundary and stop rules
-      above. Two identities are accounted; the remaining 217 do not authorize
-      a new complete 218-identity root.
+- [x] Claude live study authority: executable above, `sonnet`, cumulative
+      ceiling exactly 264 consumed/reserved identities, `$0.75` per-process
+      CLI caps, and explicit exact-CLI internal reuse of the bound existing
+      first-party login under the prompt/data boundary and stop rules above.
+      Eighty-nine identities are terminally accounted; the remaining 175 do
+      not authorize another maximum-size 218-identity root.
 - [x] npm candidate workflow for the exact approved commit.
 - [ ] npm publication of the exact pair to `next`.
 - [ ] npm promotion of that exact reviewed pair to `latest`.
