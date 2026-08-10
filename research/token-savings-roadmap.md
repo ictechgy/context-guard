@@ -147,6 +147,30 @@ is diagnostic-only and cannot replace workflow attestation.
   marker write. Regression coverage invokes both real hook modes and makes the
   fake host honor a hook denial before writing the marker. A new reviewed
   immutable candidate is required before any later live retry.
+- Exact merged source `db415c7...` and candidate run `31348702952` then passed
+  provider-free prepare and both real host-mediated canaries. The analytic run
+  terminally accounted 42 initial identities with zero retry calls before
+  stopping: one provider `invalid_stream` and one successful provider/checker
+  attempt whose Python hook wrapper created a `__pycache__` file inside the
+  immutable candidate overlay. The ledger has zero open identities and the
+  root is permanently closed. The original analyzer refused that drifted
+  terminal row, so no canonical P1-F decision exists and no claim is allowed.
+- PR #292 merged the provider-free closure as `0b35a8cb...`: executable v2 now
+  freezes `PYTHONDONTWRITEBYTECODE=1`, re-derives terminal overlay drift as
+  infrastructure invalid, blocks every later provider launch, and writes a
+  claim-disabled `terminal_analytic_infrastructure_invalid` P1-X on future
+  roots. Local prepublish passed `1568/1568`; Linux 3.11, Linux 3.12, macOS,
+  and CodeRabbit passed on the exact PR head.
+- Candidate run `31357316775` attempt 2 built and attested the exact
+  `0b35a8cb...` pair after all release gates and paired smoke passed. Root
+  SHA-256 is `3b71c654...`; Receipt SHA-256 is `ec00b91d...`; the manifest and
+  both tarballs passed GitHub attestation verification. No npm publish or
+  dist-tag mutation occurred.
+- Cumulative P1 accounting is now 46 consumed/reserved identities out of the
+  approved 220, leaving 174. A fresh fixed root may consume 218 identities, so
+  no further provider run is authorized. A future retry requires an explicit
+  cumulative ceiling of at least 264, a newly frozen finite call/spend plan,
+  and a fresh exact candidate.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 
