@@ -310,6 +310,7 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
                 "plugins/context-guard/bin/context-guard-bench": "9e2934ae32cddf25fec7b4c80f9ee09b3ac31f2343d28d62a94525edef210c63",
                 "plugins/context-guard/bin/context-guard-setup": "8c30c243a0f586b7926d1ffecefa13195debf1a2e6f5251f9a47d8a43dd9bfaa",
                 "plugins/context-guard/lib/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
+                "scripts/prepublish_check.py": "d38b1c276e2ade41ec2fb0e00ef2fab2de8e687ce77e98f0059ff7d11299bd04",
                 "scripts/release_smoke.py": "5c1862a4861e6999547e076b852a38f93e68f4ac7a6bc2c38776121f5b141deb",
             },
         )
