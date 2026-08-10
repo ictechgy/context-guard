@@ -268,6 +268,7 @@ V2_FAKE_CLI = '''#!/usr/bin/env python3
 """Local-only fake Claude process used by the executable v2 rehearsal."""
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -279,6 +280,21 @@ if sys.argv[1:] == ["--version"]:
 if sys.argv[1:] == ["--help"]:
     print("--settings --setting-sources --include-hook-events --no-session-persistence stream-json")
     raise SystemExit(0)
+if sys.argv[1:] == ["auth", "status", "--json"]:
+    logged_in = Path.home().joinpath(".contextguard-v2-fake-login").is_file()
+    if logged_in:
+        print(json.dumps({
+            "loggedIn": True, "authMethod": "claude.ai",
+            "apiProvider": "firstParty",
+            "email": "v2-rehearsal@example.invalid",
+            "orgId": "v2-rehearsal-org", "orgName": "v2-rehearsal-org",
+            "subscriptionType": "fake",
+        }, separators=(",", ":")))
+        raise SystemExit(0)
+    print(json.dumps({
+        "loggedIn": False, "authMethod": "none", "apiProvider": "firstParty",
+    }, separators=(",", ":")))
+    raise SystemExit(1)
 
 settings = Path(sys.argv[sys.argv.index("--settings") + 1])
 config_path = next(
@@ -367,6 +383,8 @@ with open(config["state_path"], "a", encoding="utf-8") as handle:
         "hook_mode": hook_mode,
         "reference_handle_created": reference_handle_created,
         "public_retrieval_path": public_retrieval_path,
+        "auth_home_sha256": hashlib.sha256(str(Path.home()).encode()).hexdigest(),
+        "claude_config_dir_present": "CLAUDE_CONFIG_DIR" in os.environ,
     }, sort_keys=True) + "\\n")
 if is_canary:
     Path.cwd().joinpath("contextguard-v2-canary.txt").write_text(
@@ -890,7 +908,7 @@ def collect_validation_problems(report: dict) -> list[str]:
     return problems
 
 
-def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
+def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
     candidate_dir = root / "candidate"
     candidate_dir.mkdir(mode=0o700)
     rewrite = (
@@ -990,17 +1008,24 @@ def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
     cli_bin_dir.mkdir(mode=0o700)
     fake_cli = cli_bin_dir / "fake-claude-v2"
     _compile_v2_fake_cli(fake_cli)
-    return manifest_path, checksum_path, fake_npm, fake_cli
+    auth_home = root / "auth-home"
+    auth_home.mkdir(mode=0o700)
+    auth_home.joinpath(".contextguard-v2-fake-login").write_text(
+        "logged-in\n", encoding="utf-8",
+    )
+    return manifest_path, checksum_path, fake_npm, fake_cli, auth_home
 
 
 def _run_v2_action(
     action: str, *, output_root: Path, suite: Path, fake_cli: Path,
+    auth_home: Path,
     manifest_path: Path | None = None, checksum_path: Path | None = None,
     fake_npm: Path | None = None, expect_canary_refusal: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     argv = [
         sys.executable, str(CANONICAL_RUNNER), "--study-v2-action", action,
         "--study-v2-output-root", str(output_root), "--claude-bin", str(fake_cli),
+        "--study-v2-use-existing-login",
     ]
     if action == "prepare":
         assert manifest_path is not None and checksum_path is not None and fake_npm is not None
@@ -1013,7 +1038,13 @@ def _run_v2_action(
             "--study-v2-candidate-hash", hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
             "--study-v2-npm-bin", str(fake_npm),
         ])
-    completed = subprocess.run(argv, cwd=REPO_ROOT, text=True, capture_output=True, timeout=120)
+    environment = os.environ.copy()
+    environment["HOME"] = str(auth_home)
+    environment.pop("CLAUDE_CONFIG_DIR", None)
+    completed = subprocess.run(
+        argv, cwd=REPO_ROOT, env=environment, text=True,
+        capture_output=True, timeout=120,
+    )
     if expect_canary_refusal:
         if completed.returncode == 0 or "canary" not in completed.stderr.lower():
             raise SystemExit("v2 run did not refuse missing canary evidence")
@@ -1029,9 +1060,12 @@ def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
     """Execute two discarded canaries plus 120 analytic local fake processes."""
     with tempfile.TemporaryDirectory(prefix="contextguard-v2-rehearsal-") as temporary:
         temporary_root = Path(temporary)
-        manifest_path, checksum_path, fake_npm, fake_cli = _v2_candidate_fixture(temporary_root)
+        manifest_path, checksum_path, fake_npm, fake_cli, auth_home = (
+            _v2_candidate_fixture(temporary_root)
+        )
         _run_v2_action(
             "prepare", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
             manifest_path=manifest_path, checksum_path=checksum_path, fake_npm=fake_npm,
         )
         study_manifest = json.loads((output_root / "study-manifest.json").read_text(encoding="utf-8"))
@@ -1062,17 +1096,30 @@ def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
         )
         _run_v2_action(
             "run", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
             expect_canary_refusal=True,
         )
         run_without_canary_refused = not (output_root / "attempts.jsonl").exists()
-        _run_v2_action("canary", output_root=output_root, suite=suite, fake_cli=fake_cli)
-        _run_v2_action("run", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action(
+            "canary", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
+        _run_v2_action(
+            "run", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
         calls_after_run = (output_root / "fake-cli-calls.jsonl").read_text(encoding="utf-8").splitlines()
-        _run_v2_action("resume", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action(
+            "resume", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
         calls_after_resume = (output_root / "fake-cli-calls.jsonl").read_text(encoding="utf-8").splitlines()
         if calls_after_resume != calls_after_run:
             raise SystemExit("v2 resume replayed an already launched identity")
-        _run_v2_action("analyze", output_root=output_root, suite=suite, fake_cli=fake_cli)
+        _run_v2_action(
+            "analyze", output_root=output_root, suite=suite, fake_cli=fake_cli,
+            auth_home=auth_home,
+        )
         study_report = json.loads((output_root / "study-report.json").read_text(encoding="utf-8"))
         npm_calls = fake_npm.with_name("v2-npm-calls.jsonl").read_text(encoding="utf-8").splitlines()
     all_calls = [json.loads(line) for line in calls_after_run]

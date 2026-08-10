@@ -64,8 +64,8 @@ met.
 
 - The v2 study freezes three arms, corpus/checkers, schedule, CLI/runtime,
   candidate overlay, environment, receipts, and crash-safe attempt identity.
-- Its provider-free rehearsal exercises the live v3 artifact contract:
-  `study-manifest.v3`, `study-attempt.v3`, `study-report.v3`, and the
+- Its provider-free rehearsal exercises the live artifact contract:
+  `study-manifest.v4`, `study-attempt.v3`, `study-report.v4`, and the
   `study-invalid-decision.v1` P1-X record. Rehearsal evidence itself remains
   descriptive and cannot substitute for provider-backed evidence.
 - A mandatory discarded canary proves host-emitted `PreToolUse(Bash)` for both
@@ -90,7 +90,7 @@ met.
 Current provider-free progress: candidate construction, paired clean-install
 smoke, post-hardening v2 rehearsal, focused benchmark/npm/Receipt/Gate-B/Stage2
 verification, the authorization packet, and full offline
-`python3 scripts/prepublish_check.py` (`1561` tests, `3` skips) have passed.
+`python3 scripts/prepublish_check.py` (`1564` tests, `3` skips) have passed.
 GitHub candidate run `31314422888` attested both package tarballs and the
 canonical manifest for merged source `2489f999...`; no npm registry publication
 occurred.
@@ -106,24 +106,30 @@ The candidate workflow must be dispatched from a retained remote branch or tag
 whose tip is verified to equal the reviewed merge SHA; a detached local build
 is diagnostic-only and cannot replace workflow attestation.
 
-### 2026-08-09 live checkpoint
+### 2026-08-10 live checkpoint
 
 - Exact candidate `2489f999...` completed provider-free `prepare` in a new
   owner-private root.
 - The first `legacy_trim` canary identity reached a terminal process failure
-  because the exact native Claude CLI was not logged in. The CLI reported zero
-  input/output tokens, zero provider API duration, and `$0` cost. The second
-  canary and all analytic identities were not launched.
+  reporting `Not logged in`; the CLI reported zero input/output tokens, zero
+  provider API duration, and `$0` cost. Follow-up provider-free diagnosis proved
+  the operator's normal exact CLI was logged in. The failure came from the
+  runner replacing both HOME and `CLAUDE_CONFIG_DIR` with empty per-attempt
+  directories, thereby hiding the login from the CLI. The second canary and all
+  analytic identities were not launched.
 - The failed root is permanently closed to provider activity. During evidence
   closure, a contract bug was found: `analyze` refused a terminal failed canary
   before writing the promised P1-X record. A provider-free regression test and
   minimal fix now make failed canaries emit a bound
   `failed_canary_terminal_evidence` P1-X without any replay.
-- P1 remains blocked. One of the approved 218 consumed/reserved identities is
-  accounted for, leaving 217 under the recorded authorization; a fresh complete
-  218-identity lifecycle therefore requires operator login and a separately
-  recorded total ceiling of at least 219. P2-P6 active promotion remains
-  stopped.
+- A reviewed fix now requires explicit existing-login opt-in, binds only hashed
+  identity/HOME evidence plus safe auth method/provider fields, rejects auth
+  drift before reservation, preserves isolated XDG/session paths, and passes no
+  credential-shaped environment variable. The operator approved this exact-CLI
+  internal auth reuse and raised the cumulative identity ceiling to 219 on
+  2026-08-10. One identity is already accounted for; the fresh root still has
+  its unchanged 218-identity/$163.50 maximum. P2-P6 active promotion remains
+  stopped until the fresh P1 exit gate passes.
 
 ### Exit gate
 
