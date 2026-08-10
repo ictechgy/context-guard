@@ -60,6 +60,19 @@ activity, broader credential/data access, or any action outside this packet.
   most 218 new identities, each capped at `$0.75`, for a fresh-root arithmetic
   maximum of `$163.50`. It does not authorize replay of an old root, optional
   stopping, npm publication, or active P2-P6 work before P1-F.
+- Fresh root `/private/tmp/contextguard-p1-live-v6.MS256a` passed provider-free
+  prepare and both host-mediated canaries, then terminally accounted 41
+  analytic initials before the baseline long-log call stopped the root as
+  `invalid_stream`. Provider-free analyze wrote canonical P1-X
+  `cf09039a...`; there are no ambiguous or open identities and no retry ran.
+  The exact CLI stream contained a valid successful result followed by three
+  same-session background-task shutdown events. The frozen runner's older
+  post-result rule rejected that tail. The root is permanently closed and is
+  not eligible for reinterpretation or replay.
+- This root consumed 43 identities including its two discarded canaries.
+  Cumulative accounting is now 89/264, leaving 175. A new maximum-size root
+  would require a separately approved cumulative ceiling of at least 307 plus
+  a reviewed parser fix and a fresh exact candidate.
 
 ## Frozen study shape
 
@@ -93,12 +106,12 @@ estimate or a request to spend that amount. The user may authorize a smaller
 amount only by approving a new frozen plan; silently truncating this plan would
 make the complete population unreachable and keep P1 failed.
 
-The approved cumulative ceiling is now exactly 264 identities. Forty-six prior
-identities are terminally consumed/reserved, leaving exactly 218 for one fresh
-root. That root remains capped at 218 identities and `$163.50`; no second fresh
-root or identity beyond that boundary is authorized. The implementation must
-still stop immediately on the frozen integrity, privacy, ambiguity, or spend
-conditions rather than trying to consume the ceiling.
+The approved cumulative ceiling is exactly 264 identities. Eighty-nine
+identities are now terminally consumed/reserved, leaving 175. That remainder
+does not authorize another maximum-size 218-identity root. No identity beyond
+the ceiling is authorized, and the implementation must stop immediately on the
+frozen integrity, privacy, ambiguity, or spend conditions rather than trying to
+consume the ceiling.
 
 ## Frozen Claude executable identity
 
@@ -214,8 +227,8 @@ decision.
       ceiling exactly 264 consumed/reserved identities, `$0.75` per-process
       CLI caps, and explicit exact-CLI internal reuse of the bound existing
       first-party login under the prompt/data boundary and stop rules above.
-      Forty-six prior identities are terminally accounted; the remaining 218
-      authorize one fresh root with a `$163.50` arithmetic maximum.
+      Eighty-nine identities are terminally accounted; the remaining 175 do
+      not authorize another maximum-size 218-identity root.
 - [x] npm candidate workflow for the exact approved commit.
 - [ ] npm publication of the exact pair to `next`.
 - [ ] npm promotion of that exact reviewed pair to `latest`.
