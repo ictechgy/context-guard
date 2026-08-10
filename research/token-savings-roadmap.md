@@ -1,6 +1,6 @@
 # ContextGuard token-savings roadmap
 
-_Status date: 2026-08-10 KST_
+_Status date: 2026-08-11 KST_
 
 This file is the canonical dependency, maturity, stop-gate, and claim contract
 for ContextGuard token-savings work. Draft run packets and implementation plans
@@ -17,9 +17,9 @@ Current position:
 | Dimension | Status |
 | --- | --- |
 | Shipped-code readiness | Narrow P3-style opt-in Bash-output reference route is merged. |
-| Evidence readiness | P1 live feasibility/effect gate is not passed. |
+| Evidence readiness | P1-X: v7 stopped safely after 79 analytic identities; P1-F is not passed. |
 | Release readiness | An attested immutable candidate exists; npm publication has not occurred. |
-| Public claim | Forbidden: no provider-backed v3 decision record exists. |
+| Public claim | Forbidden: the provider-backed v7 decision is P1-X and claim-disabled. |
 
 The roadmap is dependency-gated:
 
@@ -65,7 +65,7 @@ met.
 - The v2 study freezes three arms, corpus/checkers, schedule, CLI/runtime,
   candidate overlay, environment, receipts, and crash-safe attempt identity.
 - Its provider-free rehearsal exercises the live artifact contract:
-  `study-manifest.v4`, `study-attempt.v3`, `study-report.v4`, and the
+  `study-manifest.v5`, `study-attempt.v4`, `study-report.v4`, and the
   `study-invalid-decision.v1` P1-X record. Rehearsal evidence itself remains
   descriptive and cannot substitute for provider-backed evidence.
 - A mandatory discarded canary proves host-emitted `PreToolUse(Bash)` for both
@@ -210,6 +210,36 @@ is diagnostic-only and cannot replace workflow attestation.
   Provider-free preflight confirmed current `main` differs from candidate
   source `5bf699bd...` only in these research documents and the exact native
   Claude CLI bytes remain unchanged.
+- PR #296 merged the v7 authorization packet as `16a71ac...` after exact-head
+  hosted CI passed. Candidate run `31406020654` then passed every release gate,
+  paired smoke, three attestations, and two immutable artifact uploads. The
+  candidate manifest SHA-256 is `a0906987...`; root tarball SHA-256 is
+  `fce70526...`; Receipt tarball SHA-256 is `ec00b91d...`. No npm registry or
+  dist-tag mutation occurred.
+- Fresh v7 root `/private/tmp/contextguard-p1-live-v7.jd6MT4` passed both
+  discarded host-mediated canaries. It terminally accounted 79 analytic
+  identities before `ts12_08_refactor/bash_reference_v1/repetition-1` reached
+  the frozen 12-turn limit. Claude emitted a well-formed nonzero
+  `error_max_turns` terminal with complete usage and eight valid PreToolUse
+  lifecycles, but attempt-v3 precedence classified every nonzero provider exit
+  as infrastructure-invalid and zeroed its usage. The runner stopped all later
+  launches; provider-free analysis wrote canonical claim-disabled P1-X
+  `80387242...`, with zero ambiguous identities. This root is permanently
+  closed and must never be resumed, repaired, migrated, or reinterpreted.
+- V7 consumed 81 identities including canaries. Cumulative accounting is now
+  170/307, leaving 137. A new maximum-size root requires a separately approved
+  cumulative ceiling of at least 388 and a newly frozen finite plan; no further
+  provider call is currently authorized.
+- Provider-free TDD now versions the contract as `study-manifest.v5` and
+  `study-attempt.v4`. Only exact nonzero `error_max_turns` or
+  `error_max_budget_usd` terminals with all four usage buckets and valid hook
+  lifecycles become retry-eligible task failures. Their provider
+  `process_error` remains truthful, the checker is explicitly not run, measured
+  usage remains in the estimator, and retry/later schedule execution continues.
+  Execution errors, malformed usage, success/nonzero contradictions, and hook
+  failures remain infrastructure-invalid. The frozen v7 artifact is recognized
+  read-only as 453,278 primary tokens, but its v7 decision remains P1-X; only a
+  fresh reviewed candidate and fresh root may exercise the new contract.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 

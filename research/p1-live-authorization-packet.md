@@ -93,6 +93,20 @@ this packet.
   Old-root reuse, replay, optional stopping, npm publication, and active P2-P6
   work before P1-F remain forbidden. The mode-0600 authorization evidence has
   SHA-256 `834214b36d30bb6c3a1174a37f073c2af84c65724f66d7f8247efd9bb71b0e76`.
+- PR #296 merged the packet as `16a71ac...`; exact candidate run
+  `31406020654` passed and produced verified immutable artifacts without an npm
+  publish or dist-tag mutation. Fresh v7 root
+  `/private/tmp/contextguard-p1-live-v7.jd6MT4` passed both canaries, consumed
+  79 analytic identities, and then stopped on an `error_max_turns` result that
+  the bound attempt-v3 runner classified as infrastructure-invalid. Analysis
+  wrote claim-disabled P1-X `80387242...`; the root has no ambiguous identity
+  and is permanently closed.
+- V7 consumed 81 identities including canaries. Cumulative accounting is now
+  170/307, leaving 137; therefore this authorization grants no further provider
+  call. A fresh maximum-size root would require a new finite freeze and an
+  explicit cumulative ceiling of at least 388. Provider-free attempt-v4 TDD
+  repairs the bounded-failure classification for a future reviewed candidate,
+  but does not alter, migrate, resume, or reinterpret the v7 P1-X record.
 
 ## Frozen study shape
 
@@ -126,9 +140,10 @@ estimate or a request to spend that amount. The user may authorize a smaller
 amount only by approving a new frozen plan; silently truncating this plan would
 make the complete population unreachable and keep P1 failed.
 
-The approved cumulative ceiling is exactly 307 identities. Eighty-nine
-identities are already terminally consumed/reserved, leaving exactly 218 for
-one fresh maximum-size root. No identity beyond the ceiling is authorized, and
+The approved cumulative ceiling is exactly 307 identities. One hundred seventy
+identities are already terminally consumed/reserved, leaving 137, which is not
+enough for another fresh maximum-size root. No further provider process is
+authorized under this packet. No identity beyond the ceiling is authorized, and
 the implementation must stop immediately on the frozen integrity, privacy,
 ambiguity, or spend conditions rather than trying to consume the ceiling.
 
@@ -246,8 +261,8 @@ decision.
       ceiling exactly 307 consumed/reserved identities, `$0.75` per-process
       CLI caps, and explicit exact-CLI internal reuse of the bound existing
       first-party login under the prompt/data boundary and stop rules above.
-      Eighty-nine identities are terminally accounted; exactly 218 identities
-      remain for one fresh root under the frozen study shape.
+      One hundred seventy identities are terminally accounted; only 137 remain,
+      so this packet authorizes no new root or further provider process.
 - [x] npm candidate workflow for the exact approved commit.
 - [ ] npm publication of the exact pair to `next`.
 - [ ] npm promotion of that exact reviewed pair to `latest`.

@@ -342,6 +342,11 @@ persistent = config["persistent_failure_unit"]
 should_fail = not is_canary and unit in retry_units and (
     slot["attempt"] == 0 or (unit == persistent and slot["attempt"] == 1)
 )
+bounded_failure = (
+    not is_canary
+    and unit in config.get("bounded_provider_failure_units", [])
+    and slot["attempt"] == 0
+)
 hook_mode = "host_unmodified"
 reference_handle_created = False
 public_retrieval_path = False
@@ -400,12 +405,24 @@ if is_canary:
     Path.cwd().joinpath("contextguard-v2-canary.txt").write_text(
         config["canary_marker"], encoding="utf-8",
     )
-elif not should_fail:
+elif not should_fail and not bounded_failure:
     for rel, content in sorted(config["solutions"][task_id].items()):
         target = Path.cwd() / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 digest = int(hashlib.sha256(f"{task_id}|{arm}|{slot['repetition']}|{slot['attempt']}".encode()).hexdigest()[:8], 16)
+if bounded_failure:
+    print(json.dumps({
+        "type": "result", "subtype": "error_max_turns", "is_error": True,
+        "usage": {
+            "input_tokens": 4100,
+            "cache_creation_input_tokens": 120,
+            "cache_read_input_tokens": 80,
+            "output_tokens": 300,
+        },
+        "total_cost_usd": 0.25,
+    }, separators=(",", ":")), flush=True)
+    raise SystemExit(7)
 print(json.dumps({
     "type": "result", "subtype": "success", "is_error": False,
     "success": True,
