@@ -11507,8 +11507,13 @@ def _benchmark_study_v2_execution_environment(
         lookup_directories + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
     ))
     return {
-        "schema_version": "contextguard.bench.execution-environment.v2",
-        "values": {"PATH": path_value, "LANG": "C", "LC_ALL": "C"},
+        "schema_version": "contextguard.bench.execution-environment.v3",
+        "values": {
+            "PATH": path_value,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
         "runtime_bindings": bindings,
     }
 
@@ -11521,10 +11526,11 @@ def _benchmark_study_v2_validate_execution_environment(
     if (
         set(binding) != {"schema_version", "values", "runtime_bindings"}
         or binding.get("schema_version")
-        != "contextguard.bench.execution-environment.v2"
+        != "contextguard.bench.execution-environment.v3"
         or not isinstance(values, Mapping)
-        or set(values) != {"PATH", "LANG", "LC_ALL"}
+        or set(values) != {"PATH", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}
         or values.get("LANG") != "C" or values.get("LC_ALL") != "C"
+        or values.get("PYTHONDONTWRITEBYTECODE") != "1"
         or not isinstance(values.get("PATH"), str) or not values["PATH"]
         or any(
             not part or not Path(part).is_absolute()
@@ -13308,16 +13314,27 @@ def _benchmark_study_v2_revalidate_terminal_evidence(
             if receipt["terminal_status"] == "success" and checker == "valid_task_failure_v1"
             else "study_infra_invalid"
         )
+        if (
+            row["post_overlay_inventory_sha256"]
+            != row["pre_overlay_inventory_sha256"]
+        ):
+            derived = "study_infra_invalid"
         if row["terminal_status"] != derived or row["success"] is not (derived == "success"):
             raise ValueError("v2 attempt outcome was not derived from provider plus checker")
         workspace_inventory = _benchmark_study_v2_inventory(context.workspace)
         overlay_inventory = _benchmark_study_v2_inventory(
             context.workspace / BENCHMARK_STUDY_V2_OVERLAY_NAME,
         )
+        overlay_drifted = (
+            overlay_inventory != manifest["inputs"]["candidate_overlay_inventory"]
+        )
         if (
             workspace_inventory["sha256"] != row["post_workspace_inventory_sha256"]
             or overlay_inventory["sha256"] != row["post_overlay_inventory_sha256"]
-            or overlay_inventory != manifest["inputs"]["candidate_overlay_inventory"]
+            or (
+                overlay_drifted
+                and row["terminal_status"] != "study_infra_invalid"
+            )
         ):
             raise ValueError("v2 terminal workspace or overlay inventory drift")
 
@@ -13409,7 +13426,17 @@ def _benchmark_study_v2_read_attempts(path: Path, *, manifest: Mapping[str, Any]
                 for field in hash_fields
             ):
                 raise ValueError("v2 terminal evidence hash is invalid")
-            if row["pre_overlay_inventory_sha256"] != manifest["inputs"]["candidate_overlay_inventory"]["sha256"] or row["post_overlay_inventory_sha256"] != row["pre_overlay_inventory_sha256"]:
+            expected_overlay_sha256 = manifest["inputs"][
+                "candidate_overlay_inventory"
+            ]["sha256"]
+            if (
+                row["pre_overlay_inventory_sha256"] != expected_overlay_sha256
+                or (
+                    row["post_overlay_inventory_sha256"]
+                    != row["pre_overlay_inventory_sha256"]
+                    and status != "study_infra_invalid"
+                )
+            ):
                 raise ValueError("v2 terminal overlay binding is invalid")
             if status == "success" and not (
                 row["provider_terminal_status"] == "success"
@@ -13660,12 +13687,12 @@ def _execute_benchmark_study_v2_unlocked(
             continue
         retry = retry_by_unit[(initial["task_id"], initial["repetition"], initial["arm"])]
         if initial_row.get("terminal_status") != "valid_task_failure_v1":
+            state = (
+                "not_needed"
+                if initial_row.get("terminal_status") == "success"
+                else "blocked_study_invalid"
+            )
             if retry["run_id"] not in accounted:
-                state = (
-                    "not_needed"
-                    if initial_row.get("terminal_status") == "success"
-                    else "blocked_study_invalid"
-                )
                 extra = {"reason": "initial_study_invalid"} if state == "blocked_study_invalid" else {}
                 append_study_attempt_event(
                     attempts_path,
@@ -13674,6 +13701,11 @@ def _execute_benchmark_study_v2_unlocked(
                     ),
                 )
                 accounted.add(retry["run_id"])
+            if state == "blocked_study_invalid":
+                raise ValueError(
+                    "v2 terminal infrastructure-invalid evidence permanently "
+                    "blocks later provider launches"
+                )
             continue
         if retry["run_id"] in accounted:
             continue
@@ -13797,13 +13829,21 @@ def _benchmark_study_v2_invalid_analytic_decision(
         and final_by_run[str(slot["run_id"])]["state"]
         in {"launch_reserved", "launched"}
     ]
-    if not ambiguous:
+    failed = [
+        row for row in final_by_run.values()
+        if row["state"] == "terminal"
+        and row["terminal_status"] == "study_infra_invalid"
+    ]
+    if not ambiguous and not failed:
         return None
     attempts_path = output_root / "attempts.jsonl"
     return {
         "schema_version": BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION,
         "study_version": "v2", "decision": "P1-X",
-        "stop_reason": "ambiguous_analytic_process_state",
+        "stop_reason": (
+            "ambiguous_analytic_process_state" if ambiguous
+            else "terminal_analytic_infrastructure_invalid"
+        ),
         "manifest_sha256": manifest_sha256,
         "attempt_schema_version": BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION,
         "consumed_identity_count": sum(
@@ -13816,6 +13856,12 @@ def _benchmark_study_v2_invalid_analytic_decision(
             "repetition": row["repetition"], "run_id": row["run_id"],
             "state": row["state"], "task_id": row["task_id"],
         } for row in ambiguous],
+        "failed_analytic_identities": [{
+            "arm": row["arm"], "attempt": row["attempt"],
+            "repetition": row["repetition"], "run_id": row["run_id"],
+            "state": row["state"], "task_id": row["task_id"],
+            "terminal_status": row["terminal_status"],
+        } for row in failed],
         "ledgers": {
             "attempts": _benchmark_study_v2_ledger_binding(
                 attempts_path, maximum=4_000_000,

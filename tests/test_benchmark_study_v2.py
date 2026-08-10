@@ -327,6 +327,37 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 ),
             )
 
+    def test_v2_bound_environment_prevents_hook_wrapper_bytecode_overlay_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temporary_root = Path(temp)
+            output_root, _fake_cli, manifest, _auth_home = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=temporary_root,
+                run_canary=False,
+            )
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            (workspace / "credential_policy.py").write_text(
+                "BOUND_POLICY = True\n", encoding="utf-8",
+            )
+            variants = self.runner._benchmark_study_v2_variants(
+                manifest, output_root,
+            )
+            spec = variants["legacy_trim"].measurement
+            self.assertIsNotNone(spec)
+            environment = self.runner._measurement_child_env(spec)
+            python_runtime = next(
+                runtime for runtime in
+                manifest["inputs"]["execution_environment"]["runtime_bindings"]
+                if runtime["name"] == "python3"
+            )
+            imported = subprocess.run(
+                [python_runtime["executable"], "-c", "import credential_policy"],
+                cwd=workspace, env=environment, text=True,
+                capture_output=True, timeout=30,
+            )
+            self.assertEqual(imported.returncode, 0, imported.stderr)
+            self.assertFalse(list(workspace.rglob("__pycache__")))
+
     def test_v2_auth_home_drift_refuses_before_canary_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temporary_root = Path(temp)
@@ -623,6 +654,95 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             )
             self.assertEqual(attempts_path.read_bytes(), attempts_raw)
             self.assertEqual(provider_log.read_bytes(), provider_calls_before)
+
+    def test_v2_terminal_overlay_drift_stops_and_analyzes_as_bound_p1_x(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temporary_root = Path(temp)
+            output_root, fake_cli, manifest, auth_home = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=temporary_root,
+            )
+            first_initial = next(
+                slot for slot in manifest["slots"] if slot["attempt"] == 0
+            )
+            config_path = output_root / "fake-cli-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["solutions"][first_initial["task_id"]][
+                "node_modules/@ictechgy/context-guard/plugins/context-guard/"
+                "lib/__pycache__/credential_policy.cpython-test.pyc"
+            ] = "bounded drift fixture\n"
+            config_path.write_text(
+                json.dumps(config, sort_keys=True), encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["HOME"] = str(auth_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+            provider_log = output_root / "fake-cli-calls.jsonl"
+            canary_calls = provider_log.read_bytes().splitlines()
+
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "run",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            self.assertEqual(
+                len(provider_log.read_bytes().splitlines()),
+                len(canary_calls) + 1,
+            )
+            attempt_rows = [
+                json.loads(line)
+                for line in (output_root / "attempts.jsonl")
+                .read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                [row["state"] for row in attempt_rows],
+                [
+                    "launch_reserved", "launched", "terminal",
+                    "blocked_study_invalid",
+                ],
+            )
+
+            analyzed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "analyze",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                ],
+                cwd=ROOT, text=True, capture_output=True, timeout=60,
+            )
+            self.assertEqual(analyzed.returncode, 3, analyzed.stderr)
+            decision_path = output_root / "study-invalid-decision.json"
+            decision = json.loads(decision_path.read_bytes())
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertEqual(
+                decision["stop_reason"],
+                "terminal_analytic_infrastructure_invalid",
+            )
+            self.assertEqual(decision["consumed_identity_count"], 1)
+            self.assertEqual(decision["accounted_identity_count"], 2)
+            self.assertEqual(decision["ambiguous_identities"], [])
+            self.assertEqual(
+                decision["failed_analytic_identities"],
+                [{
+                    "arm": first_initial["arm"],
+                    "attempt": 0,
+                    "repetition": first_initial["repetition"],
+                    "run_id": first_initial["run_id"],
+                    "state": "terminal",
+                    "task_id": first_initial["task_id"],
+                    "terminal_status": "study_infra_invalid",
+                }],
+            )
+            self.assertFalse((output_root / "study-report.json").exists())
+            self.assertEqual(
+                len(provider_log.read_bytes().splitlines()),
+                len(canary_calls) + 1,
+            )
 
     def test_v2_prepare_versions_stop_safe_ledger_and_decision_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

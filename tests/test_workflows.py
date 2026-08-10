@@ -384,10 +384,12 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")
+        prepublish_check = read("scripts/prepublish_check.py")
         job_blocks = workflow_job_blocks(ci)
         ubuntu_job = job_blocks["test-and-prepublish"]
         macos_job = job_blocks["test-and-prepublish-macos"]
 
+        self.assertIn("TEST_DISCOVERY_TIMEOUT_SECONDS = 1380", prepublish_check)
         self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 25\n        run: python scripts/prepublish_check.py", ubuntu_job)
         self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python scripts/release_smoke.py", ubuntu_job)
         self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 25\n        run: python scripts/prepublish_check.py", macos_job)
