@@ -180,6 +180,13 @@ validate. A merely reserved/workspace-prepared canary or a launched canary
 without valid recoverable evidence permanently closes that root to provider
 activity and permits only `P1-X` analysis.
 
+The forced Bash command uses the existing MiniShell-v1-supported `python3 -c`
+route to write the fixed marker; it does not require output-redirection grammar
+that the real hook intentionally denies. Contract tests submit that exact
+command to both the legacy and reference hook modes. The local fake host also
+passes the exact command to its fake hook and treats a deny decision as
+terminal, so rehearsal cannot create the marker after a denied tool call.
+
 Each canary call is contract-bound to `--max-budget-usd 0.75` and at most two
 turns. Every analytic identity is also capped at `$0.75`; the frozen schedule is
 108 initials, up to 108 failure-triggered retries, and two discarded canaries,

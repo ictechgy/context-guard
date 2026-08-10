@@ -1,6 +1,6 @@
 # ContextGuard token-savings roadmap
 
-_Status date: 2026-08-09 KST_
+_Status date: 2026-08-10 KST_
 
 This file is the canonical dependency, maturity, stop-gate, and claim contract
 for ContextGuard token-savings work. Draft run packets and implementation plans
@@ -122,14 +122,33 @@ is diagnostic-only and cannot replace workflow attestation.
   before writing the promised P1-X record. A provider-free regression test and
   minimal fix now make failed canaries emit a bound
   `failed_canary_terminal_evidence` P1-X without any replay.
-- A reviewed fix now requires explicit existing-login opt-in, binds only hashed
-  identity/HOME evidence plus safe auth method/provider fields, rejects auth
+- A reviewed and merged fix now requires explicit existing-login opt-in, binds
+  only hashed identity/HOME evidence plus safe auth method/provider fields, rejects auth
   drift before reservation, preserves isolated XDG/session paths, and passes no
   credential-shaped environment variable. The operator approved this exact-CLI
   internal auth reuse and raised the cumulative identity ceiling to 219 on
-  2026-08-10. One identity is already accounted for; the fresh root still has
-  its unchanged 218-identity/$163.50 maximum. P2-P6 active promotion remains
-  stopped until the fresh P1 exit gate passes.
+  2026-08-10.
+- Exact merged source `af93dca...` and candidate run `31345333296` then passed
+  prepare in a second fresh root. Its first `legacy_trim` canary reached the
+  real provider and emitted a valid host `PreToolUse(Bash)` lifecycle, but the
+  hook correctly denied the requested `printf ... > file` command because
+  MiniShell-v1 forbids active output redirection. The model therefore could not
+  create the marker. Provider-free `analyze` wrote the canonical P1-X and no
+  second canary or analytic identity launched. This root is also permanently
+  closed.
+- The two stopped roots now account for two identities. The second consumed
+  `$0.07436490000000001` and reported 4 input, 9,095 cache-creation, 56,943
+  cache-read, and 137 output tokens. The approved cumulative ceiling remains
+  219, leaving 217 identities; a new complete root still needs up to 218, so no
+  provider retry is authorized unless the cumulative ceiling is explicitly
+  raised to at least 220.
+- The provider-free remediation keeps MiniShell unchanged and replaces the
+  canary's denied redirection with an already-supported exact `python3 -c`
+  marker write. Regression coverage invokes both real hook modes and makes the
+  fake host honor a hook denial before writing the marker. A new reviewed
+  immutable candidate is required before any later live retry.
+
+P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 
 ### Exit gate
 

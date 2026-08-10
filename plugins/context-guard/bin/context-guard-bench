@@ -11228,10 +11228,14 @@ BENCHMARK_STUDY_V2_CANARY_ARMS = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_CANARY_TASK_ID = "contextguard-v2-bash-canary"
 BENCHMARK_STUDY_V2_CANARY_MAX_BUDGET_USD = 0.75
 BENCHMARK_STUDY_V2_CANARY_MARKER = b"contextguard-v2-host-pretooluse-canary\n"
+BENCHMARK_STUDY_V2_CANARY_COMMAND = (
+    "python3 -c 'from pathlib import Path;"
+    "Path(\"contextguard-v2-canary.txt\").write_bytes("
+    "b\"contextguard-v2-host-pretooluse-canary\\n\")'"
+)
 BENCHMARK_STUDY_V2_CANARY_PROMPT = (
     "Use the Bash tool exactly once to run this command, then reply done: "
-    "printf '%s\\n' contextguard-v2-host-pretooluse-canary > "
-    "contextguard-v2-canary.txt"
+    + BENCHMARK_STUDY_V2_CANARY_COMMAND
 )
 BENCHMARK_STUDY_V2_CANARY_CHECKER = (
     b"from pathlib import Path\n"

@@ -4,6 +4,10 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Changed the discarded v2 Bash canary's fixed marker write from denied shell
+  output redirection to an existing MiniShell-v1-supported `python3 -c` route.
+  Both real hook modes now guard the exact command in provider-free tests, and
+  the offline fake host honors hook denials before creating any marker.
 - Added an explicit `--study-v2-use-existing-login` gate for executable v2
   provider actions. `prepare` now verifies and pseudonymously binds the exact
   first-party Claude login plus its owned, non-writable HOME identity without

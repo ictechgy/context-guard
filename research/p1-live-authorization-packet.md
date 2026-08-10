@@ -1,7 +1,7 @@
 # P1 live-study and npm-release authorization packet
 
-_Drafted: 2026-08-09 KST; amended with explicit auth reuse and 219-identity
-ceiling approval on 2026-08-10 KST_
+_Drafted: 2026-08-09 KST; amended with explicit auth reuse, 219-identity
+ceiling approval, and the second stopped-root checkpoint on 2026-08-10 KST_
 
 This packet is the controlling scope for the authorization recorded on
 2026-08-09. Approved actions are repository-scoped GitHub activity, candidate-
@@ -13,9 +13,9 @@ activity, broader credential/data access, or any action outside this packet.
 
 - PR #287 merged the v3 accounting/budget hardening; PR #288 merged the bounded
   GitHub-hosted runtime normalization required by the candidate workflow.
-- Replacement candidate run `31319482425` succeeded for retained ref
-  `refs/heads/candidate/p1-v3-6bde86be91c3` at exact source
-  `6bde86be91c3f5197f347b42a481fa397b92aade`. Both tarballs, the canonical
+- Replacement candidate run `31345333296` succeeded for retained ref
+  `refs/heads/candidate/p1-v4-af93dca64cfd` at exact source
+  `af93dca64cfdbbba231e577b9226497b720f9d92`. Both tarballs, the canonical
   manifest, checksums, SRI values, and all three GitHub attestations were
   independently verified. npm `next`/`latest` were not invoked.
 - Provider-free rehearsal passed with 108 initials, 12 deterministic retries,
@@ -31,12 +31,24 @@ activity, broader credential/data access, or any action outside this packet.
   now emits a ledger-bound `failed_canary_terminal_evidence` P1-X without
   replay. Full offline verification after the fix passed: `1564` tests,
   `3` skips, `prepublish check: OK`.
-- The source now differs from candidate `6bde86be...`; one new reviewed
-  immutable candidate is required before another live `prepare`.
+- A second fresh root prepared that exact candidate and reused the bound login
+  successfully. Its first `legacy_trim` canary reached the provider and emitted
+  a valid host `PreToolUse(Bash)` lifecycle, but MiniShell-v1 correctly denied
+  the prompt's active `printf ... > file` redirection. The marker checker
+  failed, provider-free `analyze` emitted P1-X, and no second canary or analytic
+  identity launched. The root is permanently closed.
+- That second identity consumed `$0.07436490000000001` and reported 4 input,
+  9,095 cache-creation, 56,943 cache-read, and 137 output tokens. Together the
+  two stopped roots account for two identities. The current source replaces
+  the denied redirection with an already-supported exact `python3 -c` marker
+  write and adds real-hook/fake-host denial regressions, so it again requires a
+  reviewed immutable candidate before another live `prepare`.
 - The operator approved exact-CLI internal reuse of the existing first-party
   login and increased the cumulative consumed/reserved identity ceiling from
-  218 to 219 on 2026-08-10. One identity is already terminally accounted; the
-  fresh root may therefore execute its unchanged maximum 218 identities.
+  218 to 219 on 2026-08-10. Two identities are now terminally accounted, so
+  only 217 remain under that approval. A new complete root still requires up to
+  218 identities and is not authorized unless the cumulative ceiling is
+  explicitly raised to at least 220.
 
 ## Frozen study shape
 
@@ -70,10 +82,11 @@ estimate or a request to spend that amount. The user may authorize a smaller
 amount only by approving a new frozen plan; silently truncating this plan would
 make the complete population unreachable and keep P1 failed.
 
-Across the original stopped root and a fresh complete root, the newly approved
-cumulative ceiling is 219 identities and the arithmetic ceiling is `$164.25`.
-The fresh root itself remains capped at 218 identities and `$163.50`; the
-already-accounted failed canary recorded `$0`.
+The approved cumulative ceiling remains 219 identities. The two stopped roots
+have consumed two identities and `$0.07436490000000001`; only 217 identities
+remain under the approval. A future complete root itself remains capped at 218
+identities and `$163.50`, so beginning it requires a separately recorded
+cumulative ceiling of at least 220. This packet does not grant that increase.
 
 ## Frozen Claude executable identity
 
@@ -185,12 +198,12 @@ decision.
       repository and excluding secret files.
 - [x] GitHub network use for fetch/push/PR/CI, limited to
       `ictechgy/context-guard`.
-- [x] Claude live study: exact committed source/candidate, executable above,
-      `sonnet`, cumulative ceiling 219 consumed/reserved identities across the
-      stopped and fresh roots, `$0.75` per-process CLI caps, fresh-root maximum
-      `$163.50`, cumulative arithmetic maximum `$164.25`, and explicit exact-CLI
-      internal reuse of the bound existing first-party login under the prompt/
-      data boundary and stop rules above.
+- [x] Claude live study authority already exercised: executable above,
+      `sonnet`, cumulative ceiling 219 consumed/reserved identities, `$0.75`
+      per-process CLI caps, and explicit exact-CLI internal reuse of the bound
+      existing first-party login under the prompt/data boundary and stop rules
+      above. Two identities are accounted; the remaining 217 do not authorize
+      a new complete 218-identity root.
 - [x] npm candidate workflow for the exact approved commit.
 - [ ] npm publication of the exact pair to `next`.
 - [ ] npm promotion of that exact reviewed pair to `latest`.
