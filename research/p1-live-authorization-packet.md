@@ -71,8 +71,17 @@ activity, broader credential/data access, or any action outside this packet.
   not eligible for reinterpretation or replay.
 - This root consumed 43 identities including its two discarded canaries.
   Cumulative accounting is now 89/264, leaving 175. A new maximum-size root
-  would require a separately approved cumulative ceiling of at least 307 plus
-  a reviewed parser fix and a fresh exact candidate.
+  would require a separately approved cumulative ceiling of at least 307 and
+  a new finite call/spend freeze.
+- PR #294 merged the bounded parser repair as
+  `5bf699bd0583e0a9b07ffa4061509e2a59c18644` after CodeRabbit and all three
+  hosted CI jobs passed. Candidate run `31396910541` then built, paired-smoked,
+  attested, and uploaded the exact package pair. Its manifest SHA-256 is
+  `88670200df9bce48c5565056222d2c7b46408b6fd6b2c19d5141222b7408187d`;
+  root tarball SHA-256 is `fce705266ad98f2daba008a35f31c804d260f4128736fc180ac6a47335a67194`;
+  Receipt remains `ec00b91dc8eebce14a676d0a48f1250edefe33fb1d5d57fcf37b0b7584b79ec0`.
+  All three downloaded subjects passed GitHub attestation verification. No npm
+  registry publish or dist-tag mutation occurred.
 
 ## Frozen study shape
 

@@ -189,11 +189,17 @@ is diagnostic-only and cannot replace workflow attestation.
   triad while continuing to reject duplicate results, other sessions, running
   tasks, other terminal statuses, missing fields, and arbitrary post-result
   events. The actual frozen raw reparses as success; v2 and benchmark surfaces
-  passed 219/219 and full prepublish passed 1569/1569 with 3 skips. This fix
-  needs review, merge, and a fresh exact candidate before any future live root.
+  passed 219/219 and full prepublish passed 1569/1569 with 3 skips. PR #294
+  merged the fix as `5bf699bd...` after CodeRabbit and all hosted CI jobs
+  passed.
 - V6 consumed 43 identities including canaries. Cumulative accounting is now
   89/264, leaving 175. Another maximum-size root requires an explicit ceiling
   of at least 307 and a new finite call/spend freeze. P1-F remains unpassed.
+- Candidate run `31396910541` built the exact PR #294 merge, passed paired
+  clean-install smoke, produced three verified attestations, and uploaded both
+  immutable artifacts. Manifest SHA-256 is `88670200...`; root tarball SHA-256
+  is `fce70526...`; Receipt tarball SHA-256 remains `ec00b91d...`. No npm
+  publication or dist-tag operation occurred.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 
