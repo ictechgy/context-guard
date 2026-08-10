@@ -38,9 +38,10 @@ TEST_DISCOVERY_PATTERN = "test_*.py"
 # 여유가 12.8%밖에 없었다. 실제로 테스트 두 모듈(약 17초)이 추가되자 한계를 넘어
 # **통과하는 스위트가 CI에서 실패**했다. 감시견이 지키는 대상보다 작게 설정돼 있던 것이다.
 #
-# 진짜 행은 유한하지 않으므로 2배 여유를 줘도 감시견의 기능은 그대로 보존된다.
-# 다만 이건 증상 처리이며, 본 수리는 523초짜리 스위트 자체를 줄이는 것이다.
-TEST_DISCOVERY_TIMEOUT_SECONDS = 1200
+# 2026-08-10에는 macOS의 정상 진행 중인 스위트가 1,200초 경계에 도달했다. CI step의
+# 25분 상한보다 2분 먼저 종료하는 23분 감시견은 정리 시간을 남기면서도 행을 유한하게
+# 차단한다. 장기적으로는 스위트 실행 시간을 줄여야 한다.
+TEST_DISCOVERY_TIMEOUT_SECONDS = 1380
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
 PATH_OVERRIDE_ENVS = (
