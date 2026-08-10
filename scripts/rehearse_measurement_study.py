@@ -356,8 +356,15 @@ if arm != "host_unmodified":
         "uuid": "fake-uuid-" + run_id,
     }
     print(json.dumps({**lifecycle, "subtype": "hook_started"}, separators=(",", ":")), flush=True)
+    tool_command = (
+        config["canary_command"] if is_canary
+        else "echo contextguard-v2-rehearsal"
+    )
     hook_result = subprocess.run(
-        hook_argv, input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash"}),
+        hook_argv, input=json.dumps({
+            "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": tool_command},
+        }),
         text=True, capture_output=True, check=False,
     )
     print(json.dumps({
@@ -368,6 +375,9 @@ if arm != "host_unmodified":
     if hook_result.returncode != 0:
         raise SystemExit(25)
     hook_payload = json.loads(hook_result.stdout)
+    hook_specific = hook_payload.get("hookSpecificOutput", {})
+    if hook_specific.get("permissionDecision") == "deny":
+        raise SystemExit(26)
     hook_mode = hook_payload["mode"]
     expected_handle = "cgr1p_" + "A" * 43
     reference_handle_created = hook_payload.get("handle") == expected_handle
@@ -915,6 +925,15 @@ def _v2_candidate_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
         "#!/usr/bin/env python3\n"
         "import json, sys\n"
         "reference = '--bash-reference-v1' in sys.argv[1:]\n"
+        "request = json.load(sys.stdin)\n"
+        "command = request.get('tool_input', {}).get('command')\n"
+        "allowed = isinstance(command, str) and '>' not in command and command in {\n"
+        "    'echo contextguard-v2-rehearsal',\n"
+        "    \"python3 -c 'from pathlib import Path;Path(\\\"contextguard-v2-canary.txt\\\").write_bytes(b\\\"contextguard-v2-host-pretooluse-canary\\\\n\\\")'\",\n"
+        "}\n"
+        "if not allowed:\n"
+        "    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': 'fake MiniShell denial'}}, separators=(',', ':')))\n"
+        "    raise SystemExit(0)\n"
         "payload = {'mode': 'bash_reference_v1' if reference else 'legacy_trim'}\n"
         "if reference:\n"
         "    payload['handle'] = 'cgr1p_' + 'A' * 43\n"
@@ -1088,6 +1107,7 @@ def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
             "persistent_failure_unit": list(V2_PERSISTENT_FAILURE_UNIT),
             "state_path": str(output_root / "fake-cli-calls.jsonl"),
             "canary_prompt": runner.BENCHMARK_STUDY_V2_CANARY_PROMPT,
+            "canary_command": runner.BENCHMARK_STUDY_V2_CANARY_COMMAND,
             "canary_task_id": runner.BENCHMARK_STUDY_V2_CANARY_TASK_ID,
             "canary_marker": runner.BENCHMARK_STUDY_V2_CANARY_MARKER.decode("utf-8"),
         }

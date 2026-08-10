@@ -20,6 +20,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "context-guard-kit" / "benchmark_runner.py"
 REHEARSAL = ROOT / "scripts" / "rehearse_measurement_study.py"
+REWRITE_HOOKS = (
+    ROOT / "context-guard-kit" / "rewrite_bash_for_token_budget.py",
+    ROOT / "plugins" / "context-guard" / "bin" / "context-guard-rewrite-bash",
+)
 
 
 def load_runner():
@@ -87,6 +91,7 @@ def prepare_v2_canary_fixture(
             "persistent_failure_unit": list(rehearsal.V2_PERSISTENT_FAILURE_UNIT),
             "state_path": str(output_root / "fake-cli-calls.jsonl"),
             "canary_prompt": runner.BENCHMARK_STUDY_V2_CANARY_PROMPT,
+            "canary_command": runner.BENCHMARK_STUDY_V2_CANARY_COMMAND,
             "canary_task_id": runner.BENCHMARK_STUDY_V2_CANARY_TASK_ID,
             "canary_marker": runner.BENCHMARK_STUDY_V2_CANARY_MARKER.decode("utf-8"),
         }, sort_keys=True),
@@ -153,6 +158,39 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         self.assertEqual(legacy_command, "./node_modules/.bin/context-guard-rewrite-bash")
         self.assertNotIn("--bash-reference-v1", legacy_command)
         self.assertEqual(reference_command, legacy_command + " --bash-reference-v1")
+
+    def test_v2_canary_command_is_accepted_by_both_real_hook_modes(self) -> None:
+        command = self.runner.BENCHMARK_STUDY_V2_CANARY_COMMAND
+        self.assertEqual(
+            self.runner.BENCHMARK_STUDY_V2_CANARY_PROMPT,
+            "Use the Bash tool exactly once to run this command, then reply done: "
+            + command,
+        )
+        payload = json.dumps({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        })
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            for hook in REWRITE_HOOKS:
+                for extra_args in ((), ("--bash-reference-v1",)):
+                    with self.subTest(hook=hook, extra_args=extra_args):
+                        completed = subprocess.run(
+                            [str(hook), *extra_args], input=payload, text=True,
+                            capture_output=True, cwd=workspace, timeout=10,
+                        )
+                        self.assertEqual(completed.returncode, 0, completed.stderr)
+                        self.assertEqual(json.loads(completed.stdout), {})
+
+            subprocess.run(
+                ["/bin/sh", "-c", command], cwd=workspace, check=True,
+                timeout=10,
+            )
+            self.assertEqual(
+                (workspace / "contextguard-v2-canary.txt").read_bytes(),
+                self.runner.BENCHMARK_STUDY_V2_CANARY_MARKER,
+            )
 
     def test_v2_cli_binding_pins_executable_bytes_version_and_capabilities(self) -> None:
         rehearsal = load_rehearsal()
@@ -446,6 +484,37 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         )
         budget_index = argv.index("--max-budget-usd")
         self.assertEqual(argv[budget_index + 1], "0.75")
+
+    def test_v2_fake_host_respects_a_canary_hook_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, _manifest, auth_home = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp), run_canary=False,
+            )
+            config_path = output_root / "fake-cli-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["canary_command"] = (
+                "printf '%s\\n' contextguard-v2-host-pretooluse-canary > "
+                "contextguard-v2-canary.txt"
+            )
+            config_path.write_text(
+                json.dumps(config, sort_keys=True), encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["HOME"] = str(auth_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER),
+                    "--study-v2-action", "canary",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=30,
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            self.assertFalse(list(output_root.rglob("contextguard-v2-canary.txt")))
 
     def test_v2_resume_refuses_ambiguous_reservation_before_any_later_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
