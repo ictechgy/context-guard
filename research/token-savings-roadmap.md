@@ -171,6 +171,14 @@ is diagnostic-only and cannot replace workflow attestation.
   no further provider run is authorized. A future retry requires an explicit
   cumulative ceiling of at least 264, a newly frozen finite call/spend plan,
   and a fresh exact candidate.
+- The user subsequently approved that exact retry boundary: cumulative ceiling
+  264, with the 46 prior identities retained and at most 218 new identities in
+  one fresh root. The new root keeps the frozen 2 canaries + 108 initials + up
+  to 108 policy-valid retries, `sonnet`, `$0.75` per process, `$163.50`
+  arithmetic maximum, no optional stopping, and the existing privacy/stop
+  rules. Candidate run `31357316775` attempt 2 is the fresh exact PR #292
+  candidate. npm `next`/`latest` and active P2-P6 work before P1-F remain
+  unauthorized.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 
