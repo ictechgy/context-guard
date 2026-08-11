@@ -18,7 +18,7 @@ Current position:
 | --- | --- |
 | Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators are implemented but non-activating. |
 | Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. The result remains descriptive-only. |
-| Release readiness | Exact merge `fb2e177...` and candidate run `31464306133` passed CI, paired smoke, checksums, and attestations. npm publication has not occurred. |
+| Release readiness | Exact merge `fb2e177f3efb15e817f54f5742beacdbe5daf96a` and candidate run `31464306133` (artifacts `9091361857`, `9091361298`) passed CI, paired smoke, checksums, and attestations; manifest SHA-256 is `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`. npm publication has not occurred. |
 | Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
 The roadmap is dependency-gated:
@@ -252,18 +252,21 @@ is diagnostic-only and cannot replace workflow attestation.
   PR #298 merge `d4b6302...` and candidate run `31457488674` verified the
   provider-free P2-P6 delivery, but the authorization amendment requires a new
   reviewed merge and exact candidate before live v8 `prepare`.
-- PR #300 merged the v8 source/spend closure as `fb2e177...`; retained ref
-  `refs/heads/candidate/p1-v8-fb2e177f3efb` resolves exactly to that merge.
-  Candidate run `31464306133` passed every release gate, paired smoke, and all
+- PR #300 merged the v8 source/spend closure as
+  `fb2e177f3efb15e817f54f5742beacdbe5daf96a`. Attested candidate run
+  `31464306133`, root artifact `9091361857`, and Receipt artifact `9091361298`
+  bind that exact source and passed every release gate, paired smoke, and all
   three attestations. The canonical candidate-manifest SHA-256 is
-  `39b02e54...`; no npm publication or dist-tag mutation occurred.
+  `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`;
+  no npm publication or dist-tag mutation occurred.
 - Fresh v8 root `/private/tmp/contextguard-p1-live-v8.rLM3P6/study` passed
   provider-free prepare and both discarded host-mediated canaries, then
   terminally accounted all 108 initials plus 13 policy-valid retries. The
   remaining 95 retry identities are canonically `not_needed`; there are no open
   or ambiguous identities. Provider-free analysis emitted canonical `P1-F` in
-  report `09eca0ff...`, with 121 analytic records and every unfavorable run
-  retained.
+  report SHA-256
+  `09eca0ff9953a7f45da2d373d568dff22e09abe19965bc58952d65822151a8a5`,
+  with 121 analytic records and every unfavorable run retained.
 - The primary host-unmodified minus `bash_reference_v1` descriptive token point
   estimate is 7,071.31 primary tokens, with task-cluster 95% interval
   [1,583.33, 13,736.99]. Exact task-cluster sign permutation passed the frozen
