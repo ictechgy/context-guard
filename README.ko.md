@@ -351,6 +351,14 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
   --manifest-out suggested-pack.json \
   --pack-out context-pack.md \
   --budget-bytes 12000 --json --explain --adaptive-k --symbol-memory
+# 안전한 direct import neighbor를 최대 4개까지 pack에 명시적으로 추가:
+./plugins/context-guard/bin/context-guard-pack auto \
+  --root . --files src/app.py --query "entrypoint 검토" --top 1 \
+  --budget-bytes 12000 --json --no-artifact --apply-symbol-memory
+# 로컬 품질 gate 통과 뒤 heuristic source를 명시적으로 축소:
+./plugins/context-guard/bin/context-guard-pack auto \
+  --root . --query "실패 테스트 검토" --top 8 \
+  --budget-bytes 12000 --json --no-artifact --apply-adaptive-k
 # 또는 명시적인 두 단계로 실행:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "failing tests review" --diff HEAD \
@@ -372,7 +380,9 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 - JSON explain에는 bounded `repo_map`이 포함될 수 있습니다. 예시는 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트입니다.
 - repo-map은 manifest, pack 본문, receipt, byte budget을 바꾸지 않고 네트워크·모델 호출·임베딩을 쓰지 않습니다. 토큰 값은 provider-token이나 savings claim이 아닌 추정 `chars_div_4` proxy입니다.
 - `suggest` 또는 `auto`에 `--adaptive-k`를 추가하면 로컬 score distribution, byte-budget fit, clamped score-mass 기반 recall/precision proxy에서 나온 advisory-only top-k shrink/expand metadata를 포함합니다. `--adaptive-k-policy balanced|recall|precision`과 선택적 `--adaptive-k-min-recall-proxy` / `--adaptive-k-min-precision-proxy` gate로 로컬 추천 정책을 고를 수 있고, gate 실패는 metadata-only(`pass|failed`)입니다. adaptive block은 capped selected/omitted evidence와 구조화된 source-verification hint를 포함하지만 추천값을 자동 적용하지 않으며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
+- `auto --apply-adaptive-k`는 명시적·기본 비활성 pruning 경로입니다. 회귀 gate가 통과할 때만 로컬 추천값을 적용하고, 호출자가 지정한 file/output/test-output 및 diff source는 항상 유지한 채 같은 byte budget으로 다시 build하며 `adaptive_k_application`을 기록합니다. `--adaptive-k`를 내포하지만 provider token/cost 절감 주장을 허용하지 않습니다.
 - `auto`에 `--symbol-memory`를 추가하면 repo-map 기반 symbol/graph advisory metadata와 정확한 `slice` / `read-symbol` 검증 힌트를 포함합니다. 이는 source verification 안내일 뿐이며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
+- `--apply-symbol-memory`는 명시적·기본 비활성 Graphify식 적용 경로입니다. 일반 추천 뒤 안전한 direct import neighbor slice를 최대 4개 manifest에 추가하고 같은 byte budget으로 pack을 다시 만듭니다. explicit/query seed는 더 높은 우선순위를 유지하고 secret-risk neighbor는 제외하며 exact source/fallback receipt는 보존됩니다. 결과에는 닫힌 `graph_application` 블록이 기록되며 provider token/cost 절감 주장은 하지 않습니다.
 - `--manifest-out`은 `build`가 읽을 수 있는 manifest를 저장하고, `--pack-out`은 렌더링된 팩 본문을 저장합니다.
 - `context-guard-pack suggest`는 더 낮은 수준의 로컬 전용 준비 단계입니다. `--query`, `--diff`, 반복 `--files`, 그리고 `--root` 아래의 선택적 `--output` / `--test-output` 텍스트 파일을 가림 처리한 신호에서 후보 파일과 줄 범위를 순위화한 뒤 `build --manifest`가 바로 읽을 수 있는 manifest를 씁니다.
 - `context-guard-pack build`는 우선순위가 있는 로컬 파일 근거를 렌더링된 UTF-8 바이트 기준 `--budget-bytes` 안의 Markdown 팩으로 조립합니다. JSON 출력은 포함·부분 포함·중복·unsafe·missing·예산 초과로 누락된 source를 기록합니다.
@@ -600,6 +610,21 @@ context-guard-setup --plan
 ## 로컬 MCP 어댑터
 
 `context-guard mcp`(또는 `context-guard-mcp`)는 의존성 없는 로컬 stdio MCP 서버입니다. 프로세스 하나는 root와 namespace 하나에 고정되며 compression, sanitization된 artifact 조회, 로컬 통계만 제공합니다. HTTP, SSE, 네트워크, provider, model, proxy, 자동 client 설정 기능은 없습니다. 저장되는 fallback은 원문이 아닌 정확한 sanitization 완료 사본이고 다른 namespace의 artifact는 조회할 수 없습니다. 이 로컬 어댑터는 hosted token/cost 절감을 주장하지 않습니다.
+
+반복 파일·로그 컨텍스트를 명시적으로 다루려면 함께 설치되는 Receipt
+companion을 `context-guard-receipt-mcp --root /absolute/repository`로 실행할
+수 있습니다. `receipt_context` 도구는 사용자가 `eligible`이라고 명시한
+상대 경로만 읽고, byte-benefit router가 유리하다고 판단하면 compact exact
+reference를 반환하며, 반복 조회에는 같은 live reference를 재사용하고 한 번에
+최대 65,536바이트의 exact slice만 가져옵니다. 이 기능은 opt-in이며
+process-local입니다. 선택적 task scope는 task 간 재사용을 막고, 명시적 release는
+context GC를 수행하며, content-free history에는 process-keyed HMAC과 결정만
+남습니다. `receipt_diagnose`는 파일 byte를 반환하지 않고 비적용 shadow
+firewall/router와 prefix 재사용 기반 scout/surgeon 안내를 제공합니다. 명시적
+private `--state-dir`로 같은 binary를 시작하면 action을 실행하지 않는
+authenticated `receipt_twin` 근거 기록만 추가됩니다. 스스로 등록되거나 전체
+prompt를 가로채지 않고, capability가 재시작을 넘어 유지되지 않으며, provider를
+호출하거나 hosted 절감 효과를 주장하지 않습니다.
 
 ## 릴리스 확인
 

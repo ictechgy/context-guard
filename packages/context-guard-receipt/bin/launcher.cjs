@@ -111,7 +111,7 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': 'e8e43ac7c76bb032080eed9ccb4be00f2c5c840fb44bba93f4e1c93f666d4a89',
+  'README.md': 'a6ac083940c6b04be08169927f570cab1eef0e9e10ca4c51422b2054930ba0a3',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
   'package.json': 'daf789323e9b194943b7222bd0bf112432460afe0174d0a3363cbadbbd37c475',
@@ -120,7 +120,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',
   'python/context_guard_receipt/bootstrap.py': 'fa846a8968c5199618ab68a86424c0cb88c32250291faf3ac37f26d14d4b018e',
   'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
-  'python/context_guard_receipt/cli.py': '8d475b0afba46d2e0eb1b54ec721186ce3d10d2e75f3e07112dc27fbedd3a769',
+  'python/context_guard_receipt/cli.py': '036a1ac0f50b327f39eb7746b3415f6895e8f27aad18624ba432dceaf1b0a1d9',
   'python/context_guard_receipt/cli_io.py': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf',
   'python/context_guard_receipt/contracts.py': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e',
   'python/context_guard_receipt/diagnostic_ledger.py': '3cc7865709c273b72136c48b1026ed5cd2830ea1bf76da4e424da08ccc13499d',
@@ -129,7 +129,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/execution_twin.py': '510239b13c37ef15dcc838222b07ada49877e5540c351a51a121983b1fe031af',
   'python/context_guard_receipt/expansion.py': '9b848e555f05a621665c6b167a49e5d8085ffc9c6906f040f43fd2a87e981f2b',
   'python/context_guard_receipt/identity.py': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c',
-  'python/context_guard_receipt/mcp.py': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2',
+  'python/context_guard_receipt/mcp.py': '9f12345bd68ffb9b6b6fdf31699670d4fba590c7e3dba9bba65e07e216420cd4',
   'python/context_guard_receipt/merged_capture.py': 'a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf',
   'python/context_guard_receipt/phase_evaluation.py': '2ee911bb898e28d5ba23e7bd3599a41125a0e7d13c9e4c9359a84e7ff721dc46',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
@@ -1310,7 +1310,20 @@ async function continueLaunch(kind, argv, runtime, bootstrap, signalController) 
       && !argv[1].includes('\0')
       && path.isAbsolute(argv[1])
       && path.normalize(argv[1]) === argv[1];
-    if (!(argv.length === 1 && argv[0] === '--help') && !rootInvocation) {
+    const stateInvocation = argv.length === 4
+      && argv[0] === '--root'
+      && typeof argv[1] === 'string'
+      && argv[1].length > 0
+      && !argv[1].includes('\0')
+      && path.isAbsolute(argv[1])
+      && path.normalize(argv[1]) === argv[1]
+      && argv[2] === '--state-dir'
+      && typeof argv[3] === 'string'
+      && argv[3].length > 0
+      && !argv[3].includes('\0')
+      && path.isAbsolute(argv[3])
+      && path.normalize(argv[3]) === argv[3];
+    if (!(argv.length === 1 && argv[0] === '--help') && !rootInvocation && !stateInvocation) {
       if (finishQueuedSignals(signalController)) return;
       signalController.remove();
       process.exitCode = mcpUsageError();

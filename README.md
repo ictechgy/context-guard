@@ -379,6 +379,14 @@ Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized
   --manifest-out suggested-pack.json \
   --pack-out context-pack.md \
   --budget-bytes 12000 --json --explain --adaptive-k --symbol-memory
+# Explicitly add up to four safe direct import neighbors to the pack:
+./plugins/context-guard/bin/context-guard-pack auto \
+  --root . --files src/app.py --query "review entrypoint" --top 1 \
+  --budget-bytes 12000 --json --no-artifact --apply-symbol-memory
+# Explicitly prune heuristic sources after the local quality gates pass:
+./plugins/context-guard/bin/context-guard-pack auto \
+  --root . --query "review failing tests" --top 8 \
+  --budget-bytes 12000 --json --no-artifact --apply-adaptive-k
 # Or run the two explicit steps:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "review failing tests" --diff HEAD \
@@ -400,7 +408,9 @@ A few boundaries are intentional:
 - `--explain` may include bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints.
 - Explain metadata does not change the manifest, pack body, receipt, or byte budget. It does not use network/model/embedding calls, and token values remain local `chars_div_4` proxies rather than provider-token or savings claims.
 - Add `--adaptive-k` to `suggest` or `auto` for advisory-only shrink/expand top-k metadata derived from local score distribution, byte-budget fit, and clamped score-mass recall/precision proxies. Use `--adaptive-k-policy balanced|recall|precision` plus optional `--adaptive-k-min-recall-proxy` / `--adaptive-k-min-precision-proxy` gates to choose a local recommendation policy; gate failures are metadata-only (`pass|failed`). The adaptive block includes capped selected/omitted evidence and structured source-verification hints, never applies the recommendation automatically, and does not change the manifest, pack body, receipt, or byte budget.
+- Add `--apply-adaptive-k` to `auto` for an explicit, default-off pruning pass. It applies the local recommendation only when its regression gates pass, always retains caller-declared file/output/test-output and diff sources, rebuilds inside the same byte budget, and records `adaptive_k_application`. It implies `--adaptive-k` and does not authorize a provider-token or cost-savings claim.
 - Add `--symbol-memory` to `auto` for repo-map-derived symbol/graph advisory metadata with exact `slice` / `read-symbol` verification hints. It is source-verification guidance only and does not change the manifest, pack body, receipt, or byte budget.
+- Add `--apply-symbol-memory` for an explicit, default-off Graphify-style step: after the ordinary suggestion pass, it adds at most four direct import-neighbor slices to the manifest and rebuilds within the same byte budget. Explicit/query seeds keep higher priority, secret-risk neighbors are excluded, the exact source/fallback receipt remains available, and the result records a closed `graph_application` block. This implies symbol-memory output but makes no provider-token or cost claim.
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
 - `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
 - `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.
@@ -668,6 +678,21 @@ Do not rely on `PATH` lookup for generated hooks by default. The setup wizard re
 ## Local MCP adapter
 
 `context-guard mcp` (or `context-guard-mcp`) is a dependency-free local stdio MCP server. Each process is fixed to one root and one namespace; it exposes only compression, sanitized artifact retrieval, and local statistics. It has no HTTP, SSE, network, provider, model, proxy, or automatic client-configuration surface. Stored fallback content is an exact sanitized copy, not raw input, and artifacts from another namespace are not retrievable. This local adapter makes no hosted token or cost-savings claim.
+
+For explicit repeated file or log context, the bundled Receipt companion also
+provides `context-guard-receipt-mcp --root /absolute/repository`. Its
+`receipt_context` tool accepts an explicitly eligible relative path, returns a
+compact exact reference when the byte-benefit router says deferral is useful,
+reuses that live reference for repeated reads, and retrieves exact slices of at
+most 65,536 bytes. Optional task scopes prevent cross-task reuse, explicit
+release performs context GC, and the content-free history records only
+process-keyed HMACs and decisions. `receipt_diagnose` adds non-applying shadow
+firewall/router plus prefix-reuse scout/surgeon advice without returning file
+bytes. Starting the same binary with an explicit private `--state-dir` enables
+only `receipt_twin`, which records authenticated revalidation evidence but
+executes no action. The flow remains opt-in: it does not register itself,
+intercept whole prompts, survive capability restart, call a provider, or make a
+hosted savings claim.
 
 ## Release checks
 

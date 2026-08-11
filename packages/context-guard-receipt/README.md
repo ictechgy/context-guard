@@ -35,6 +35,7 @@ npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.0.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
+./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root --state-dir /absolute/private-state
 ```
 
 Any downgrade to `0.1.x` is an external package-manager/release gate requiring
@@ -61,14 +62,50 @@ reserved `inspect` targets, including `lease`, stay unavailable.
 
 The MCP binary is a bounded local stdio server for one explicit absolute
 `--root`. After normal MCP initialization it exposes only `receipt_assemble`,
-`receipt_expand`, `receipt_inspect`, and `receipt_tool_select`; it does not
-expose command capture, durable-state administration, twin, reference expiry,
-configuration, or registration tools. Its `cgr1m_` capabilities are random,
-process-local, limited to 300 seconds, and invalid after process exit or
-restart. MCP creates no durable state. If the pinned root instance or its
-logical state drifts, the server stops accepting work and must be restarted;
-durable CLI workflows likewise require a new explicit invocation when their
-root or chosen state directory changes.
+`receipt_context`, `receipt_diagnose`, `receipt_expand`, `receipt_inspect`,
+`receipt_tool_select`, and `receipt_twin`; it does not expose command capture,
+reference-expiry administration, configuration, registration, provider, or
+network tools. Its `cgr1m_` capabilities are random, process-local, limited to
+300 seconds, and invalid after process exit or restart. Without `--state-dir`,
+MCP creates no durable state and `receipt_twin` returns unavailable. An explicit
+absolute `--state-dir` enables only the existing authenticated advisory twin;
+the directory is fixed by the server process and cannot be supplied by a tool
+call. If the pinned root instance or its logical state drifts, the server stops
+accepting work and must be restarted.
+
+`receipt_context` is the explicit product bridge for repeated local files and
+logs. `action: "store"` requires the caller to affirm `caller_classification:
+"eligible"` with an empty `detector_signals` list, reads one bounded no-follow
+regular `relative_path` beneath the pinned root, and applies the existing
+conservative byte-benefit router. Small or uneconomic inputs are returned
+unchanged; beneficial inputs return a direct exact reference without requiring
+the caller to resend the file bytes. Repeated requests for the same unchanged
+file reuse the live process capability. An optional `task_scope` binds a
+capability to one caller-declared task without returning the scope text.
+`action: "read"` returns only the requested exact slice, capped at 65,536 bytes,
+with explicit start, end, total, and completion metadata. `action: "release"`
+immediately revokes that process-local capability and `action: "history"`
+returns a bounded content-free decision history containing only counts,
+decisions, and process-keyed HMACs—never paths, task labels, capabilities, or
+file bytes. Non-eligible classifications are refused without reading or
+reflecting file content. The tool is never invoked automatically, does not
+intercept a host prompt, and does not establish provider token or cost savings.
+
+`receipt_diagnose` reads one explicitly eligible path without requiring its
+bytes in the MCP request and projects the existing shadow firewall, conservative
+router, prefix-reuse comparison, and `scout`/`surgeon` advisory lane. A supplied
+`previous_capability` must belong to the same optional task scope. The report is
+content-free, applies no route, and has no provider-routing authority. Inputs
+above 700,000 bytes retain the normal `receipt_context` fallback but are refused
+by this duplicate-prefix diagnostic to keep its aggregate decoded-byte bound.
+
+`receipt_twin` appends or inspects the existing execution twin only when the MCP
+process was started with `--state-dir`. It revalidates declared local predicates
+and writes authenticated advisory evidence; it never executes the declared
+action. Together with `receipt_assemble` evidence packs and typed blueprints,
+the explicit flow is diagnose → store → bounded reads/assembly → twin evidence
+→ history/release. Failure cones and blueprints remain explicit caller-selected
+evidence, not automatic transcript rewriting.
 
 Process-scope diagnostics use a new random fingerprint key for every invocation
 and create no state. They report bounded byte accounting, a position-bound
