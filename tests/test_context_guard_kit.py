@@ -17892,98 +17892,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn("gates=pass", text)
                     self.assertIn("apply=false", text)
 
-    def test_context_pack_auto_explicitly_applies_adaptive_k_without_pruning_explicit_files(self):
-        for script in PACK_SCRIPTS:
-            with self.subTest(script=script):
-                with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    (root / "src").mkdir()
-                    (root / "src" / "alpha_failure.py").write_text(
-                        "alpha failure alpha failure alpha failure\n",
-                        encoding="utf-8",
-                    )
-                    (root / "src" / "alpha_helper.py").write_text(
-                        "alpha helper\n",
-                        encoding="utf-8",
-                    )
-                    (root / "src" / "alpha_notes.py").write_text(
-                        "alpha notes\n",
-                        encoding="utf-8",
-                    )
-                    (root / "KEEP.md").write_text("explicit source\n", encoding="utf-8")
-
-                    common = [
-                        "auto",
-                        "--root",
-                        ".",
-                        "--query",
-                        "alpha failure",
-                        "--files",
-                        "KEEP.md",
-                        "--top",
-                        "4",
-                        "--budget-bytes",
-                        "4000",
-                        "--json",
-                        "--no-artifact",
-                    ]
-                    advisory = json.loads(
-                        self._run_pack(script, root, *common, "--adaptive-k").stdout
-                    )
-                    applied = json.loads(
-                        self._run_pack(script, root, *common, "--apply-adaptive-k").stdout
-                    )
-
-                    recommended = advisory["adaptive_k"]["recommended_k"]
-                    self.assertGreater(len(advisory["manifest"]["sources"]), recommended)
-                    self.assertLess(
-                        len(applied["manifest"]["sources"]),
-                        len(advisory["manifest"]["sources"]),
-                    )
-                    self.assertIn(
-                        "KEEP.md",
-                        [item["path"] for item in applied["manifest"]["sources"]],
-                    )
-                    application = applied["adaptive_k_application"]
-                    self.assertEqual(application["mode"], "explicit_opt_in")
-                    self.assertEqual(application["recommended_k"], recommended)
-                    self.assertEqual(
-                        application["applied_source_count"],
-                        len(applied["manifest"]["sources"]),
-                    )
-                    self.assertEqual(
-                        len(applied["suggest"]["sources"]),
-                        len(applied["manifest"]["sources"]),
-                    )
-                    self.assertGreater(application["omitted_source_count"], 0)
-                    self.assertTrue(application["regression_gates_passed"])
-                    self.assertTrue(application["explicit_sources_retained"])
-                    self.assertFalse(
-                        application["claim_boundary"][
-                            "provider_token_or_cost_savings_claim_allowed"
-                        ]
-                    )
-                    self.assertLess(applied["pack_bytes"], advisory["pack_bytes"])
-                    self.assertIn("KEEP.md", applied["build"]["pack"])
-
-                    gated = json.loads(
-                        self._run_pack(
-                            script,
-                            root,
-                            *common,
-                            "--apply-adaptive-k",
-                            "--adaptive-k-min-precision-proxy",
-                            "1.0",
-                        ).stdout
-                    )
-                    self.assertEqual(
-                        gated["adaptive_k_application"]["status"], "gate_failed"
-                    )
-                    self.assertFalse(
-                        gated["adaptive_k_application"]["regression_gates_passed"]
-                    )
-                    self.assertEqual(gated["manifest"], advisory["manifest"])
-
     def test_context_pack_adaptive_k_policy_gate_and_verification_edges(self):
         for index, script in enumerate(PACK_SCRIPTS):
             with self.subTest(script=script):
@@ -18115,128 +18023,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     text = self._run_pack(script, root, *common[:-2], "--symbol-memory").stdout
                     self.assertIn("symbol-memory: symbols=", text)
                     self.assertIn("verify_before_edits=true", text)
-
-    def test_context_pack_auto_explicitly_applies_direct_graph_neighbors(self):
-        """Break caught: graph memory stays metadata-only even after explicit opt-in."""
-
-        for script in PACK_SCRIPTS:
-            with self.subTest(script=script):
-                with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    (root / "src").mkdir()
-                    (root / "src" / "app.py").write_text(
-                        "from .helper import helper\n\n"
-                        "def entrypoint():\n"
-                        "    return helper()\n",
-                        encoding="utf-8",
-                    )
-                    (root / "src" / "helper.py").write_text(
-                        "def helper():\n"
-                        "    return 'graph-selected'\n",
-                        encoding="utf-8",
-                    )
-                    common = [
-                        "auto",
-                        "--root",
-                        ".",
-                        "--files",
-                        "src/app.py",
-                        "--query",
-                        "entrypoint",
-                        "--top",
-                        "1",
-                        "--budget-bytes",
-                        "5000",
-                        "--json",
-                        "--no-artifact",
-                    ]
-                    baseline = json.loads(self._run_pack(script, root, *common).stdout)
-                    applied = json.loads(
-                        self._run_pack(
-                            script,
-                            root,
-                            *common,
-                            "--apply-symbol-memory",
-                        ).stdout
-                    )
-
-                    self.assertEqual(
-                        [item["path"] for item in baseline["manifest"]["sources"]],
-                        ["src/app.py"],
-                    )
-                    self.assertEqual(
-                        [item["path"] for item in applied["manifest"]["sources"]],
-                        ["src/app.py", "src/helper.py"],
-                    )
-                    self.assertIn("graph-selected", applied["build"]["pack"])
-                    graph = applied["graph_application"]
-                    self.assertEqual(graph["schema_version"], "contextguard.pack-graph-application.v1")
-                    self.assertEqual(graph["mode"], "explicit_opt_in")
-                    self.assertEqual(graph["selected_source_count"], 1)
-                    self.assertEqual(graph["selected_sources"][0]["path"], "src/helper.py")
-                    self.assertEqual(graph["selected_sources"][0]["reason"], "direct_import_neighbor")
-                    self.assertTrue(graph["exact_source_fallback_retained"])
-                    self.assertFalse(graph["provider_token_or_cost_savings_claim_allowed"])
-                    self.assertEqual(applied["symbol_memory"]["mode"], "applied")
-                    explained = json.loads(
-                        self._run_pack(
-                            script,
-                            root,
-                            *common,
-                            "--apply-symbol-memory",
-                            "--explain",
-                        ).stdout
-                    )
-                    self.assertEqual(
-                        explained["explain"]["graph_application"],
-                        explained["graph_application"],
-                    )
-
-    def test_context_pack_auto_graph_application_excludes_secret_risk_neighbors(self):
-        """Break caught: graph expansion pulls a secret-risk neighbor into the pack."""
-
-        secret = "ghp_" + ("A" * 36)
-        for script in PACK_SCRIPTS:
-            with self.subTest(script=script):
-                with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    (root / "src").mkdir()
-                    (root / "src" / "app.py").write_text(
-                        "from .credentials import value\n\n"
-                        "def entrypoint():\n"
-                        "    return value\n",
-                        encoding="utf-8",
-                    )
-                    (root / "src" / "credentials.py").write_text(
-                        f"value = {secret!r}\n",
-                        encoding="utf-8",
-                    )
-                    proc = self._run_pack(
-                        script,
-                        root,
-                        "auto",
-                        "--root",
-                        ".",
-                        "--files",
-                        "src/app.py",
-                        "--top",
-                        "1",
-                        "--budget-bytes",
-                        "5000",
-                        "--json",
-                        "--no-artifact",
-                        "--apply-symbol-memory",
-                    )
-                    applied = json.loads(proc.stdout)
-
-                    self.assertNotIn(secret, proc.stdout + proc.stderr)
-                    self.assertEqual(
-                        [item["path"] for item in applied["manifest"]["sources"]],
-                        ["src/app.py"],
-                    )
-                    graph = applied["graph_application"]
-                    self.assertEqual(graph["selected_source_count"], 0)
-                    self.assertEqual(graph["excluded_secret_risk_count"], 1)
 
     def test_context_pack_auto_uses_output_redacts_and_can_skip_artifact(self):
         secret = "ghp_" + ("A" * 36)
@@ -19174,8 +18960,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("--explain", help_proc.stdout)
                 self.assertIn("--adaptive-k-policy", help_proc.stdout)
                 self.assertIn("--adaptive-k-min-recall-proxy", help_proc.stdout)
-                self.assertIn("--apply-adaptive-k", help_proc.stdout)
-                self.assertIn("--apply-symbol-memory", help_proc.stdout)
                 suggest_help = self._run_pack(script, ROOT, "suggest", "--help")
                 self.assertIn("--adaptive-k-policy", suggest_help.stdout)
         docs = [
@@ -19190,8 +18974,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 text = doc.read_text(encoding="utf-8")
                 self.assertIn("--explain", text)
                 self.assertIn("--adaptive-k-policy", text)
-                self.assertIn("--apply-adaptive-k", text)
-                self.assertIn("--apply-symbol-memory", text)
                 self.assertTrue(
                     "deterministic local" in text
                     or "no model" in text

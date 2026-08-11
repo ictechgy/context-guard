@@ -105,6 +105,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_benchmark_study_v2.py",
         "tests/test_context_guard_kit.py",
         "tests/test_context_guard_kit_benchmark_surfaces.py",
+        "tests/test_context_guard_progressive_context.py",
         "tests/test_context_guard_receipt_suite.py",
         "tests/test_gate_b_rollback_proof.py",
         "tests/test_contextguard_stage2_completion.py",
