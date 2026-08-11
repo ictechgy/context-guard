@@ -390,6 +390,10 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 2)
             self.assertIn("login binding drift", completed.stderr)
+            self.assertIn(
+                "v2 canonical P1-X unavailable after refusal",
+                completed.stderr,
+            )
             self.assertNotIn("v2-rehearsal@example.invalid", completed.stderr)
             self.assertNotIn("v2-rehearsal-org", completed.stderr)
             self.assertFalse((output_root / "canary-events.jsonl").exists())
@@ -492,7 +496,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         })()
         with mock.patch.object(
             self.runner, "run_bounded_command", return_value=completed,
-        ):
+        ) as bounded:
             self.assertEqual(
                 helper(retained_ref, expected_commit),
                 {
@@ -502,6 +506,18 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                     "verification": "git-ls-remote-v1",
                 },
             )
+        argv, keyword = bounded.call_args
+        command = argv[0]
+        self.assertEqual(command[-3:], [
+            "--refs",
+            "https://github.com/ictechgy/context-guard.git",
+            retained_ref,
+        ])
+        self.assertIn("credential.helper=", command)
+        self.assertIn("core.askPass=", command)
+        self.assertIn("--exit-code", command)
+        self.assertEqual(keyword["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(keyword["env"]["GIT_CONFIG_NOSYSTEM"], "1")
 
         wrong = type("Completed", (), {
             "returncode": 0,

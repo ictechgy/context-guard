@@ -389,7 +389,9 @@ authority; npm `next` and `latest` remain untouched.
    ref. The bounded credential-free remote check must resolve the ref to that
    commit and the candidate manifest must match it. Also verify the exact CLI,
    existing-login safe projection, candidate overlay, fixtures, settings,
-   runtime, and fresh private root before either live canary.
+   runtime, and fresh private root before either live canary. Never pass
+   `--study-v2-offline-rehearsal` here; roots prepared with that flag are
+   rehearsal-only and cannot supply live/provider evidence.
 3. Execute the fixed v8 canaries and analytic schedule under the exact 388
    cumulative ceiling. Any stop condition closes the root and yields P1-X.
 4. Keep active promotion stopped until a fresh P1-F exit exists. The current

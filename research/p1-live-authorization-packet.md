@@ -229,7 +229,9 @@ The runner must continue to:
    credential-free bounded `git ls-remote` against the fixed public repository,
    reject a candidate manifest whose `commit_sha` differs, and reject a ref
    that does not resolve exactly to the approved SHA. Do not delete the retained
-   ref without separate retention authority.
+   ref without separate retention authority. Live prepare must never pass
+   `--study-v2-offline-rehearsal`; any root prepared with that explicit flag is
+   rehearsal-only and is ineligible for live work or provider evidence.
 3. Run provider-free `prepare` with the exact native Claude executable and the
    explicit `--study-v2-use-existing-login` gate. Bind the safe auth projection,
    private identity digest, and HOME identity without persisting identity text.

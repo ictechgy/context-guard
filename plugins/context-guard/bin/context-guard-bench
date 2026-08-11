@@ -14080,6 +14080,10 @@ def _benchmark_study_v2_persist_invalid_after_refusal(
     except (OSError, SystemExit, TypeError, ValueError):
         # The original refusal remains authoritative when damaged or incomplete
         # evidence cannot safely support a canonical P1-X decision.
+        print(
+            "v2 canonical P1-X unavailable after refusal",
+            file=sys.stderr,
+        )
         return
 
 
