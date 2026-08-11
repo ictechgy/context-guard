@@ -52,7 +52,7 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  import merged-capture --spool <absolute> --transaction-id <64hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]\n  recover merged-capture --transaction-id <64hex> --root <absolute> --state-dir <absolute>\n  inspect merged-capture-import --root <absolute> --state-dir <absolute>\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Merged-capture import accepts only a completed private canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  evaluate phase --input <file|->\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  import merged-capture --spool <absolute> --transaction-id <64hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]\n  recover merged-capture --transaction-id <64hex> --root <absolute> --state-dir <absolute>\n  inspect merged-capture-import --root <absolute> --state-dir <absolute>\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Merged-capture import accepts only a completed private canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nRun the bounded local stdio MCP surface for one fixed repository root. Capabilities are process-local and expire when the process exits. No registration, provider, model, credential, or network access is performed.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -83,6 +83,14 @@ _RUN_MAX_TIMEOUT_SECONDS = 300
 _RUN_MAX_CAPTURE_BYTES = 900_000
 _TWIN_REQUEST_MAX_BYTES = 64 * 1024
 _REFERENCE_EXPIRY_REQUEST_MAX_BYTES = 4096
+_PHASE_EVALUATION_MAX_BYTES = 2 * 1024 * 1024
+_PHASE_EVALUATION_LIMITS = JSONLimits(
+    max_document_bytes=_PHASE_EVALUATION_MAX_BYTES,
+    max_depth=16,
+    max_total_values=250_000,
+    max_object_members=32,
+    max_string_bytes=1024,
+)
 _BASH_REFERENCE_BROKER_READY = (
     b"READY contextguard-bash-reference-broker/v1\n"
 )
@@ -276,6 +284,15 @@ def _parse_run_invocation(
 
 def _valid_run(arguments: Sequence[str]) -> bool:
     return _parse_run_invocation(arguments) is not None
+
+
+def _valid_evaluate(arguments: Sequence[str]) -> bool:
+    return (
+        len(arguments) == 3
+        and arguments[0] == "phase"
+        and arguments[1] == "--input"
+        and _is_file_argument(arguments[2])
+    )
 
 
 def _valid_expand(arguments: Sequence[str]) -> bool:
@@ -1423,6 +1440,46 @@ def _inspect_merged_capture(arguments: Sequence[str]) -> int:
     return 0
 
 
+def _evaluate_phase(arguments: Sequence[str]) -> int:
+    operation = "evaluate_phase"
+    try:
+        raw = read_descriptor(
+            arguments[2], maximum_bytes=_PHASE_EVALUATION_MAX_BYTES
+        )
+        record = parse_canonical_json_bytes(raw, _PHASE_EVALUATION_LIMITS)
+    except CliIOError:
+        return emit_error(operation, "error", "evaluation_input_unavailable", 74)
+    except CanonicalJSONError:
+        return emit_error(operation, "error", "evaluation_input_rejected", 65)
+
+    phase_id = record.get("phase_id") if type(record) is dict else None
+    try:
+        from .phase_evaluation import (
+            evaluate_p2,
+            evaluate_p3,
+            evaluate_p4,
+            evaluate_p5,
+            evaluate_p6,
+        )
+
+        evaluator = {
+            "p2": evaluate_p2,
+            "p3": evaluate_p3,
+            "p4": evaluate_p4,
+            "p5": evaluate_p5,
+            "p6": evaluate_p6,
+        }.get(phase_id)
+        if evaluator is None:
+            return emit_error(operation, "error", "evaluation_phase_rejected", 65)
+        payload = canonical_json_bytes(evaluator(record))
+        write_stdout(payload)
+    except CliIOError:
+        return emit_error(operation, "error", "evaluation_delivery_failed", 74)
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+    return 0
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments and arguments[0] == "--private-bash-reference-broker-v1":
@@ -1435,6 +1492,8 @@ def receipt_main(arguments: Sequence[str]) -> int:
     if arguments == ("inspect", "boundary"):
         print(canonical_json(response(operation="inspect_boundary", status="ok")), end="")
         return 0
+    if arguments and arguments[0] == "evaluate" and _valid_evaluate(arguments[1:]):
+        return _evaluate_phase(arguments[1:])
     if arguments and arguments[0] == "assemble" and _valid_assemble(arguments[1:]):
         return _assemble(arguments[1:])
     if arguments and arguments[0] == "run" and _valid_run(arguments[1:]):

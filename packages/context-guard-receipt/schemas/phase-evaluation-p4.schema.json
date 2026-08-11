@@ -1,0 +1,179 @@
+{
+  "$defs": {
+    "cache": {
+      "additionalProperties": false,
+      "properties": {
+        "creation_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "invalidation_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "latency_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "read_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "creation_microunits",
+        "invalidation_microunits",
+        "latency_microunits",
+        "provider_cost_microunits",
+        "read_microunits"
+      ],
+      "type": "object"
+    },
+    "outcome": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_accounting": {
+          "$ref": "#/$defs/cache"
+        },
+        "quality_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cache_accounting",
+        "quality_basis_points",
+        "total_cost_microunits"
+      ],
+      "type": "object"
+    },
+    "outcomes": {
+      "additionalProperties": false,
+      "properties": {
+        "advisory": {
+          "$ref": "#/$defs/outcome"
+        },
+        "always_on": {
+          "$ref": "#/$defs/outcome"
+        },
+        "always_pass_through": {
+          "$ref": "#/$defs/outcome"
+        }
+      },
+      "required": [
+        "advisory",
+        "always_on",
+        "always_pass_through"
+      ],
+      "type": "object"
+    },
+    "trial": {
+      "additionalProperties": false,
+      "properties": {
+        "advisory_route": {
+          "anyOf": [
+            {
+              "enum": [
+                "pass_through",
+                "on"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "advisory_status": {
+          "enum": [
+            "selected",
+            "abstained",
+            "failed"
+          ]
+        },
+        "bypass_reasons": {
+          "items": {
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "confidence_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcomes": {
+          "$ref": "#/$defs/outcomes"
+        },
+        "trial_id": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "advisory_route",
+        "advisory_status",
+        "bypass_reasons",
+        "confidence_basis_points",
+        "outcomes",
+        "trial_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://contextguard.dev/schemas/phase-evaluation-p4.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activation_authorized": {
+      "type": "boolean"
+    },
+    "baseline_fallback_verified": {
+      "type": "boolean"
+    },
+    "dependency_gates_passed": {
+      "type": "boolean"
+    },
+    "minimum_confidence_basis_points": {
+      "maximum": 10000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "phase_id": {
+      "const": "p4"
+    },
+    "schema_version": {
+      "const": "contextguard.phase-evaluation.p4/v1"
+    },
+    "trials": {
+      "items": {
+        "$ref": "#/$defs/trial"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "activation_authorized",
+    "baseline_fallback_verified",
+    "dependency_gates_passed",
+    "minimum_confidence_basis_points",
+    "phase_id",
+    "schema_version",
+    "trials"
+  ],
+  "type": "object"
+}

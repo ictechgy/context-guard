@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "adjunct": {
+      "additionalProperties": false,
+      "properties": {
+        "adjunct_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "adjunct_id": {
+          "enum": [
+            "execution_twin",
+            "failure_cone",
+            "typed_blueprint"
+          ]
+        },
+        "adjunct_quality_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_quality_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bypass_verified": {
+          "type": "boolean"
+        },
+        "evidence_digests": {
+          "items": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "failure_cases": {
+          "items": {
+            "$ref": "#/$defs/failure_case"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "type": "array"
+        },
+        "fallback_verified": {
+          "type": "boolean"
+        },
+        "revision_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "test_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adjunct_cost_microunits",
+        "adjunct_id",
+        "adjunct_quality_basis_points",
+        "baseline_cost_microunits",
+        "baseline_quality_basis_points",
+        "bypass_verified",
+        "evidence_digests",
+        "failure_cases",
+        "fallback_verified",
+        "revision_digest",
+        "source_digest",
+        "test_digest"
+      ],
+      "type": "object"
+    },
+    "failure_case": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "duplicate_of": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_status": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root_cause": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "duplicate_of",
+        "exit_status",
+        "root_cause"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://contextguard.dev/schemas/phase-evaluation-p5.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activation_authorized": {
+      "type": "boolean"
+    },
+    "adjuncts": {
+      "items": {
+        "$ref": "#/$defs/adjunct"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array"
+    },
+    "current_revision_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "current_source_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "current_test_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "dependency_gates_passed": {
+      "type": "boolean"
+    },
+    "phase_id": {
+      "const": "p5"
+    },
+    "schema_version": {
+      "const": "contextguard.phase-evaluation.p5/v1"
+    }
+  },
+  "required": [
+    "activation_authorized",
+    "adjuncts",
+    "current_revision_digest",
+    "current_source_digest",
+    "current_test_digest",
+    "dependency_gates_passed",
+    "phase_id",
+    "schema_version"
+  ],
+  "type": "object"
+}

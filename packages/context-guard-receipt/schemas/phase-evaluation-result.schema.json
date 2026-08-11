@@ -1,0 +1,776 @@
+{
+  "$defs": {
+    "adjunct": {
+      "additionalProperties": false,
+      "properties": {
+        "adjunct_id": {
+          "anyOf": [
+            {
+              "enum": [
+                "execution_twin",
+                "failure_cone",
+                "typed_blueprint"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "decision": {
+          "enum": [
+            "eligible",
+            "bypass"
+          ]
+        },
+        "reversible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "adjunct_id",
+        "blockers",
+        "decision",
+        "reversible"
+      ],
+      "type": "object"
+    },
+    "p2": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_authority": {
+          "const": false
+        },
+        "activation_eligibility": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "claim_authority": {
+          "const": false
+        },
+        "construction_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluated_record_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluation_evidence_complete": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "const": "exact_unchanged_baseline"
+        },
+        "implementation_readiness": {
+          "type": "boolean"
+        },
+        "phase_id": {
+          "const": "p2"
+        },
+        "provider_evidence": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "contextguard.phase-evaluation.result/v1"
+        },
+        "strata": {
+          "items": {
+            "$ref": "#/$defs/stratum"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        }
+      },
+      "required": [
+        "activation_authority",
+        "activation_eligibility",
+        "blockers",
+        "claim_authority",
+        "construction_cost_microunits",
+        "evaluated_record_count",
+        "evaluation_evidence_complete",
+        "fallback",
+        "implementation_readiness",
+        "phase_id",
+        "provider_evidence",
+        "schema_version",
+        "strata"
+      ],
+      "type": "object"
+    },
+    "p3": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_authority": {
+          "const": false
+        },
+        "activation_eligibility": {
+          "type": "boolean"
+        },
+        "baseline_correction_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_failure_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_fully_loaded_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "canary_correction_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "canary_failure_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "canary_fully_loaded_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "claim_authority": {
+          "const": false
+        },
+        "evaluated_attempt_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluated_pair_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluated_retrieval_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluation_evidence_complete": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "const": "exact_unchanged_baseline"
+        },
+        "implementation_readiness": {
+          "type": "boolean"
+        },
+        "phase_id": {
+          "const": "p3"
+        },
+        "provider_evidence": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "contextguard.phase-evaluation.result/v1"
+        }
+      },
+      "required": [
+        "activation_authority",
+        "activation_eligibility",
+        "baseline_correction_count",
+        "baseline_failure_count",
+        "baseline_fully_loaded_cost_microunits",
+        "blockers",
+        "canary_correction_count",
+        "canary_failure_count",
+        "canary_fully_loaded_cost_microunits",
+        "claim_authority",
+        "evaluated_attempt_count",
+        "evaluated_pair_count",
+        "evaluated_retrieval_count",
+        "evaluation_evidence_complete",
+        "fallback",
+        "implementation_readiness",
+        "phase_id",
+        "provider_evidence",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    "p4": {
+      "additionalProperties": false,
+      "properties": {
+        "abstention_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activation_authority": {
+          "const": false
+        },
+        "activation_eligibility": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "bypass_reason_counts": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "properties": {},
+          "propertyNames": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "required": [],
+          "type": "object"
+        },
+        "claim_authority": {
+          "const": false
+        },
+        "confidence_basis_points": {
+          "items": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "evaluated_trial_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluation_evidence_complete": {
+          "type": "boolean"
+        },
+        "failure_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fallback": {
+          "const": "exact_unchanged_baseline"
+        },
+        "implementation_readiness": {
+          "type": "boolean"
+        },
+        "phase_id": {
+          "const": "p4"
+        },
+        "provider_evidence": {
+          "type": "boolean"
+        },
+        "runtime_route_changed": {
+          "const": false
+        },
+        "schema_version": {
+          "const": "contextguard.phase-evaluation.result/v1"
+        },
+        "selected_route": {
+          "enum": [
+            "pass_through",
+            "on"
+          ]
+        },
+        "trials": {
+          "items": {
+            "$ref": "#/$defs/trial"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        }
+      },
+      "required": [
+        "abstention_count",
+        "activation_authority",
+        "activation_eligibility",
+        "blockers",
+        "bypass_reason_counts",
+        "claim_authority",
+        "confidence_basis_points",
+        "evaluated_trial_count",
+        "evaluation_evidence_complete",
+        "failure_count",
+        "fallback",
+        "implementation_readiness",
+        "phase_id",
+        "provider_evidence",
+        "runtime_route_changed",
+        "schema_version",
+        "selected_route",
+        "trials"
+      ],
+      "type": "object"
+    },
+    "p5": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_authority": {
+          "const": false
+        },
+        "activation_eligibility": {
+          "type": "boolean"
+        },
+        "adjuncts": {
+          "items": {
+            "$ref": "#/$defs/adjunct"
+          },
+          "maxItems": 3,
+          "type": "array"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "claim_authority": {
+          "const": false
+        },
+        "eligible_adjuncts": {
+          "items": {
+            "enum": [
+              "execution_twin",
+              "failure_cone",
+              "typed_blueprint"
+            ]
+          },
+          "maxItems": 3,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "evaluated_adjunct_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluation_evidence_complete": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "const": "exact_unchanged_baseline"
+        },
+        "implementation_readiness": {
+          "type": "boolean"
+        },
+        "phase_id": {
+          "const": "p5"
+        },
+        "provider_evidence": {
+          "type": "boolean"
+        },
+        "runtime_changed": {
+          "const": false
+        },
+        "schema_version": {
+          "const": "contextguard.phase-evaluation.result/v1"
+        }
+      },
+      "required": [
+        "activation_authority",
+        "activation_eligibility",
+        "adjuncts",
+        "blockers",
+        "claim_authority",
+        "eligible_adjuncts",
+        "evaluated_adjunct_count",
+        "evaluation_evidence_complete",
+        "fallback",
+        "implementation_readiness",
+        "phase_id",
+        "provider_evidence",
+        "runtime_changed",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    "p6": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_authority": {
+          "const": false
+        },
+        "activation_eligibility": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "claim_authority": {
+          "const": false
+        },
+        "eligible_tracks": {
+          "items": {
+            "enum": [
+              "context_leases",
+              "scout_surgeon",
+              "counterfactual_ledger",
+              "negative_firewall",
+              "bounded_compilation"
+            ]
+          },
+          "maxItems": 5,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "evaluated_track_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluation_evidence_complete": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "const": "exact_unchanged_baseline"
+        },
+        "implementation_readiness": {
+          "type": "boolean"
+        },
+        "phase_id": {
+          "const": "p6"
+        },
+        "provider_evidence": {
+          "type": "boolean"
+        },
+        "runtime_changed": {
+          "const": false
+        },
+        "schema_version": {
+          "const": "contextguard.phase-evaluation.result/v1"
+        },
+        "tracks": {
+          "items": {
+            "$ref": "#/$defs/track"
+          },
+          "maxItems": 5,
+          "type": "array"
+        }
+      },
+      "required": [
+        "activation_authority",
+        "activation_eligibility",
+        "blockers",
+        "claim_authority",
+        "eligible_tracks",
+        "evaluated_track_count",
+        "evaluation_evidence_complete",
+        "fallback",
+        "implementation_readiness",
+        "phase_id",
+        "provider_evidence",
+        "runtime_changed",
+        "schema_version",
+        "tracks"
+      ],
+      "type": "object"
+    },
+    "stratum": {
+      "additionalProperties": false,
+      "properties": {
+        "recall_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recalled_relevant_record_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "relevant_record_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stratum": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "threshold_passed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "recall_basis_points",
+        "recalled_relevant_record_count",
+        "relevant_record_count",
+        "stratum",
+        "threshold_passed"
+      ],
+      "type": "object"
+    },
+    "track": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_authority": {
+          "const": false
+        },
+        "activation_eligibility": {
+          "type": "boolean"
+        },
+        "authority_evidence": {
+          "type": "boolean"
+        },
+        "baseline_evidence": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "claim_authority": {
+          "const": false
+        },
+        "correction_guardrail_evidence": {
+          "type": "boolean"
+        },
+        "cost_evidence": {
+          "type": "boolean"
+        },
+        "cost_model_evidence": {
+          "type": "boolean"
+        },
+        "decision": {
+          "enum": [
+            "eligible",
+            "fallback",
+            "plan_only"
+          ]
+        },
+        "failure_guardrail_evidence": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "const": "exact_unchanged_baseline"
+        },
+        "fallback_evidence": {
+          "type": "boolean"
+        },
+        "generalization_allowed": {
+          "const": false
+        },
+        "privacy_evidence": {
+          "type": "boolean"
+        },
+        "provider_evidence": {
+          "type": "boolean"
+        },
+        "quality_evidence": {
+          "type": "boolean"
+        },
+        "rollback_evidence": {
+          "type": "boolean"
+        },
+        "scope_evidence": {
+          "type": "boolean"
+        },
+        "surface": {
+          "anyOf": [
+            {
+              "enum": [
+                "evaluation_only",
+                "plan_only"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "track_id": {
+          "anyOf": [
+            {
+              "enum": [
+                "context_leases",
+                "scout_surgeon",
+                "counterfactual_ledger",
+                "negative_firewall",
+                "bounded_compilation"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workload_evidence": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "activation_authority",
+        "activation_eligibility",
+        "authority_evidence",
+        "baseline_evidence",
+        "blockers",
+        "claim_authority",
+        "correction_guardrail_evidence",
+        "cost_evidence",
+        "cost_model_evidence",
+        "decision",
+        "failure_guardrail_evidence",
+        "fallback",
+        "fallback_evidence",
+        "generalization_allowed",
+        "privacy_evidence",
+        "provider_evidence",
+        "quality_evidence",
+        "rollback_evidence",
+        "scope_evidence",
+        "surface",
+        "track_id",
+        "workload_evidence"
+      ],
+      "type": "object"
+    },
+    "trial": {
+      "additionalProperties": false,
+      "properties": {
+        "advisory_route": {
+          "anyOf": [
+            {
+              "enum": [
+                "pass_through",
+                "on"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "advisory_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "selected",
+                "abstained",
+                "failed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bypass_reasons": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "confidence_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluation_route": {
+          "enum": [
+            "pass_through",
+            "on"
+          ]
+        },
+        "regret_microunits": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trial_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "advisory_route",
+        "advisory_status",
+        "bypass_reasons",
+        "confidence_basis_points",
+        "evaluation_route",
+        "regret_microunits",
+        "trial_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://contextguard.dev/schemas/phase-evaluation-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/p2"
+    },
+    {
+      "$ref": "#/$defs/p3"
+    },
+    {
+      "$ref": "#/$defs/p4"
+    },
+    {
+      "$ref": "#/$defs/p5"
+    },
+    {
+      "$ref": "#/$defs/p6"
+    }
+  ]
+}

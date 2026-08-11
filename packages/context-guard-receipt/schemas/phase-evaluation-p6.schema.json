@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "track": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_authorized": {
+          "type": "boolean"
+        },
+        "baseline_corrections": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "baseline_failure_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseline_quality_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cost_model_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "fallback_verified": {
+          "type": "boolean"
+        },
+        "maximum_failure_rate_increase_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "population_count": {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "privacy_boundary_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "privacy_verified": {
+          "type": "boolean"
+        },
+        "provider_evidence_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "rollback_verified": {
+          "type": "boolean"
+        },
+        "scope_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "surface": {
+          "enum": [
+            "evaluation_only",
+            "plan_only"
+          ]
+        },
+        "track_corrections": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track_failure_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track_id": {
+          "enum": [
+            "context_leases",
+            "scout_surgeon",
+            "counterfactual_ledger",
+            "negative_firewall",
+            "bounded_compilation"
+          ]
+        },
+        "track_quality_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workload_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_authorized",
+        "baseline_corrections",
+        "baseline_cost_microunits",
+        "baseline_digest",
+        "baseline_failure_count",
+        "baseline_quality_basis_points",
+        "cost_model_digest",
+        "fallback_verified",
+        "maximum_failure_rate_increase_basis_points",
+        "population_count",
+        "privacy_boundary_digest",
+        "privacy_verified",
+        "provider_evidence_digest",
+        "rollback_verified",
+        "scope_digest",
+        "surface",
+        "track_corrections",
+        "track_cost_microunits",
+        "track_failure_count",
+        "track_id",
+        "track_quality_basis_points",
+        "workload_digest"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://contextguard.dev/schemas/phase-evaluation-p6.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "dependency_gates_passed": {
+      "type": "boolean"
+    },
+    "phase_id": {
+      "const": "p6"
+    },
+    "schema_version": {
+      "const": "contextguard.phase-evaluation.p6/v1"
+    },
+    "tracks": {
+      "items": {
+        "$ref": "#/$defs/track"
+      },
+      "maxItems": 5,
+      "minItems": 5,
+      "type": "array"
+    }
+  },
+  "required": [
+    "dependency_gates_passed",
+    "phase_id",
+    "schema_version",
+    "tracks"
+  ],
+  "type": "object"
+}

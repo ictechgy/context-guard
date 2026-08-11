@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "record": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_omission": {
+          "type": "boolean"
+        },
+        "construction_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fresh_until": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "protection": {
+          "enum": [
+            "eligible",
+            "protected",
+            "ambiguous"
+          ]
+        },
+        "recalled": {
+          "type": "boolean"
+        },
+        "record_id": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "rehydrated_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relevant": {
+          "type": "boolean"
+        },
+        "source_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "stratum": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_omission",
+        "construction_cost_microunits",
+        "fresh_until",
+        "protection",
+        "recalled",
+        "record_id",
+        "rehydrated_digest",
+        "relevant",
+        "source_digest",
+        "stratum"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://contextguard.dev/schemas/phase-evaluation-p2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activation_authorized": {
+      "type": "boolean"
+    },
+    "baseline_fallback_verified": {
+      "type": "boolean"
+    },
+    "dependency_gates_passed": {
+      "type": "boolean"
+    },
+    "minimum_recall_basis_points": {
+      "maximum": 10000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "observed_at": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "phase_id": {
+      "const": "p2"
+    },
+    "records": {
+      "items": {
+        "$ref": "#/$defs/record"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "contextguard.phase-evaluation.p2/v1"
+    }
+  },
+  "required": [
+    "activation_authorized",
+    "baseline_fallback_verified",
+    "dependency_gates_passed",
+    "minimum_recall_basis_points",
+    "observed_at",
+    "phase_id",
+    "records",
+    "schema_version"
+  ],
+  "type": "object"
+}
