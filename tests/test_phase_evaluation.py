@@ -600,6 +600,7 @@ class P6SpecializedTrackEvaluationTests(unittest.TestCase):
         self.assertFalse(result["evaluation_evidence_complete"])
         self.assertFalse(result["activation_eligibility"])
         self.assertIn("malformed_record", result["blockers"])
+        self.assertTrue(result["tracks"])
         self.assertTrue(
             all("malformed_record" in report["blockers"] for report in result["tracks"])
         )
