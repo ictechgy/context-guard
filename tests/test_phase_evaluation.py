@@ -569,6 +569,20 @@ class P6SpecializedTrackEvaluationTests(unittest.TestCase):
         self.assertFalse(report["claim_authority"])
         self.assertFalse(result["runtime_changed"])
 
+    def test_malformed_phase_identity_cannot_report_track_readiness(self) -> None:
+        record = self.valid_record()
+        record["schema_version"] = "contextguard.phase-evaluation.p6/v2"
+
+        result = evaluate_p6(record)
+
+        self.assertFalse(result["implementation_readiness"])
+        self.assertFalse(result["evaluation_evidence_complete"])
+        self.assertFalse(result["activation_eligibility"])
+        self.assertIn("malformed_record", result["blockers"])
+        self.assertTrue(
+            all("malformed_record" in report["blockers"] for report in result["tracks"])
+        )
+
     def test_invalid_track_identity_and_surface_are_not_reflected_in_output(self) -> None:
         record = self.valid_record()
         record["tracks"][0]["track_id"] = {"private": "value"}

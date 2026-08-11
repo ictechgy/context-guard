@@ -1049,7 +1049,7 @@ def evaluate_p6(record: object) -> dict[str, object]:
     eligible_tracks: list[str] = []
     seen_tracks: set[str] = set()
     for track in tracks:
-        blockers: list[str] = []
+        blockers = list(phase_blockers)
         track_id: object = None
         evidence = {
             "workload_evidence": False,

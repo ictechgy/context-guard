@@ -131,7 +131,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/identity.py': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c',
   'python/context_guard_receipt/mcp.py': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2',
   'python/context_guard_receipt/merged_capture.py': 'a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf',
-  'python/context_guard_receipt/phase_evaluation.py': 'e9e6747e1955789793a22826b71f73265607fd80ab30bf48f6dfae05852f1104',
+  'python/context_guard_receipt/phase_evaluation.py': 'f25a4f31a96d5579823945d62b119193741f5599ec1a3301f5e6ab774dd15bf5',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',
   'python/context_guard_receipt/reference_expiry.py': '2445292456776d5fcbf789f75a71781d64f12865958249d192cfc5a5ff27f2f6',
