@@ -15,6 +15,7 @@ import sys
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -270,6 +271,9 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                     "--study-v2-candidate-checksums", str(checksum_path),
                     "--study-v2-candidate-hash",
                     hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                    "--study-v2-source-commit",
+                    json.loads(manifest_path.read_text(encoding="ascii"))["commit_sha"],
+                    "--study-v2-offline-rehearsal",
                     "--study-v2-npm-bin", str(fake_npm),
                     "--claude-bin", str(fake_cli),
                     "--study-v2-use-existing-login",
@@ -427,6 +431,90 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 self.runner._benchmark_study_v2_verify_installed_packages(
                     overlay, candidate,
                 )
+
+    def test_v2_prepare_rejects_candidate_from_unapproved_source_commit(self) -> None:
+        rehearsal = load_rehearsal()
+        suite = ROOT / "bench" / "token-savings-12task"
+        with tempfile.TemporaryDirectory() as temp:
+            temporary_root = Path(temp)
+            fixture_root = temporary_root / "fixture"
+            fixture_root.mkdir()
+            manifest_path, checksum_path, fake_npm, fake_cli, auth_home = (
+                rehearsal._v2_candidate_fixture(fixture_root)
+            )
+            output_root = temporary_root / "study"
+            environment = os.environ.copy()
+            environment["HOME"] = str(auth_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER),
+                    "--study-v2-action", "prepare",
+                    "--study-v2-output-root", str(output_root),
+                    "--study-v2-plan", str(suite / "study-plan-v2.json"),
+                    "--study-v2-tasks", str(suite / "tasks.json"),
+                    "--study-v2-checkers-dir", str(suite / "checkers"),
+                    "--study-v2-candidate-manifest", str(manifest_path),
+                    "--study-v2-candidate-checksums", str(checksum_path),
+                    "--study-v2-candidate-hash",
+                    hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                    "--study-v2-source-commit", "f" * 40,
+                    "--study-v2-offline-rehearsal",
+                    "--study-v2-npm-bin", str(fake_npm),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=120,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn(
+                "candidate commit does not match approved source revision",
+                completed.stderr,
+            )
+            self.assertFalse(output_root.exists())
+
+    def test_v2_retained_ref_requires_exact_remote_resolution(self) -> None:
+        helper = getattr(
+            self.runner, "_benchmark_study_v2_verify_retained_ref", None,
+        )
+        self.assertIsNotNone(helper)
+        if helper is None:
+            return
+        expected_commit = "a" * 40
+        retained_ref = "refs/heads/candidate/p1-v8-a"
+        completed = type("Completed", (), {
+            "returncode": 0,
+            "timed_out": False,
+            "output_truncated": False,
+            "stdout": f"{expected_commit}\t{retained_ref}\n",
+            "stderr": "",
+        })()
+        with mock.patch.object(
+            self.runner, "run_bounded_command", return_value=completed,
+        ):
+            self.assertEqual(
+                helper(retained_ref, expected_commit),
+                {
+                    "commit_sha": expected_commit,
+                    "ref": retained_ref,
+                    "repository": "ictechgy/context-guard",
+                    "verification": "git-ls-remote-v1",
+                },
+            )
+
+        wrong = type("Completed", (), {
+            "returncode": 0,
+            "timed_out": False,
+            "output_truncated": False,
+            "stdout": f"{'b' * 40}\t{retained_ref}\n",
+            "stderr": "",
+        })()
+        with mock.patch.object(
+            self.runner, "run_bounded_command", return_value=wrong,
+        ):
+            with self.assertRaisesRegex(ValueError, "retained ref"):
+                helper(retained_ref, expected_commit)
 
     def test_v2_runner_binding_pins_the_checker_python_runtime(self) -> None:
         binding = self.runner._benchmark_study_v2_runner_binding()
@@ -707,6 +795,9 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 ],
             )
 
+            decision_path = output_root / "study-invalid-decision.json"
+            self.assertTrue(decision_path.is_file())
+
             analyzed = subprocess.run(
                 [
                     sys.executable, str(RUNNER), "--study-v2-action", "analyze",
@@ -829,6 +920,66 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             self.assertTrue(later_initials)
             self.assertTrue(any(slot["run_id"] in terminal for slot in later_initials))
 
+    def test_v2_budget_terminal_stops_without_retry_and_persists_p1_x(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output_root, fake_cli, manifest, auth_home = prepare_v2_canary_fixture(
+                runner=self.runner, temporary_root=Path(temp),
+            )
+            first_initial = next(
+                slot for slot in manifest["slots"] if slot["attempt"] == 0
+            )
+            unit = [
+                first_initial["task_id"], first_initial["arm"],
+                first_initial["repetition"],
+            ]
+            config_path = output_root / "fake-cli-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["bounded_provider_failure_units"] = [unit]
+            config["bounded_provider_failure_subtype"] = "error_max_budget_usd"
+            config_path.write_text(
+                json.dumps(config, sort_keys=True), encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["HOME"] = str(auth_home)
+            environment.pop("CLAUDE_CONFIG_DIR", None)
+            provider_log = output_root / "fake-cli-calls.jsonl"
+            canary_calls = len(provider_log.read_bytes().splitlines())
+
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--study-v2-action", "run",
+                    "--study-v2-output-root", str(output_root),
+                    "--claude-bin", str(fake_cli),
+                    "--study-v2-use-existing-login",
+                ],
+                cwd=ROOT, env=environment, text=True, capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            self.assertEqual(
+                len(provider_log.read_bytes().splitlines()), canary_calls + 1,
+            )
+            rows = [
+                json.loads(line)
+                for line in (output_root / "attempts.jsonl")
+                .read_text(encoding="utf-8").splitlines()
+            ]
+            terminal = [row for row in rows if row["state"] == "terminal"]
+            self.assertEqual(len(terminal), 1)
+            self.assertEqual(terminal[0]["run_id"], first_initial["run_id"])
+            self.assertEqual(terminal[0]["terminal_status"], "study_infra_invalid")
+            self.assertTrue(any(
+                row["state"] == "blocked_study_invalid" for row in rows
+            ))
+            decision = json.loads(
+                (output_root / "study-invalid-decision.json").read_bytes()
+            )
+            self.assertEqual(decision["decision"], "P1-X")
+            self.assertEqual(
+                decision["stop_reason"],
+                "terminal_analytic_infrastructure_invalid",
+            )
+
     def test_v2_bounded_provider_failure_is_an_exact_fail_closed_contract(self) -> None:
         # Mutation guarded: broadening the allowlist, accepting incomplete usage,
         # or accepting an invalid hook lifecycle must fail these cases.
@@ -862,9 +1013,8 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             helper(raw=terminal("error_max_turns", usage=complete_usage), **keyword),
             {**complete_usage, "primary_tokens": 50},
         )
-        self.assertEqual(
+        self.assertIsNone(
             helper(raw=terminal("error_max_budget_usd", usage=complete_usage), **keyword),
-            {**complete_usage, "primary_tokens": 50},
         )
         self.assertIsNone(
             helper(raw=terminal("error_during_execution", usage=complete_usage), **keyword),
@@ -899,7 +1049,7 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
                 runner=self.runner, temporary_root=Path(temp),
             )
             self.assertEqual(
-                manifest["schema_version"], "contextguard.bench.study-manifest.v5",
+                manifest["schema_version"], "contextguard.bench.study-manifest.v6",
             )
             self.assertEqual(
                 manifest["execution"]["attempt_schema_version"],

@@ -65,7 +65,7 @@ met.
 - The v2 study freezes three arms, corpus/checkers, schedule, CLI/runtime,
   candidate overlay, environment, receipts, and crash-safe attempt identity.
 - Its provider-free rehearsal exercises the live artifact contract:
-  `study-manifest.v5`, `study-attempt.v4`, `study-report.v4`, and the
+  `study-manifest.v6`, `study-attempt.v4`, `study-report.v4`, and the
   `study-invalid-decision.v1` P1-X record. Rehearsal evidence itself remains
   descriptive and cannot substitute for provider-backed evidence.
 - A mandatory discarded canary proves host-emitted `PreToolUse(Bash)` for both
@@ -230,14 +230,17 @@ is diagnostic-only and cannot replace workflow attestation.
   170/307, leaving 137. A new maximum-size root requires a separately approved
   cumulative ceiling of at least 388 and a newly frozen finite plan; no further
   provider call is currently authorized.
-- Provider-free TDD now versions the contract as `study-manifest.v5` and
-  `study-attempt.v4`. Only exact nonzero `error_max_turns` or
-  `error_max_budget_usd` terminals with all four usage buckets and valid hook
-  lifecycles become retry-eligible task failures. Their provider
+- Provider-free TDD now versions the contract as `study-manifest.v6` and
+  `study-attempt.v4`. Only exact nonzero `error_max_turns` terminals with all
+  four usage buckets and valid hook lifecycles become retry-eligible task
+  failures. Their provider
   `process_error` remains truthful, the checker is explicitly not run, measured
   usage remains in the estimator, and retry/later schedule execution continues.
+  `error_max_budget_usd` is a spend stop, never a task failure: it becomes
+  infrastructure-invalid, blocks the retry and every later launch, and
+  persists canonical claim-disabled P1-X when its terminal ledger validates.
   Execution errors, malformed usage, success/nonzero contradictions, and hook
-  failures remain infrastructure-invalid. The frozen v7 artifact is recognized
+  failures likewise remain infrastructure-invalid. The frozen v7 artifact is recognized
   read-only as 453,278 primary tokens, but its v7 decision remains P1-X; only a
   fresh reviewed candidate and fresh root may exercise the new contract.
 - The user approved the exact v8 retry boundary on 2026-08-11: cumulative
@@ -381,9 +384,12 @@ authority; npm `next` and `latest` remain untouched.
 
 1. Review and merge the exact v8 authorization amendment, retain its exact
    source ref, then build and attest a new npm candidate only.
-2. Run provider-free prepare and verify the exact CLI, existing-login safe
-   projection, candidate overlay, fixtures, settings, runtime, and fresh private
-   root before either live canary.
+2. Run provider-free prepare with `--study-v2-source-commit` set to the exact
+   reviewed merge and `--study-v2-retained-ref` set to its retained candidate
+   ref. The bounded credential-free remote check must resolve the ref to that
+   commit and the candidate manifest must match it. Also verify the exact CLI,
+   existing-login safe projection, candidate overlay, fixtures, settings,
+   runtime, and fresh private root before either live canary.
 3. Execute the fixed v8 canaries and analytic schedule under the exact 388
    cumulative ceiling. Any stop condition closes the root and yields P1-X.
 4. Keep active promotion stopped until a fresh P1-F exit exists. The current

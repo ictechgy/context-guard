@@ -347,6 +347,11 @@ bounded_failure = (
     and unit in config.get("bounded_provider_failure_units", [])
     and slot["attempt"] == 0
 )
+bounded_failure_subtype = config.get(
+    "bounded_provider_failure_subtype", "error_max_turns",
+)
+if bounded_failure_subtype not in {"error_max_turns", "error_max_budget_usd"}:
+    raise SystemExit(27)
 hook_mode = "host_unmodified"
 reference_handle_created = False
 public_retrieval_path = False
@@ -413,7 +418,8 @@ elif not should_fail and not bounded_failure:
 digest = int(hashlib.sha256(f"{task_id}|{arm}|{slot['repetition']}|{slot['attempt']}".encode()).hexdigest()[:8], 16)
 if bounded_failure:
     print(json.dumps({
-        "type": "result", "subtype": "error_max_turns", "is_error": True,
+        "type": "result", "subtype": bounded_failure_subtype,
+        "is_error": True,
         "usage": {
             "input_tokens": 4100,
             "cache_creation_input_tokens": 120,
@@ -1072,6 +1078,9 @@ def _run_v2_action(
             "--study-v2-candidate-manifest", str(manifest_path),
             "--study-v2-candidate-checksums", str(checksum_path),
             "--study-v2-candidate-hash", hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "--study-v2-source-commit",
+            json.loads(manifest_path.read_text(encoding="ascii"))["commit_sha"],
+            "--study-v2-offline-rehearsal",
             "--study-v2-npm-bin", str(fake_npm),
         ])
     environment = os.environ.copy()
