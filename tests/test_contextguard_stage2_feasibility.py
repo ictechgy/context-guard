@@ -14,6 +14,9 @@ from tests.test_contextguard_stage2_protected_surfaces import portable_regular_m
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECORD_PATH = REPO_ROOT / "research/contextguard-stage2/host-observability.json"
+PROGRESSIVE_BENCHMARK_SUMMARY_PATH = (
+    REPO_ROOT / "research/progressive-context-benchmark-2026-08-12.json"
+)
 BROKER_ROOT = REPO_ROOT / "research/contextguard-broker"
 BROKER_RESEARCH_PATHS = {
     path.relative_to(REPO_ROOT).as_posix()
@@ -87,8 +90,11 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/bin/context-guard-trim-output",
         "plugins/context-guard/lib/context_guard_commands.py",
         "research/benchmark-plan.md",
+        "research/comparator-mechanism-acceptance-matrix.md",
         "research/p2-p6-provider-free-implementation.md",
         "research/p1-live-authorization-packet.md",
+        "research/progressive-context-benchmark-2026-08-12.json",
+        "research/progressive-context-benchmark-2026-08-12.md",
         "research/token-savings-roadmap.md",
         "scripts/build_npm_candidates.py",
         "scripts/prepublish_check.py",
@@ -689,6 +695,158 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
         ):
             with self.subTest(runtime_path=runtime_path), self.assertRaises(AssertionError):
                 validate_provider_free_changed_paths(changed | {runtime_path})
+
+    def test_progressive_benchmark_summary_preserves_inconclusive_claim(self) -> None:
+        def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise AssertionError(f"duplicate benchmark summary key: {key}")
+                result[key] = value
+            return result
+
+        summary = json.loads(
+            PROGRESSIVE_BENCHMARK_SUMMARY_PATH.read_bytes(),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        self.assertEqual(
+            set(summary),
+            {
+                "artifact_format",
+                "candidate_hash",
+                "claim_allowed",
+                "evidence",
+                "inference",
+                "limitations",
+                "local_pack",
+                "local_pack_timing",
+                "operational_spend",
+                "protocol",
+                "provider",
+                "schema_version",
+                "source_commit",
+                "status",
+            },
+        )
+        self.assertEqual(
+            summary["source_commit"],
+            "334f806c6a3270894cadd4149250533cf95c2639",
+        )
+        self.assertEqual(
+            summary["candidate_hash"],
+            "cc89e4c050e0760ae7f58d61ca963b00b84cfaf8f5dd60379d405e4cbc633a8f",
+        )
+        self.assertEqual(
+            summary["status"], "synthetic_combined_workflow_smoke_inconclusive"
+        )
+        self.assertIs(summary["claim_allowed"], False)
+
+        inference = summary["inference"]
+        self.assertEqual(inference["verdict"], "inconclusive")
+        self.assertIs(inference["token_savings_gate"], False)
+        self.assertEqual(inference["primary_token_delta_point"], -197.83333333333326)
+        self.assertEqual(inference["primary_token_delta_q025"], -9693.423611111108)
+        self.assertEqual(inference["primary_token_delta_q975"], 9375.02291666666)
+
+        baseline = summary["provider"]["baseline"]
+        treatment = summary["provider"]["treatment"]
+        delta = summary["provider"]["delta"]
+        self.assertEqual(baseline["successful_runs"], 36)
+        self.assertEqual(treatment["successful_runs"], 36)
+        self.assertEqual(baseline["primary_tokens"], 4254273)
+        self.assertEqual(treatment["primary_tokens"], 4247151)
+        self.assertEqual(
+            delta["primary_tokens"],
+            treatment["primary_tokens"] - baseline["primary_tokens"],
+        )
+
+        local_pack = summary["local_pack"]
+        self.assertEqual(local_pack["baseline_bytes"], 81200)
+        self.assertEqual(local_pack["treatment_bytes"], 11594)
+        self.assertEqual(local_pack["baseline_prompt_bytes"], 87458)
+        self.assertEqual(local_pack["treatment_prompt_bytes"], 17852)
+        self.assertEqual(local_pack["critical_source_recall_baseline"], 1.0)
+        self.assertEqual(local_pack["critical_source_recall_treatment"], 1.0)
+
+        spend = summary["operational_spend"]
+        accepted_cost = (
+            baseline["claude_cli_reported_cost_usd"]
+            + treatment["claude_cli_reported_cost_usd"]
+        )
+        self.assertAlmostEqual(
+            spend["accepted_run_claude_cli_reported_cost_usd"], accepted_cost
+        )
+        self.assertAlmostEqual(
+            spend["total_claude_cli_reported_cost_usd"],
+            accepted_cost
+            + spend["discarded_prepublication_run_claude_cli_reported_cost_usd"],
+        )
+
+        expected_evidence = {
+            "aggregate_analysis_sha256": "be4886e967eee9560a84428725faf10000f9e4321f1b14a0d2db78ddf49f3874",
+            "attempt_index_sha256": "77cd8b26b8d48be1f69542b84368e2358552e49178b7a60dc22114518a439028",
+            "manifest_sha256": "9174ec9ae20393df1cc3e3a0348e268557e9f25cc5e9061febd303cbd6b08fc7",
+            "pack_generation_sha256": "fa09a20eb5d3e6737f76e7f919eadfe40b516e71b0ca0357a1c6827bd96c02ce",
+            "pack_timing_sha256": "efbb8e21edce08292c5be769581a8ebe1537f0b0bb9a8e02a2ed33bca4ccf1eb",
+            "study_report_sha256": "cdc88a76174a2f303eb9fbf3c107c0ab070c5e9a364961eccc79c009ab1256f1",
+        }
+        self.assertEqual(summary["evidence"], expected_evidence)
+
+        artifact_format = summary["artifact_format"]
+        self.assertIs(
+            artifact_format["pack_generation_fixture_tree_sha256"][
+                "canonical_manifest_match"
+            ],
+            False,
+        )
+        self.assertIs(
+            artifact_format["study_manifest_bytes"][
+                "canonical_under_repository_contract"
+            ],
+            True,
+        )
+        self.assertIs(
+            artifact_format["study_manifest_bytes"]["raw_sha256_bindings_consistent"],
+            True,
+        )
+
+        strings: list[str] = []
+
+        def collect_strings(value: object) -> None:
+            if isinstance(value, str):
+                strings.append(value)
+            elif isinstance(value, list):
+                for item in value:
+                    collect_strings(item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    strings.append(key)
+                    collect_strings(item)
+
+        collect_strings(summary)
+        joined_strings = "\n".join(strings).lower()
+        for forbidden_text in (
+            "/users/",
+            "/tmp/",
+            "auth.json",
+            "api_key",
+            "api-key",
+            "bearer ",
+            "password",
+            "cookie",
+        ):
+            self.assertNotIn(forbidden_text, joined_strings)
+
+        report_text = PROGRESSIVE_BENCHMARK_SUMMARY_PATH.with_suffix(".md").read_text()
+        self.assertIn(summary["source_commit"], report_text)
+        self.assertIn(summary["candidate_hash"], report_text)
+        for evidence_digest in expected_evidence.values():
+            self.assertIn(evidence_digest, report_text)
+        self.assertIn("81,200", report_text)
+        self.assertIn("11,594", report_text)
+        self.assertIn("claim_allowed=false", report_text)
+        self.assertNotIn("/Users/", report_text)
+        self.assertNotIn("/tmp/", report_text)
 
 
 if __name__ == "__main__":

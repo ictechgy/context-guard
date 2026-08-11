@@ -1,0 +1,115 @@
+{
+  "artifact_format": {
+    "pack_generation_fixture_tree_sha256": {
+      "canonical_manifest_match": false,
+      "domain_separator": "ASCII contextguard.progressive-fixture-tree.v1 followed by one zero byte",
+      "entry_encoding": "For each sorted regular file: 8-byte big-endian UTF-8 path length, path bytes, 8-byte big-endian content length, content bytes",
+      "executable_modes_included": false,
+      "note": "The private pack-generation file does not declare this custom algorithm. Independent audit reproduced every pack byte-for-byte; the study manifest separately binds each canonical fixture tree and file mode."
+    },
+    "study_manifest_bytes": {
+      "canonical_under_repository_contract": true,
+      "note": "The private manifest has the repository-required single trailing LF and exactly matches the canonical serializer output.",
+      "parsed_object_validation": true,
+      "raw_sha256_bindings_consistent": true,
+      "repository_contract_requires_single_trailing_lf": true
+    }
+  },
+  "candidate_hash": "cc89e4c050e0760ae7f58d61ca963b00b84cfaf8f5dd60379d405e4cbc633a8f",
+  "claim_allowed": false,
+  "evidence": {
+    "aggregate_analysis_sha256": "be4886e967eee9560a84428725faf10000f9e4321f1b14a0d2db78ddf49f3874",
+    "attempt_index_sha256": "77cd8b26b8d48be1f69542b84368e2358552e49178b7a60dc22114518a439028",
+    "manifest_sha256": "9174ec9ae20393df1cc3e3a0348e268557e9f25cc5e9061febd303cbd6b08fc7",
+    "pack_generation_sha256": "fa09a20eb5d3e6737f76e7f919eadfe40b516e71b0ca0357a1c6827bd96c02ce",
+    "pack_timing_sha256": "efbb8e21edce08292c5be769581a8ebe1537f0b0bb9a8e02a2ed33bca4ccf1eb",
+    "study_report_sha256": "cdc88a76174a2f303eb9fbf3c107c0ab070c5e9a364961eccc79c009ab1256f1"
+  },
+  "inference": {
+    "paired_task_repetition_units": 36,
+    "primary_token_delta_point": -197.83333333333326,
+    "primary_token_delta_q025": -9693.423611111108,
+    "primary_token_delta_q975": 9375.02291666666,
+    "retry_non_regression": true,
+    "token_savings_gate": false,
+    "verdict": "inconclusive"
+  },
+  "limitations": [
+    "The 12 instances come from two synthetic templates and are not 12 independent workload families.",
+    "The two-arm design tests a combined adaptive-k plus symbol-memory workflow and cannot attribute either mechanism's incremental effect.",
+    "Both arms retain workspace fallback; retrieval, turns, latency, and cache behavior are part of the observed result.",
+    "Correction burden and a fully loaded shifted-cost confidence interval are unavailable.",
+    "The private pack-generation rows use a custom fixture-tree hash algorithm that is documented in this summary but not declared in that evidence file.",
+    "The result is scoped to this source revision, corpus, Claude Code version, model alias, and cache conditions."
+  ],
+  "local_pack": {
+    "adaptive_family_sources_omitted": 36,
+    "baseline_bytes": 81200,
+    "baseline_prompt_bytes": 87458,
+    "baseline_token_proxy": 20304,
+    "critical_source_recall_baseline": 1.0,
+    "critical_source_recall_treatment": 1.0,
+    "graph_neighbors_selected": 6,
+    "pack_bytes_delta_percent": -85.72167487684729,
+    "prompt_bytes_delta_percent": -79.58791648562739,
+    "treatment_bytes": 11594,
+    "treatment_prompt_bytes": 17852,
+    "treatment_token_proxy": 2898
+  },
+  "local_pack_timing": {
+    "baseline_mean_ms": 103.81562496666666,
+    "design": "one warmup per task and arm; five counterbalanced repetitions; one process per measurement",
+    "mean_delta_ms": 12.855825800000005,
+    "mean_delta_percent": 12.38332457578306,
+    "treatment_mean_ms": 116.67145076666667
+  },
+  "operational_spend": {
+    "accepted_run_claude_cli_reported_cost_usd": 8.1963973,
+    "discarded_prepublication_run_claude_cli_reported_cost_usd": 8.1176929,
+    "note": "The first run was discarded after detecting a noncritical prompt-to-fixture path drift; it supports no result.",
+    "total_claude_cli_reported_cost_usd": 16.3140902
+  },
+  "protocol": {
+    "arms": {
+      "baseline": "ordinary deterministic auto pack",
+      "treatment": "ordinary auto pack with explicit --apply-adaptive-k and --apply-symbol-memory"
+    },
+    "claude_code_version": "2.1.228",
+    "effort": "medium",
+    "initial_provider_calls": 72,
+    "model": "sonnet",
+    "repetitions_per_arm_instance": 3,
+    "retries_consumed": 0,
+    "synthetic_instances": 12,
+    "task_templates": 2
+  },
+  "provider": {
+    "baseline": {
+      "claude_cli_reported_cost_usd": 4.255087,
+      "duration_seconds": 320.372,
+      "primary_tokens": 4254273,
+      "successful_runs": 36,
+      "tool_calls": 101,
+      "turns": 137
+    },
+    "delta": {
+      "claude_cli_reported_cost_percent": -7.374154747012218,
+      "duration_seconds": 66.58799999999997,
+      "primary_tokens": -7122,
+      "primary_tokens_percent": -0.16740815645822638,
+      "tool_calls": 9,
+      "turns": 9
+    },
+    "treatment": {
+      "claude_cli_reported_cost_usd": 3.9413103,
+      "duration_seconds": 386.96,
+      "primary_tokens": 4247151,
+      "successful_runs": 36,
+      "tool_calls": 110,
+      "turns": 146
+    }
+  },
+  "schema_version": "contextguard.progressive-context-benchmark-summary.v1",
+  "source_commit": "334f806c6a3270894cadd4149250533cf95c2639",
+  "status": "synthetic_combined_workflow_smoke_inconclusive"
+}

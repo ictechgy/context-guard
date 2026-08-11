@@ -1,6 +1,6 @@
 # ContextGuard token-savings roadmap
 
-_Status date: 2026-08-11 KST_
+_Status date: 2026-08-12 KST_
 
 This file is the canonical dependency, maturity, stop-gate, and claim contract
 for ContextGuard token-savings work. Draft run packets and implementation plans
@@ -17,7 +17,7 @@ Current position:
 | Dimension | Status |
 | --- | --- |
 | Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators exist, and the development branch connects their safe local components through an explicit non-activating MCP workflow plus an opt-in graph-applied context pack. |
-| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. The result remains descriptive-only. |
+| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. A separate 72-call synthetic combined-workflow smoke completed on 2026-08-12; its token interval crossed zero, so it is also descriptive-only and inconclusive. |
 | Release readiness | Exact merge `fb2e177f3efb15e817f54f5742beacdbe5daf96a` and candidate run `31464306133` (artifacts `9091361857`, `9091361298`) passed CI, paired smoke, checksums, and attestations; manifest SHA-256 is `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`. npm publication has not occurred. |
 | Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
@@ -386,6 +386,16 @@ caller-declared file/output/test-output and diff evidence. All applied paths are
 explicit and default-off; no host-wide route is enabled and local proxies do
 not establish provider-token savings.
 
+The 2026-08-12 [live synthetic smoke](progressive-context-benchmark-2026-08-12.md)
+ran 12 generated instances from two templates, three repetitions per arm, and
+72 accepted provider calls. Both arms passed 36/36 external checkers. The
+combined adaptive-k plus symbol-memory treatment reduced generated pack bytes
+85.72%, but primary-token inference was inconclusive: treatment minus baseline
+was -197.83 tokens at the paired point estimate with a 95% task-cluster interval
+of [-9,693.42, 9,375.02]. Corrections and fully loaded shifted-cost inference
+remain unavailable. This evidence does not promote P4, authorize automation, or
+support a savings/parity claim.
+
 Build the router first as shadow/advisory metadata over the three deterministic
 routes. It must expose confidence and bypass reasons and retain abstentions and
 failures in its regret report.
@@ -455,15 +465,21 @@ npm `next` and `latest` remain untouched.
 
 1. Preserve the exact v8 root, retained source ref, immutable candidate, and
    P1-F report; never reinterpret missing observers or false gates as zero/pass.
-2. Freeze a P2 preregistration for only an authoritative supported observer
+2. Before another progressive-context provider run, freeze a four-arm
+   ordinary/adaptive-only/symbol-only/combined ablation with genuinely
+   independent task structures. Include graph cases where ordinary ranking
+   misses a required neighbor, hidden-oracle adaptive labels, closed-pack and
+   realistic-fallback strata, correction/retrieval accounting, and fully loaded
+   cost intervals.
+3. Freeze a P2 preregistration for only an authoritative supported observer
    stratum. General host request assembly remains unavailable; do not widen the
    proven Bash tool-output boundary by inference.
-3. Record a new phase-specific privacy/call/spend authority before any P2-P6
-   provider activity. Provider-free local construction and evaluator checks may
-   proceed, but grant no runtime, activation, or claim authority.
-4. Execute P2 through P6 sequentially. A failed dependency gate stops later
-   provider phases, keeps their already-shipped implementations evaluation-only,
-   and preserves the exact prior route.
+4. Record a new phase-specific privacy/call/spend authority before any further
+   P2-P6 provider activity. The 2026-08-12 authorization is consumed and grants
+   no runtime, activation, or claim authority.
+5. Execute later P2 through P6 gates sequentially. A failed dependency gate
+   stops later provider phases, keeps their already-shipped implementations
+   evaluation-only, and preserves the exact prior route.
 
 The external authorization packet records the user's bounded authority; the
 packet does not create or expand authority by itself. It must be frozen after
