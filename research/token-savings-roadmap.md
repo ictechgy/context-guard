@@ -17,9 +17,9 @@ Current position:
 | Dimension | Status |
 | --- | --- |
 | Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators are implemented but non-activating. |
-| Evidence readiness | P1-X: v7 stopped safely after 79 analytic identities; P1-F is not passed. |
-| Release readiness | The P2-P6 evaluator merge and candidate passed; the newly recorded v8 live authorization requires a new exact candidate. npm publication has not occurred. |
-| Public claim | Forbidden: the provider-backed v7 decision is P1-X and claim-disabled. |
+| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. The result remains descriptive-only. |
+| Release readiness | Exact merge `fb2e177f3efb15e817f54f5742beacdbe5daf96a` and candidate run `31464306133` (artifacts `9091361857`, `9091361298`) passed CI, paired smoke, checksums, and attestations; manifest SHA-256 is `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`. npm publication has not occurred. |
+| Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
 The roadmap is dependency-gated:
 
@@ -252,8 +252,32 @@ is diagnostic-only and cannot replace workflow attestation.
   PR #298 merge `d4b6302...` and candidate run `31457488674` verified the
   provider-free P2-P6 delivery, but the authorization amendment requires a new
   reviewed merge and exact candidate before live v8 `prepare`.
+- PR #300 merged the v8 source/spend closure as
+  `fb2e177f3efb15e817f54f5742beacdbe5daf96a`. Attested candidate run
+  `31464306133`, root artifact `9091361857`, and Receipt artifact `9091361298`
+  bind that exact source and passed every release gate, paired smoke, and all
+  three attestations. The canonical candidate-manifest SHA-256 is
+  `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`;
+  no npm publication or dist-tag mutation occurred.
+- Fresh v8 root `/private/tmp/contextguard-p1-live-v8.rLM3P6/study` passed
+  provider-free prepare and both discarded host-mediated canaries, then
+  terminally accounted all 108 initials plus 13 policy-valid retries. The
+  remaining 95 retry identities are canonically `not_needed`; there are no open
+  or ambiguous identities. Provider-free analysis emitted canonical `P1-F` in
+  report SHA-256
+  `09eca0ff9953a7f45da2d373d568dff22e09abe19965bc58952d65822151a8a5`,
+  with 121 analytic records and every unfavorable run retained.
+- The primary host-unmodified minus `bash_reference_v1` descriptive token point
+  estimate is 7,071.31 primary tokens, with task-cluster 95% interval
+  [1,583.33, 13,736.99]. Exact task-cluster sign permutation passed the frozen
+  binary non-inferiority test (`p=0.000488...`, point 0.0, margin 0.1). This is
+  not a savings claim: power remains unmet; correction, retrieval, and shifted
+  cost are explicitly unavailable; quality/failure/correction/retrieval/cost
+  gates remain false; `claim_allowed=false` and `descriptive_only=true`.
 
-P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
+The P1 dependency gate has passed. P2-P6 active promotion remains stopped until
+P2 records a supported boundary, preregistration, and phase-specific authority;
+the existing general host request-assembly observer is still unsupported.
 
 ### Exit gate
 
@@ -382,23 +406,17 @@ claim authority remain false, and exact fallback is unchanged. Delivery may
 proceed only to a GitHub PR or an npm candidate under separately recorded
 authority; npm `next` and `latest` remain untouched.
 
-1. Review and merge the exact v8 authorization amendment, retain its exact
-   source ref, then build and attest a new npm candidate only.
-2. Run provider-free prepare with `--study-v2-source-commit` set to the exact
-   reviewed merge and `--study-v2-retained-ref` set to its retained candidate
-   ref. The bounded credential-free remote check must resolve the ref to that
-   commit and the candidate manifest must match it. Also verify the exact CLI,
-   existing-login safe projection, candidate overlay, fixtures, settings,
-   runtime, and fresh private root before either live canary. Never pass
-   `--study-v2-offline-rehearsal` here; roots prepared with that flag are
-   rehearsal-only and cannot supply live/provider evidence.
-3. Execute the fixed v8 canaries and analytic schedule under the exact 388
-   cumulative ceiling. Any stop condition closes the root and yields P1-X.
-4. Keep active promotion stopped until a fresh P1-F exit exists. The current
-   v7 P1-X and local evaluator outputs unlock nothing.
-5. After P1-F, obtain a new phase-specific call/spend/privacy authorization and
-   execute P2 through P6 sequentially; a failed gate stops later phases and
-   preserves the exact prior route.
+1. Preserve the exact v8 root, retained source ref, immutable candidate, and
+   P1-F report; never reinterpret missing observers or false gates as zero/pass.
+2. Freeze a P2 preregistration for only an authoritative supported observer
+   stratum. General host request assembly remains unavailable; do not widen the
+   proven Bash tool-output boundary by inference.
+3. Record a new phase-specific privacy/call/spend authority before any P2-P6
+   provider activity. Provider-free local construction and evaluator checks may
+   proceed, but grant no runtime, activation, or claim authority.
+4. Execute P2 through P6 sequentially. A failed dependency gate stops later
+   provider phases, keeps their already-shipped implementations evaluation-only,
+   and preserves the exact prior route.
 
 The external authorization packet records the user's bounded authority; the
 packet does not create or expand authority by itself. It must be frozen after
