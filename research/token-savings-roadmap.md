@@ -16,9 +16,9 @@ Current position:
 
 | Dimension | Status |
 | --- | --- |
-| Shipped-code readiness | Narrow P3-style opt-in Bash-output reference route is merged. |
+| Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators are implemented but non-activating. |
 | Evidence readiness | P1-X: v7 stopped safely after 79 analytic identities; P1-F is not passed. |
-| Release readiness | An attested immutable candidate exists; npm publication has not occurred. |
+| Release readiness | Earlier attested candidates exist; the P2-P6 evaluator change still requires a new exact candidate. npm publication has not occurred. |
 | Public claim | Forbidden: the provider-backed v7 decision is P1-X and claim-disabled. |
 
 The roadmap is dependency-gated:
@@ -262,6 +262,10 @@ over-limit study. Every decision remains descriptive-only with claims disabled.
 
 ## P2 — observe-only request-boundary broker
 
+Implementation status: the packaged local evaluator now computes per-stratum
+recall, exact rehydration, freshness, construction cost, and protected-zone
+violations from a closed P2 record. It cannot observe or mutate a live request.
+
 P2 may start only after `P1-F`, authoritative host evidence identifies a
 supported interception/attribution boundary, a P2 preregistration is approved,
 and any P2 provider/cost authorization is separately granted.
@@ -281,6 +285,10 @@ the Bash route stays the only active narrow mechanism.
 
 ## P3 — bounded progressive-disclosure canary
 
+Implementation status: the packaged evaluator now verifies exact matched pairs,
+retrievals, failure/correction guardrails, and fully loaded provider-cost fields.
+It evaluates imported measurements only and launches no canary or provider call.
+
 The existing Bash reference route is the first narrow implementation candidate.
 Promotion requires:
 
@@ -297,6 +305,10 @@ loaded cost immediately demotes the affected stratum to baseline.
 
 ## P4 — do-nothing router and cache economics
 
+Implementation status: the packaged evaluator now compares advisory,
+always-pass-through, and always-on outcomes with separate cache creation, read,
+invalidation, latency, and provider-cost accounting. Its route is advisory only.
+
 Build the router first as shadow/advisory metadata over the three deterministic
 routes. It must expose confidence and bypass reasons and retain abstentions and
 failures in its regret report.
@@ -308,6 +320,10 @@ latency, and provider cost. Negative regret disables automation for that
 stratum.
 
 ## P5 — repeated-context and repair-loop adjuncts
+
+Implementation status: execution-twin, failure-cone, and typed-blueprint
+evidence now receive independent freshness, differentiation, fallback, quality,
+and cost decisions. The evaluator applies none of the adjuncts.
 
 Implement separately and promote incrementally:
 
@@ -323,6 +339,12 @@ with different roots must not be merged. No live transcript rewriting is
 authorized.
 
 ## P6 — specialized high-upside tracks
+
+Implementation status: the five named tracks now have independent closed
+evaluation records for scope, workload, baseline, privacy, quality,
+failure/correction guardrails, complete cost model, fallback, rollback, provider
+evidence, and authority. Plan-only tracks remain non-runtime, and no result may
+generalize beyond its frozen scope.
 
 Each track gets its own frozen workload and can be promoted only independently:
 
@@ -341,14 +363,22 @@ cost accounting.
 
 ## Immediate ordered work
 
-1. Refresh HANDOFF and establish this canonical roadmap.
-2. Close all provider-free P1 readiness checks and write the external
-   authorization packet.
-3. Use the recorded GitHub/P1/npm-candidate authorization. Keep npm `next`, npm
-   `latest`, artifact deletion, and P2-P6 provider work blocked.
-4. Execute and analyze P1. Stop if its exit gate fails.
-5. Implement/evaluate P2, then P3, then P4, then P5, then P6, checkpointing each
-   gate before starting the next.
+Provider-free P2-P6 implementation is now closed behind the packaged local
+evaluator. The evaluator and its schemas are explicit evaluation surfaces only:
+P1-F and phase-specific external authority remain unmet, runtime activation and
+claim authority remain false, and exact fallback is unchanged. Delivery may
+proceed only to a GitHub PR or an npm candidate under separately recorded
+authority; npm `next` and `latest` remain untouched.
+
+1. Finish package integrity, release smoke, full prepublish, review, and the
+   GitHub PR for the provider-free P2-P6 evaluator.
+2. Build and attest a new exact npm candidate only. Keep npm `next`, npm
+   `latest`, artifact deletion, and all P2-P6 provider work blocked.
+3. Keep active promotion stopped until a fresh P1-F exit exists. The current
+   P1-X evidence and local evaluator outputs unlock nothing.
+4. After P1-F, obtain a new phase-specific call/spend/privacy authorization and
+   execute P2 through P6 sequentially; a failed gate stops later phases and
+   preserves the exact prior route.
 
 The external authorization packet records the user's bounded authority; the
 packet does not create or expand authority by itself. It must be frozen after

@@ -1,0 +1,197 @@
+{
+  "$defs": {
+    "attempt": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "enum": [
+            "baseline",
+            "canary"
+          ]
+        },
+        "attempt_id": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "corrections": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "measurement": {
+          "$ref": "#/$defs/measurement"
+        },
+        "pair_id": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "retrievals": {
+          "items": {
+            "$ref": "#/$defs/retrieval"
+          },
+          "maxItems": 10000,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "task_success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "arm",
+        "attempt_id",
+        "corrections",
+        "measurement",
+        "pair_id",
+        "retrievals",
+        "task_success"
+      ],
+      "type": "object"
+    },
+    "measurement": {
+      "additionalProperties": false,
+      "properties": {
+        "correction_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "external_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "local_compute_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "primary_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retrieval_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retry_cost_microunits": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "correction_cost_microunits",
+        "external_cost_microunits",
+        "local_compute_cost_microunits",
+        "primary_tokens",
+        "provider_cost_microunits",
+        "retrieval_cost_microunits",
+        "retry_cost_microunits"
+      ],
+      "type": "object"
+    },
+    "retrieval": {
+      "additionalProperties": false,
+      "properties": {
+        "exact": {
+          "const": true
+        },
+        "retrieval_id": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "exact",
+        "retrieval_id"
+      ],
+      "type": "object"
+    },
+    "thresholds": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_failure_rate_increase_basis_points": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "require_corrections_non_inferior": {
+          "const": true
+        },
+        "require_fully_loaded_cost_improvement": {
+          "const": true
+        }
+      },
+      "required": [
+        "maximum_failure_rate_increase_basis_points",
+        "require_corrections_non_inferior",
+        "require_fully_loaded_cost_improvement"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://contextguard.dev/schemas/phase-evaluation-p3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activation_authorized": {
+      "type": "boolean"
+    },
+    "attempts": {
+      "items": {
+        "$ref": "#/$defs/attempt"
+      },
+      "maxItems": 20000,
+      "minItems": 1,
+      "type": "array"
+    },
+    "baseline_fallback_verified": {
+      "type": "boolean"
+    },
+    "claim_scope_bound": {
+      "type": "boolean"
+    },
+    "dependency_gates_passed": {
+      "type": "boolean"
+    },
+    "evidence_origin": {
+      "const": "provider_measured"
+    },
+    "matched_pair_ids": {
+      "items": {
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+        "type": "string"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "phase_id": {
+      "const": "p3"
+    },
+    "schema_version": {
+      "const": "contextguard.phase-evaluation.p3/v1"
+    },
+    "thresholds": {
+      "$ref": "#/$defs/thresholds"
+    }
+  },
+  "required": [
+    "activation_authorized",
+    "attempts",
+    "baseline_fallback_verified",
+    "claim_scope_bound",
+    "dependency_gates_passed",
+    "evidence_origin",
+    "matched_pair_ids",
+    "phase_id",
+    "schema_version",
+    "thresholds"
+  ],
+  "type": "object"
+}

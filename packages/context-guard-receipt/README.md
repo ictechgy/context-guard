@@ -9,6 +9,7 @@ diagnostics:
 
 ```text
 context-guard-receipt inspect boundary
+context-guard-receipt evaluate phase --input <file|->
 context-guard-receipt assemble --kind evidence|blueprint|tool-schemas --descriptor <file|-> --root <absolute>
 context-guard-receipt run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
 context-guard-receipt inspect diagnostics --input <file|->
@@ -372,3 +373,18 @@ same-UID isolation boundary or an atomic defense against trusted actors.
 
 Use `context-guard-receipt --help` for the human-readable command summary and
 `context-guard-receipt-mcp --help` for the explicit bounded stdio MCP summary.
+
+## Closed phase evaluation
+
+`context-guard-receipt evaluate phase --input <file|->` evaluates one canonical
+P2, P3, P4, P5, or P6 local record. Input is capped at 2 MiB, parsed with the
+package's duplicate-key rejecting canonical JSON parser, and constrained by the
+phase schemas shipped under `schemas/phase-evaluation-*.schema.json`.
+
+The evaluator is provider-free and advisory. It reads no credentials, provider
+state, settings, hooks, or network resources; performs no provider or model
+call; mutates no request or runtime route; and grants neither activation nor
+claim authority. Invalid, incomplete, stale, or uneconomic evidence preserves
+the exact unchanged baseline or the phase's independently verified exact local
+fallback. Its numeric fields are caller-supplied evaluation measurements, not
+token, cost, percentage, or savings claims made by this package.

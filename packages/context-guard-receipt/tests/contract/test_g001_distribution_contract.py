@@ -45,6 +45,7 @@ EXPECTED_HELP = (
     "usage: context-guard-receipt <command>\n\n"
     "Commands:\n"
     "  inspect boundary\n"
+    "  evaluate phase --input <file|->\n"
     "  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n"
     "  run --escrow --root <absolute> --state-dir <absolute> "
     "[--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> "
@@ -144,6 +145,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/identity.py": 0o644,
     "python/context_guard_receipt/mcp.py": 0o644,
     "python/context_guard_receipt/merged_capture.py": 0o644,
+    "python/context_guard_receipt/phase_evaluation.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
     "python/context_guard_receipt/reference_expiry.py": 0o644,
     "python/context_guard_receipt/receipts.py": 0o644,
@@ -167,6 +169,12 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/evidence-reference.schema.json": 0o644,
     "schemas/expansion-envelope.schema.json": 0o644,
     "schemas/expansion-refusal.schema.json": 0o644,
+    "schemas/phase-evaluation-p2.schema.json": 0o644,
+    "schemas/phase-evaluation-p3.schema.json": 0o644,
+    "schemas/phase-evaluation-p4.schema.json": 0o644,
+    "schemas/phase-evaluation-p5.schema.json": 0o644,
+    "schemas/phase-evaluation-p6.schema.json": 0o644,
+    "schemas/phase-evaluation-result.schema.json": 0o644,
     "schemas/protection-decision.schema.json": 0o644,
     "schemas/reference-expiry-inspection.schema.json": 0o644,
     "schemas/reference-expiry-metadata.schema.json": 0o644,

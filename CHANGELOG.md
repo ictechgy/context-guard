@@ -4,6 +4,11 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added a provider-free `context-guard-receipt evaluate phase` surface with
+  closed P2-P6 input/result schemas. It computes shadow/canary/router/adjunct/
+  specialized-track readiness from bounded canonical local records while
+  keeping runtime activation, generalization, provider calls, and savings
+  claims disabled behind the existing sequential phase gates.
 - Changed the discarded v2 Bash canary's fixed marker write from denied shell
   output redirection to an existing MiniShell-v1-supported `python3 -c` route.
   Both real hook modes now guard the exact command in provider-free tests, and
