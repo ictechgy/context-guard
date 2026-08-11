@@ -11261,10 +11261,10 @@ def evaluate_benchmark_study_v2_claim_readiness(
     }
 
 
-BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v5"
+BENCHMARK_STUDY_V2_EXEC_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v6"
 BENCHMARK_STUDY_V2_ATTEMPT_SCHEMA_VERSION = "contextguard.bench.study-attempt.v4"
 BENCHMARK_STUDY_V2_BOUNDED_FAILURE_RESULT_CODES = frozenset({
-    "error_max_turns", "error_max_budget_usd",
+    "error_max_turns",
 })
 BENCHMARK_STUDY_V2_BOUNDED_FAILURE_CHECKER_STATUS = (
     "not_run_provider_bounded_failure_v1"
@@ -12044,6 +12044,7 @@ def _benchmark_study_v2_read_canonical(path: Path, *, owner: str, maximum: int) 
 def verify_benchmark_study_v2_candidate(
     manifest_path: Path, *, checksum_path: Path | None = None,
     expected_manifest_sha256: str | None = None,
+    expected_commit_sha: str | None = None,
 ) -> dict[str, Any]:
     """Verify the build-once candidate as inert bytes; never import its code."""
     manifest, manifest_raw = _benchmark_study_v2_read_canonical(
@@ -12086,6 +12087,13 @@ def verify_benchmark_study_v2_candidate(
     manifest_sha256 = _study_sha256_bytes(manifest_raw)
     if expected_manifest_sha256 is not None and manifest_sha256 != expected_manifest_sha256:
         raise ValueError("v2 candidate canonical manifest hash drift")
+    if expected_commit_sha is not None and (
+        re.fullmatch(r"[0-9a-f]{40}", expected_commit_sha) is None
+        or manifest["commit_sha"] != expected_commit_sha
+    ):
+        raise ValueError(
+            "v2 candidate commit does not match approved source revision"
+        )
     packages = manifest.get("packages")
     if not isinstance(packages, list) or len(packages) != 2:
         raise ValueError("v2 candidate must bind exactly two tarballs")
@@ -12130,7 +12138,64 @@ def verify_benchmark_study_v2_candidate(
         "manifest_bytes": len(manifest_raw),
         "checksum_path": str(checksum.resolve()),
         "checksum_sha256": _study_sha256_bytes(checksum_raw),
+        "commit_sha": manifest["commit_sha"],
         "packages": records,
+    }
+
+
+def _benchmark_study_v2_verify_retained_ref(
+    retained_ref: str, expected_commit_sha: str,
+) -> dict[str, str]:
+    if (
+        not isinstance(retained_ref, str)
+        or len(retained_ref) > 200
+        or re.fullmatch(
+            r"refs/heads/candidate/[A-Za-z0-9][A-Za-z0-9._/-]*",
+            retained_ref,
+        ) is None
+        or ".." in retained_ref
+        or "//" in retained_ref
+        or retained_ref.endswith(("/", ".lock"))
+        or re.fullmatch(r"[0-9a-f]{40}", expected_commit_sha) is None
+    ):
+        raise ValueError("v2 retained ref binding is invalid")
+    git = Path("/usr/bin/git")
+    if not git.is_file() or not os.access(git, os.X_OK):
+        raise ValueError("v2 retained ref verifier is unavailable")
+    with tempfile.TemporaryDirectory(prefix="contextguard-v2-git-home-") as temp:
+        os.chmod(temp, 0o700)
+        result = run_bounded_command(
+            [
+                str(git), "-c", "credential.helper=", "-c",
+                "core.askPass=", "ls-remote", "--exit-code", "--refs",
+                "https://github.com/ictechgy/context-guard.git", retained_ref,
+            ],
+            cwd=Path(temp), timeout_seconds=30, max_output_bytes=10_000,
+            env={
+                "GIT_ASKPASS": "/usr/bin/false",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+                "HOME": temp,
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+                "SSH_ASKPASS": "/usr/bin/false",
+            },
+        )
+    expected_output = f"{expected_commit_sha}\t{retained_ref}\n"
+    if (
+        result.returncode != 0
+        or result.timed_out
+        or result.output_truncated
+        or result.stderr
+        or result.stdout != expected_output
+    ):
+        raise ValueError("v2 retained ref does not resolve to approved source")
+    return {
+        "commit_sha": expected_commit_sha,
+        "ref": retained_ref,
+        "repository": "ictechgy/context-guard",
+        "verification": "git-ls-remote-v1",
     }
 
 
@@ -12524,7 +12589,8 @@ def prepare_benchmark_study_v2_executable(
     *, output_root: Path, plan_path: Path, tasks_path: Path, checkers_dir: Path,
     candidate_manifest_path: Path, candidate_checksum_path: Path | None,
     expected_candidate_hash: str, npm_bin: str, claude_bin: str,
-    auth_home: Path,
+    auth_home: Path, approved_source_commit: str,
+    retained_ref: str | None, offline_rehearsal: bool,
 ) -> dict[str, Any]:
     output_root = _benchmark_study_v2_output_root(output_root)
     if output_root.exists() and (
@@ -12535,7 +12601,25 @@ def prepare_benchmark_study_v2_executable(
     candidate = verify_benchmark_study_v2_candidate(
         candidate_manifest_path, checksum_path=candidate_checksum_path,
         expected_manifest_sha256=expected_candidate_hash,
+        expected_commit_sha=approved_source_commit,
     )
+    if type(offline_rehearsal) is not bool:
+        raise TypeError("v2 offline rehearsal flag must be boolean")
+    if offline_rehearsal:
+        if retained_ref is not None:
+            raise ValueError("v2 offline rehearsal cannot bind a retained ref")
+        source_ref_binding: dict[str, Any] = {
+            "commit_sha": approved_source_commit,
+            "ref": None,
+            "repository": "ictechgy/context-guard",
+            "verification": "offline-rehearsal-unverified-v1",
+        }
+    else:
+        if retained_ref is None:
+            raise ValueError("v2 live prepare requires a retained ref")
+        source_ref_binding = _benchmark_study_v2_verify_retained_ref(
+            retained_ref, approved_source_commit,
+        )
     plan = load_benchmark_study_v2_plan(plan_path)
     corpus_bytes = _read_bytes_no_follow(tasks_path, max_bytes=MAX_FIXTURE_FILE_BYTES)
     checker_binding = benchmark_study_v2_checker_binding(checkers_dir)
@@ -12586,6 +12670,8 @@ def prepare_benchmark_study_v2_executable(
             "auth_context": auth_context,
             "runner_binding": runner_binding,
             "canary_contract": _benchmark_study_v2_canary_contract(),
+            "approved_source_commit": approved_source_commit,
+            "source_ref_binding": source_ref_binding,
             "candidate": candidate,
             "candidate_install_root": str(install_root.resolve()),
             "candidate_install_receipt_sha256": _study_sha256_bytes(
@@ -12633,6 +12719,8 @@ def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate
         "plan_path", "tasks_path", "tasks_sha256", "task_definitions",
         "checkers_dir", "checker_binding", "cli_binding", "execution_environment",
         "auth_context", "runner_binding", "canary_contract", "candidate",
+        "approved_source_commit",
+        "source_ref_binding",
         "candidate_install_root", "candidate_install_receipt_sha256",
         "candidate_overlay_inventory", "settings", "namespace", "task_ids",
         "task_ids_sha256",
@@ -12648,6 +12736,42 @@ def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate
         raise ValueError("v2 benchmark runner binding drift")
     if inputs["canary_contract"] != _benchmark_study_v2_canary_contract():
         raise ValueError("v2 canary contract binding mismatch")
+    if (
+        not isinstance(inputs["approved_source_commit"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", inputs["approved_source_commit"]) is None
+        or inputs["candidate"].get("commit_sha")
+        != inputs["approved_source_commit"]
+    ):
+        raise ValueError("v2 approved source revision binding mismatch")
+    source_ref_binding = inputs["source_ref_binding"]
+    if (
+        not isinstance(source_ref_binding, Mapping)
+        or set(source_ref_binding) != {
+            "commit_sha", "ref", "repository", "verification",
+        }
+        or source_ref_binding.get("commit_sha")
+        != inputs["approved_source_commit"]
+        or source_ref_binding.get("repository") != "ictechgy/context-guard"
+        or source_ref_binding.get("verification") not in {
+            "git-ls-remote-v1", "offline-rehearsal-unverified-v1",
+        }
+        or (
+            source_ref_binding.get("verification") == "git-ls-remote-v1"
+            and (
+                not isinstance(source_ref_binding.get("ref"), str)
+                or re.fullmatch(
+                    r"refs/heads/candidate/[A-Za-z0-9][A-Za-z0-9._/-]*",
+                    source_ref_binding["ref"],
+                ) is None
+            )
+        )
+        or (
+            source_ref_binding.get("verification")
+            == "offline-rehearsal-unverified-v1"
+            and source_ref_binding.get("ref") is not None
+        )
+    ):
+        raise ValueError("v2 retained source ref binding mismatch")
     if (
         not isinstance(inputs["task_definitions"], list)
         or len(inputs["task_definitions"]) != 12
@@ -12780,6 +12904,7 @@ def load_benchmark_study_v2_executable_manifest(output_root: Path, *, revalidate
             Path(inputs["candidate"]["manifest_path"]),
             checksum_path=Path(inputs["candidate"]["checksum_path"]),
             expected_manifest_sha256=inputs["candidate"]["manifest_sha256"],
+            expected_commit_sha=inputs["approved_source_commit"],
         )
         if candidate != inputs["candidate"]:
             raise ValueError("v2 candidate binding drift")
@@ -13918,6 +14043,50 @@ def analyze_benchmark_study_v2_executable(
         )
 
 
+def _benchmark_study_v2_persist_analysis(
+    *, output_root: Path, report: Mapping[str, Any],
+) -> str:
+    report_name = (
+        "study-invalid-decision.json"
+        if report.get("schema_version")
+        == BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION
+        else "study-report.json"
+    )
+    path = output_root / report_name
+    expected = _study_canonical_json_bytes(report)
+    if path.exists():
+        observed = _measurement_read_private_file(path, maximum=4_000_000)
+        if observed != expected:
+            raise ValueError("v2 persisted analysis binding mismatch")
+    else:
+        _measurement_write_exclusive(path, expected)
+    return report_name
+
+
+def _benchmark_study_v2_persist_invalid_after_refusal(
+    *, output_root: Path, claude_bin: str,
+) -> None:
+    try:
+        report = analyze_benchmark_study_v2_executable(
+            output_root=output_root, claude_bin=claude_bin,
+        )
+        if (
+            report.get("schema_version")
+            == BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION
+        ):
+            _benchmark_study_v2_persist_analysis(
+                output_root=output_root, report=report,
+            )
+    except (OSError, SystemExit, TypeError, ValueError):
+        # The original refusal remains authoritative when damaged or incomplete
+        # evidence cannot safely support a canonical P1-X decision.
+        print(
+            "v2 canonical P1-X unavailable after refusal",
+            file=sys.stderr,
+        )
+        return
+
+
 def _benchmark_study_v2_ledger_binding(
     path: Path, *, maximum: int,
 ) -> dict[str, Any]:
@@ -14280,6 +14449,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="frozen v2 checker directory used only by --study-v2-action prepare")
     parser.add_argument("--study-v2-candidate-hash", default=None,
                         help="exact candidate SHA-256 used only by --study-v2-action prepare")
+    parser.add_argument("--study-v2-source-commit", default=None,
+                        help="approved 40-hex source commit used only by --study-v2-action prepare")
+    parser.add_argument("--study-v2-retained-ref", default=None,
+                        help="retained candidate ref resolved during live v2 prepare")
+    parser.add_argument(
+        "--study-v2-offline-rehearsal", action="store_true",
+        help="mark provider-free fake-host rehearsal; never use for live prepare",
+    )
     parser.add_argument("--study-v2-output-root", default=None, type=Path,
                         help="private executable v2 lifecycle directory")
     parser.add_argument("--study-v2-candidate-manifest", default=None, type=Path,
@@ -14301,11 +14478,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     v2_values = (
         args.study_v2_action, args.study_v2_plan, args.study_v2_tasks,
         args.study_v2_checkers_dir, args.study_v2_candidate_hash,
+        args.study_v2_source_commit, args.study_v2_retained_ref,
         args.study_v2_output_root, args.study_v2_candidate_manifest,
         args.study_v2_candidate_checksums,
     )
     if args.study_v2_use_existing_login and args.study_v2_action is None:
         parser.error("--study-v2-use-existing-login requires --study-v2-action")
+    if args.study_v2_offline_rehearsal and args.study_v2_action is None:
+        parser.error("--study-v2-offline-rehearsal requires --study-v2-action prepare")
     if any(value is not None for value in v2_values):
         if args.study_v2_action is None:
             parser.error("--study-v2-action is required when any --study-v2-* option is used")
@@ -14339,16 +14519,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.study_v2_action == "prepare":
             required = (
                 args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
-                args.study_v2_candidate_hash, args.study_v2_candidate_manifest,
+                args.study_v2_candidate_hash, args.study_v2_source_commit,
+                args.study_v2_candidate_manifest,
             )
             forbidden = ()
+            if args.study_v2_offline_rehearsal:
+                if args.study_v2_retained_ref is not None:
+                    parser.error(
+                        "v2 offline rehearsal conflicts with --study-v2-retained-ref"
+                    )
+            elif args.study_v2_retained_ref is None:
+                parser.error("v2 live prepare requires --study-v2-retained-ref")
         else:
             required = (args.study_v2_output_root,)
             forbidden = (
                 args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
-                args.study_v2_candidate_hash, args.study_v2_candidate_manifest,
+                args.study_v2_candidate_hash, args.study_v2_source_commit,
+                args.study_v2_retained_ref, args.study_v2_candidate_manifest,
                 args.study_v2_candidate_checksums,
             )
+            if args.study_v2_offline_rehearsal:
+                parser.error("--study-v2-offline-rehearsal is prepare-only")
         if not all(value is not None for value in required) or any(value is not None for value in forbidden):
             parser.error("v2 executable action has incomplete or conflicting arguments")
         try:
@@ -14363,6 +14554,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     npm_bin=args.study_v2_npm_bin,
                     claude_bin=args.claude_bin,
                     auth_home=auth_home,
+                    approved_source_commit=args.study_v2_source_commit,
+                    retained_ref=args.study_v2_retained_ref,
+                    offline_rehearsal=args.study_v2_offline_rehearsal,
                 )
                 print(f"prepared executable v2 study: {args.study_v2_output_root}")
             elif args.study_v2_action == "canary":
@@ -14385,14 +14579,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_root=args.study_v2_output_root,
                     claude_bin=args.claude_bin,
                 )
-                report_name = (
-                    "study-invalid-decision.json"
-                    if report.get("schema_version")
-                    == BENCHMARK_STUDY_V2_INVALID_DECISION_SCHEMA_VERSION
-                    else "study-report.json"
-                )
-                _study_write_private(
-                    args.study_v2_output_root / report_name, report,
+                report_name = _benchmark_study_v2_persist_analysis(
+                    output_root=args.study_v2_output_root, report=report,
                 )
                 print(
                     "analyzed executable v2 study: "
@@ -14402,6 +14590,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return 3
             return 0
         except (OSError, SystemExit, TypeError, ValueError) as exc:
+            if args.study_v2_action in {"canary", "run", "resume"}:
+                _benchmark_study_v2_persist_invalid_after_refusal(
+                    output_root=args.study_v2_output_root,
+                    claude_bin=args.claude_bin,
+                )
             print(f"v2 executable study refused: {exc}", file=sys.stderr)
             return 2
     if args.tasks is None or args.variants is None:

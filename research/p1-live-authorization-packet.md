@@ -224,7 +224,14 @@ The runner must continue to:
    reviewed `MERGED_SHA`, verify it with `git ls-remote`, then dispatch the
    trusted candidate workflow using that ref and the identical `commit_sha`.
    Verify its manifest, checksums, SRI, provenance, and paired clean install.
-   Do not delete the retained ref without separate retention authority.
+   Pass that same SHA and full ref to provider-free `prepare` as
+   `--study-v2-source-commit` and `--study-v2-retained-ref`. Prepare must use a
+   credential-free bounded `git ls-remote` against the fixed public repository,
+   reject a candidate manifest whose `commit_sha` differs, and reject a ref
+   that does not resolve exactly to the approved SHA. Do not delete the retained
+   ref without separate retention authority. Live prepare must never pass
+   `--study-v2-offline-rehearsal`; any root prepared with that explicit flag is
+   rehearsal-only and is ineligible for live work or provider evidence.
 3. Run provider-free `prepare` with the exact native Claude executable and the
    explicit `--study-v2-use-existing-login` gate. Bind the safe auth projection,
    private identity digest, and HOME identity without persisting identity text.
@@ -252,6 +259,14 @@ Immediate stop conditions:
 - output-root integrity failure or unrecoverable reservation ambiguity;
 - operator cancellation or projected spend outside the explicitly approved
   ceiling.
+
+An `error_max_budget_usd` terminal is a spend failure, not a retry-eligible task
+failure. When its immutable terminal evidence validates, the runner blocks the
+retry and every later provider launch and persists canonical claim-disabled
+P1-X before returning the refusal. The same automatic P1-X closure applies to
+verifiable failed canaries and ambiguous or terminal-invalid run/resume state;
+damaged evidence that cannot safely support P1-X remains a fail-closed refusal
+rather than a fabricated decision.
 
 ## Separate npm action scopes
 
