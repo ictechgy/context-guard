@@ -18,7 +18,7 @@ Current position:
 | --- | --- |
 | Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators are implemented but non-activating. |
 | Evidence readiness | P1-X: v7 stopped safely after 79 analytic identities; P1-F is not passed. |
-| Release readiness | Earlier attested candidates exist; the P2-P6 evaluator change still requires a new exact candidate. npm publication has not occurred. |
+| Release readiness | The P2-P6 evaluator merge and candidate passed; the newly recorded v8 live authorization requires a new exact candidate. npm publication has not occurred. |
 | Public claim | Forbidden: the provider-backed v7 decision is P1-X and claim-disabled. |
 
 The roadmap is dependency-gated:
@@ -240,6 +240,15 @@ is diagnostic-only and cannot replace workflow attestation.
   failures remain infrastructure-invalid. The frozen v7 artifact is recognized
   read-only as 453,278 primary tokens, but its v7 decision remains P1-X; only a
   fresh reviewed candidate and fresh root may exercise the new contract.
+- The user approved the exact v8 retry boundary on 2026-08-11: cumulative
+  ceiling 388, retaining the 170 prior terminal identities and authorizing at
+  most 218 new identities in one fresh root. The frozen shape remains two
+  canaries + 108 initials + up to 108 policy-valid retries, `sonnet`, `$0.75`
+  per process, `$163.50` arithmetic maximum, no optional stopping, no old-root
+  reuse, and immediate P1-X on integrity, privacy, ambiguity, or spend failure.
+  PR #298 merge `d4b6302...` and candidate run `31457488674` verified the
+  provider-free P2-P6 delivery, but the authorization amendment requires a new
+  reviewed merge and exact candidate before live v8 `prepare`.
 
 P2-P6 active promotion remains stopped until a fresh P1 exit gate passes.
 
@@ -370,13 +379,16 @@ claim authority remain false, and exact fallback is unchanged. Delivery may
 proceed only to a GitHub PR or an npm candidate under separately recorded
 authority; npm `next` and `latest` remain untouched.
 
-1. Finish package integrity, release smoke, full prepublish, review, and the
-   GitHub PR for the provider-free P2-P6 evaluator.
-2. Build and attest a new exact npm candidate only. Keep npm `next`, npm
-   `latest`, artifact deletion, and all P2-P6 provider work blocked.
-3. Keep active promotion stopped until a fresh P1-F exit exists. The current
-   P1-X evidence and local evaluator outputs unlock nothing.
-4. After P1-F, obtain a new phase-specific call/spend/privacy authorization and
+1. Review and merge the exact v8 authorization amendment, retain its exact
+   source ref, then build and attest a new npm candidate only.
+2. Run provider-free prepare and verify the exact CLI, existing-login safe
+   projection, candidate overlay, fixtures, settings, runtime, and fresh private
+   root before either live canary.
+3. Execute the fixed v8 canaries and analytic schedule under the exact 388
+   cumulative ceiling. Any stop condition closes the root and yields P1-X.
+4. Keep active promotion stopped until a fresh P1-F exit exists. The current
+   v7 P1-X and local evaluator outputs unlock nothing.
+5. After P1-F, obtain a new phase-specific call/spend/privacy authorization and
    execute P2 through P6 sequentially; a failed gate stops later phases and
    preserves the exact prior route.
 
