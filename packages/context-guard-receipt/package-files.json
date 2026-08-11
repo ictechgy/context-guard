@@ -28,7 +28,7 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "20972582a35a845e024a11907b7faae8eec86ff235ae3333ad9715b683619797"
+      "sha256": "79da1e6a43d0cf4c57f682aaa7ba55f7dd53edffe7743032b66bd55b9ea2c16b"
     },
     {
       "mode": "0644",
@@ -63,7 +63,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/cli.py",
-      "sha256": "0a60b550aa620e029fdc809749160d1fb3382864557e6016d56b4780c8f4c430"
+      "sha256": "8d475b0afba46d2e0eb1b54ec721186ce3d10d2e75f3e07112dc27fbedd3a769"
     },
     {
       "mode": "0644",
@@ -118,7 +118,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/phase_evaluation.py",
-      "sha256": "f25a4f31a96d5579823945d62b119193741f5599ec1a3301f5e6ab774dd15bf5"
+      "sha256": "2ee911bb898e28d5ba23e7bd3599a41125a0e7d13c9e4c9359a84e7ff721dc46"
     },
     {
       "mode": "0644",
@@ -248,7 +248,7 @@
     {
       "mode": "0644",
       "path": "schemas/phase-evaluation-p4.schema.json",
-      "sha256": "58bb474f5655b60155aeba0a7dc135697cb52c08364692bf10a14ec5ca68fdda"
+      "sha256": "05bf46ffad4d2d7ce7c0af623a6d57cdc3ce79baede3f1a005b5562966033580"
     },
     {
       "mode": "0644",

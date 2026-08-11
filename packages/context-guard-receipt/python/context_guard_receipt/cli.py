@@ -91,6 +91,13 @@ _PHASE_EVALUATION_LIMITS = JSONLimits(
     max_object_members=32,
     max_string_bytes=1024,
 )
+_PHASE_EVALUATION_RESULT_LIMITS = JSONLimits(
+    max_document_bytes=8 * 1024 * 1024,
+    max_depth=16,
+    max_total_values=500_000,
+    max_object_members=32,
+    max_string_bytes=1024,
+)
 _BASH_REFERENCE_BROKER_READY = (
     b"READY contextguard-bash-reference-broker/v1\n"
 )
@@ -1453,6 +1460,8 @@ def _evaluate_phase(arguments: Sequence[str]) -> int:
         return emit_error(operation, "error", "evaluation_input_rejected", 65)
 
     phase_id = record.get("phase_id") if type(record) is dict else None
+    if type(phase_id) is not str:
+        return emit_error(operation, "error", "evaluation_phase_rejected", 65)
     try:
         from .phase_evaluation import (
             evaluate_p2,
@@ -1471,8 +1480,10 @@ def _evaluate_phase(arguments: Sequence[str]) -> int:
         }.get(phase_id)
         if evaluator is None:
             return emit_error(operation, "error", "evaluation_phase_rejected", 65)
-        payload = canonical_json_bytes(evaluator(record))
+        payload = canonical_json_bytes(evaluator(record), _PHASE_EVALUATION_RESULT_LIMITS)
         write_stdout(payload)
+    except CanonicalJSONError:
+        return emit_error(operation, "error", "evaluation_result_rejected", 65)
     except CliIOError:
         return emit_error(operation, "error", "evaluation_delivery_failed", 74)
     except Exception:

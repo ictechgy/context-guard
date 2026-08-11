@@ -150,6 +150,43 @@ class G015PhaseEvaluationCliTests(unittest.TestCase):
         self.assertEqual(response["reason"], "evaluation_input_rejected")
         self.assertNotIn(b"private-value", completed.stderr)
 
+    def test_cli_rejects_non_string_phase_without_internal_error(self) -> None:
+        """Break caught: an unhashable phase identifier reaches mapping dispatch."""
+
+        completed = self.run_cli(canonical_json({"phase_id": ["p2"]}))
+
+        self.assertEqual(completed.returncode, 65)
+        self.assertEqual(completed.stdout, b"")
+        response = json.loads(completed.stderr)
+        self.assertEqual(response["operation"], "evaluate_phase")
+        self.assertEqual(response["reason"], "evaluation_phase_rejected")
+
+    def test_cli_encodes_a_valid_result_larger_than_the_generic_json_limit(self) -> None:
+        """Break caught: valid phase output incorrectly uses the 64 KiB default."""
+
+        record = p2_record()
+        record["records"] = [
+            {
+                "candidate_omission": False,
+                "construction_cost_microunits": 1,
+                "fresh_until": 101,
+                "protection": "eligible",
+                "recalled": True,
+                "record_id": f"r{index}",
+                "rehydrated_digest": None,
+                "relevant": True,
+                "source_digest": "sha256:" + "1" * 64,
+                "stratum": f"s{index}",
+            }
+            for index in range(800)
+        ]
+
+        completed = self.run_cli(canonical_json(record))
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertGreater(len(completed.stdout), 64 * 1024)
+        self.assertEqual(len(json.loads(completed.stdout)["strata"]), 800)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from typing import Final
 
 _DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _IDENTIFIER: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_BLOCKER: Final = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _MAX_RECORDS: Final = 10_000
 _P2_TOP: Final = frozenset(
     {
@@ -204,6 +205,10 @@ def _valid_identifier(value: object) -> bool:
 
 def _valid_digest(value: object) -> bool:
     return type(value) is str and _DIGEST.fullmatch(value) is not None
+
+
+def _valid_blocker(value: object) -> bool:
+    return type(value) is str and _BLOCKER.fullmatch(value) is not None
 
 
 def _nonnegative_integer(value: object) -> bool:
@@ -712,14 +717,13 @@ def evaluate_p4(record: object) -> dict[str, object]:
                 reasons.append("malformed_record")
             else:
                 confidence = confidence_value
-            confidences.append(confidence)
             if confidence < minimum_confidence:
                 reasons.append("low_confidence")
 
             supplied_reasons = trial["bypass_reasons"]
             if (
                 type(supplied_reasons) is not list
-                or any(not _valid_identifier(reason) for reason in supplied_reasons)
+                or any(not _valid_blocker(reason) for reason in supplied_reasons)
             ):
                 reasons.append("malformed_record")
             else:
@@ -766,6 +770,7 @@ def evaluate_p4(record: object) -> dict[str, object]:
                 if regret < 0:
                     reasons.append("negative_regret")
 
+        confidences.append(confidence)
         reasons = _deduplicate(reasons)
         eligible = not reasons
         if not eligible:

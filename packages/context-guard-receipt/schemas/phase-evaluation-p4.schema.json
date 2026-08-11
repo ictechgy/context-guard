@@ -101,8 +101,8 @@
         },
         "bypass_reasons": {
           "items": {
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
             "type": "string"
           },
           "maxItems": 10000,

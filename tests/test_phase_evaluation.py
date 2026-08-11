@@ -348,6 +348,27 @@ class P4RouterEvaluationTests(unittest.TestCase):
         self.assertIsNone(report["advisory_status"])
         self.assertIsNone(report["advisory_route"])
 
+    def test_malformed_trial_keeps_confidence_rows_index_aligned(self) -> None:
+        record = self.valid_record()
+        record["trials"].append({"unexpected": True})
+
+        result = evaluate_p4(record)
+
+        self.assertEqual(result["evaluated_trial_count"], 2)
+        self.assertEqual(len(result["trials"]), 2)
+        self.assertEqual(result["confidence_basis_points"], [9_000, 0])
+
+    def test_bypass_reason_must_match_the_closed_result_vocabulary(self) -> None:
+        record = self.valid_record()
+        record["trials"][0]["bypass_reasons"] = ["private.marker"]
+
+        result = evaluate_p4(record)
+
+        report = result["trials"][0]
+        self.assertEqual(report["evaluation_route"], "pass_through")
+        self.assertEqual(report["bypass_reasons"], ["malformed_record"])
+        self.assertNotIn("private.marker", str(result))
+
 
 class P5AdjunctEvaluationTests(unittest.TestCase):
     def valid_record(self) -> dict[str, object]:
