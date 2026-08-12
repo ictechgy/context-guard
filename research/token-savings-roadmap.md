@@ -1,6 +1,6 @@
 # ContextGuard token-savings roadmap
 
-_Status date: 2026-08-12 KST_
+_Status date: 2026-08-13 KST_
 
 This file is the canonical dependency, maturity, stop-gate, and claim contract
 for ContextGuard token-savings work. Draft run packets and implementation plans
@@ -16,9 +16,9 @@ Current position:
 
 | Dimension | Status |
 | --- | --- |
-| Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators exist, and the development branch connects their safe local components through an explicit non-activating MCP workflow plus an opt-in graph-applied context pack. |
+| Shipped-code readiness | PR #302 merged normally as `1211a58c92e30b9a70b1b47cf86909fcf39a91f7`. G1-G6 provider-free implementation is complete, including the closed P2-P6 evaluators, explicit non-activating MCP workflow, and opt-in graph-applied context pack. Implementation does not imply provider execution or runtime activation. |
 | Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. A separate 72-call synthetic combined-workflow smoke completed on 2026-08-12; its token interval crossed zero, so it is also descriptive-only and inconclusive. |
-| Release readiness | Exact merge `fb2e177f3efb15e817f54f5742beacdbe5daf96a` and candidate run `31464306133` (artifacts `9091361857`, `9091361298`) passed CI, paired smoke, checksums, and attestations; manifest SHA-256 is `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`. npm publication has not occurred. |
+| Release readiness | Current merged source is PR #302 merge `1211a58c92e30b9a70b1b47cf86909fcf39a91f7`; no immutable npm candidate has been built from that merge. The earlier PR #300 candidate remains historical evidence bound only to `fb2e177f3efb15e817f54f5742beacdbe5daf96a`. npm publication and `next`/`latest` dist-tag mutation have not occurred. |
 | Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
 The roadmap is dependency-gated:
@@ -455,13 +455,16 @@ cost accounting.
 
 ## Immediate ordered work
 
-Provider-free P2-P6 implementation and the explicit local MCP bridge are now
-implemented. The evaluator, its schemas, and the manual MCP tools remain
-non-activating surfaces: P1-F is complete, but every P2-P6 phase-specific
-observer/evidence/authority gate remains unmet, runtime activation and claim
-authority remain false, and exact fallback is unchanged. Delivery may proceed
-only to a GitHub PR or an npm candidate under separately recorded authority;
-npm `next` and `latest` remain untouched.
+Provider-free G1-G6 implementation and the explicit local MCP bridge are now
+merged through PR #302 at exact source
+`1211a58c92e30b9a70b1b47cf86909fcf39a91f7`. The evaluator, its schemas, and
+the manual MCP tools remain non-activating surfaces: P1-F is complete, but
+every P2-P6 phase-specific observer/evidence/authority gate remains unmet,
+runtime activation and claim authority remain false, and exact fallback is
+unchanged. Delivery may proceed only to construction of a new immutable
+candidate for this exact merged source under separately recorded authority; no
+prior candidate represents PR #302. npm publication and `next`/`latest` remain
+unauthorized and untouched.
 
 1. Preserve the exact v8 root, retained source ref, immutable candidate, and
    P1-F report; never reinterpret missing observers or false gates as zero/pass.
@@ -481,10 +484,12 @@ npm `next` and `latest` remain untouched.
    stops later provider phases, keeps their already-shipped implementations
    evaluation-only, and preserves the exact prior route.
 
-The external authorization packet records the user's bounded authority; the
-packet does not create or expand authority by itself. It must be frozen after
-the source revision and immutable candidate are selected; an older development
-candidate is never reused after source changes.
+The prepared-unapproved packet records prerequisites only; it does not create,
+record, or expand external authority. A separate approval system must bind the
+exact source revision and a newly constructed immutable candidate before any
+authorized external run. The pre-merge development source and every older
+candidate remain historical evidence and must never be reused as the PR #302
+candidate.
 
 ## Authority and claim boundary
 
