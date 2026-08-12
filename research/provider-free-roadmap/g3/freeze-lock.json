@@ -1,0 +1,90 @@
+{
+  "algorithm": "sha256",
+  "g2_source": {
+    "lock_sha256": "722b1b65a3d927b2549ba1befe9c60ffcaceea6b32fc6cbd1ebbd35f3adb91f8",
+    "tree_root_sha256": "9ed2bafba81227924fb0d09ff0bc1697426f05944d3da33d94d1f2f4b0c4ccb6",
+    "verifier_sha256": "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
+  },
+  "inventory": [
+    {
+      "bytes": 5769,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/README.md",
+      "sha256": "48262311b8a79ad29fd854fef356facdbd0a94d959d3c5ddcf69c895792ce0f9"
+    },
+    {
+      "bytes": 843,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/cost-model.json",
+      "sha256": "f9869c1d685bcd4cc8be13bc120871909ea071a1a241305456aeb0b8eacc3bda"
+    },
+    {
+      "bytes": 9852,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/manifest.json",
+      "sha256": "e647db61ac92c80b59f7fa653aa53d0618f84069a6ecbc01dfc204740af17e4b"
+    },
+    {
+      "bytes": 73745,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/rehearse.py",
+      "sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23"
+    },
+    {
+      "bytes": 3139,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/aggregate-results.schema.json",
+      "sha256": "e4466984ebefee79d4d07b9d74c5ed8fb83d6b0fd2b58043a56811b746b00cd6"
+    },
+    {
+      "bytes": 1086,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/artifact-inventory.schema.json",
+      "sha256": "f17027ccf02dbd838ae0295ba660d1a56c80c88b6c91801195006cd7225e3f9e"
+    },
+    {
+      "bytes": 2089,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/event.schema.json",
+      "sha256": "6be12b73b752b03c39bc203812a2e319eed7115116ddbf6fa7b90fe2dbe942f0"
+    },
+    {
+      "bytes": 5820,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/manifest.schema.json",
+      "sha256": "288cbfd5fd79beb7796e9205bac567f02e738c36c33da4e24aa4b77a5277e6f9"
+    },
+    {
+      "bytes": 2844,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/reproducibility.schema.json",
+      "sha256": "bc41776f566811078f4474c419e960412f8486afd3d9e0ef021d35c86751ea45"
+    },
+    {
+      "bytes": 8598,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/task-arm-results.schema.json",
+      "sha256": "be3039db7a89ef4bd7027c6e5ebee2b7638d7320bd32443a6dd37271031f94bb"
+    },
+    {
+      "bytes": 554,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/timing-event.schema.json",
+      "sha256": "41f73b4036c40892a9ee03b8e976320f140608158c5bfcd528f1cab4d3e92c77"
+    },
+    {
+      "bytes": 1124,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g3/v1/schemas/timing-summary.schema.json",
+      "sha256": "f7b7a8b5a79fa330130fb373e5d3bf35aacb1f35f5fd750c0650372a8957ebd6"
+    },
+    {
+      "bytes": 42280,
+      "mode": "0644",
+      "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
+      "sha256": "4ab9a5ea13ea6b5549dab5e3eed02242b593d76dccf3b1588d1bd88fb2b19fb7"
+    }
+  ],
+  "schema_version": "contextguard.g3-freeze-lock/v1",
+  "tree_root_sha256": "593dbd277dd044264140bb748d30ef45c7e029e9c9fbe2bea5877c99ef421c36"
+}

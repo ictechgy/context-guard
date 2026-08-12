@@ -1,0 +1,16 @@
+{
+  "attempt_overhead_bytes": 32,
+  "component_formulas": {
+    "correction": "sum(attempt_overhead_bytes + newly_added_slice_bytes for correction events)",
+    "fallback": "sum(attempt_overhead_bytes + newly_added_slice_bytes for fallback events)",
+    "fixed_overhead": "fixed_overhead_per_task_arm exactly once",
+    "initial_packing": "exact rendered pack UTF-8 bytes",
+    "retrieval": "sum(attempt_overhead_bytes + newly_added_slice_bytes for retrieval events)"
+  },
+  "currency": "unavailable",
+  "fixed_overhead_per_task_arm": 256,
+  "formula": "total = initial_packing + retrieval + fallback + correction + fixed_overhead",
+  "nonoverlap_rule": "each rendered or returned byte and each attempt overhead belongs to exactly one named component",
+  "schema_version": "contextguard.g3-cost-model/v1",
+  "units": "byte_equivalent_units"
+}

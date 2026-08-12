@@ -1,0 +1,2 @@
+The old coastal map lists cobalt mileposts but contains no checksum function.
+Its paper reference is T-88 and is intentionally irrelevant.

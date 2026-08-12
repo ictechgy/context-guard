@@ -1,0 +1,16 @@
+{
+  "Q4": {
+    "color": "silver",
+    "evidence_1": "orchard silver row verdict",
+    "evidence_2": "orchard silver row verdict",
+    "evidence_3": "orchard silver row verdict",
+    "evidence_4": "orchard silver row verdict",
+    "evidence_5": "orchard silver row verdict",
+    "evidence_6": "orchard silver row verdict",
+    "verdict": "ORCHARD-Q4"
+  },
+  "X8": {
+    "color": "copper",
+    "verdict": "RETIRED"
+  }
+}

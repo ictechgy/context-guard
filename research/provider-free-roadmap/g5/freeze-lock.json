@@ -1,0 +1,63 @@
+{
+  "algorithm": "sha256",
+  "g4_source": {
+    "claim_policy_sha256": "b8d32a0907f5b1fb0319d2f47cfc202e610b16cbb1f41fb5b6419503e46bcda2",
+    "lock_sha256": "ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98",
+    "schema_set_bytes": 6533,
+    "schema_set_sha256": "b830b0ec173965f093269fd343489c8c006676f3b4565bc566acf3cf52278356",
+    "tree_root_sha256": "c785b6e937220e1b9c78743df84f27f6cdf22801472a9903831724cc813b9bb4",
+    "verifier_sha256": "3bdcfdf729552ed6143883aa568990413d7fdd6c2ab5e0917dcb7176c9e721a2"
+  },
+  "inventory": [
+    {
+      "bytes": 5795,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/README.md",
+      "sha256": "b03a067674b8f8f41b58a156a82b7301979849f1eeef721621f51816eb02d439"
+    },
+    {
+      "bytes": 12139,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/preregistration.json",
+      "sha256": "d0dc7a54a69e1bf601f795c3f372e54e2a08c406a89a7b3699e038c0c14e7227"
+    },
+    {
+      "bytes": 65964,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/schedule.json",
+      "sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965"
+    },
+    {
+      "bytes": 8419,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/schemas/authoritative-observation.schema.json",
+      "sha256": "a1934fd8a22513d070e040a3afcd24a37f7dd073ded8fba4ea0fe33820321a91"
+    },
+    {
+      "bytes": 28984,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/schemas/preregistration.schema.json",
+      "sha256": "a4121c7f60fc7ec5d72db9ef8bbc3c2b1e8b20a327a203b609943488ea3c479f"
+    },
+    {
+      "bytes": 4307,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/schemas/schedule.schema.json",
+      "sha256": "49bf4615069eadc9872177821c31185ce4f6907d7674c5f6f00bd403d4c708f7"
+    },
+    {
+      "bytes": 45010,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g5/v1/verify.py",
+      "sha256": "951d764a4c1721ad6d680776173592ae7dd334b0817208aaa07bee637bffdcbf"
+    },
+    {
+      "bytes": 45206,
+      "mode": "0644",
+      "path": "tests/provider-free-roadmap/test_g5_p2_preregistration.py",
+      "sha256": "e3d80b078668a5b461be540ed52b95fd94b97147fe788889fedab1b2d6974e8a"
+    }
+  ],
+  "schema_version": "contextguard.g5-freeze-lock/v1",
+  "tree_root_sha256": "409521febe7eb834d275b454c451614d57e5e3c567bc3e9bcb7f4d0f812ba0dc"
+}

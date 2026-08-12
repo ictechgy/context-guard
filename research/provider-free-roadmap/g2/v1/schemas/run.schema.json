@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "arms": {
+      "const": [
+        "ordinary",
+        "adaptive_only",
+        "symbol_only",
+        "combined"
+      ],
+      "type": "array"
+    },
+    "budgets": {
+      "additionalProperties": false,
+      "properties": {
+        "pack_bytes": {
+          "const": 6000,
+          "type": "integer"
+        },
+        "top": {
+          "const": 4,
+          "type": "integer"
+        },
+        "workspace_reads": {
+          "const": 3,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pack_bytes",
+        "top",
+        "workspace_reads"
+      ],
+      "type": "object"
+    },
+    "output_mode": {
+      "const": "structural_selections_only",
+      "type": "string"
+    },
+    "repetitions": {
+      "const": 1,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "contextguard.g2-run/v1",
+      "type": "string"
+    },
+    "seeds": {
+      "const": [
+        20260812
+      ],
+      "type": "array"
+    },
+    "stopping_rule": {
+      "const": "one_structural_replay_then_stop",
+      "type": "string"
+    },
+    "task_ids": {
+      "items": {
+        "pattern": "^(train|calibration|evaluation)_(closed|graph)$",
+        "type": "string"
+      },
+      "maxItems": 6,
+      "minItems": 6,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "arms",
+    "budgets",
+    "output_mode",
+    "repetitions",
+    "schema_version",
+    "seeds",
+    "stopping_rule",
+    "task_ids"
+  ],
+  "type": "object"
+}

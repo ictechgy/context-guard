@@ -1,0 +1,93 @@
+{
+  "arm_contract": "arms.json",
+  "budgets": {
+    "pack_bytes": 6000,
+    "top": 4,
+    "workspace_reads": 3
+  },
+  "execution_boundary": {
+    "assurance_scope": "exact_pinned_cpython_audit_hook_process/v1",
+    "audit_denials": [
+      "socket_and_dns",
+      "process_spawn_and_exec",
+      "native_and_late_dynamic_load",
+      "writes_and_filesystem_mutation",
+      "out_of_snapshot_reads",
+      "environment_mutation"
+    ],
+    "child_environment": [
+      "LANG"
+    ],
+    "credentials": "prohibited",
+    "network": "prohibited",
+    "not_a_security_sandbox": true,
+    "npm": "prohibited",
+    "out_of_scope_adversaries": [
+      "host_or_root_compromise",
+      "hostile_same_uid_process",
+      "compromised_python_interpreter",
+      "native_code_compromise",
+      "os_wide_isolation"
+    ],
+    "provider": "prohibited",
+    "python_flags": [
+      "-I",
+      "-B"
+    ],
+    "runtime_activation": "prohibited",
+    "runtime_binding": "exact_lock_bound_cpython_3_14_executable_bytes"
+  },
+  "operation_receipt": {
+    "factor_flag_order": [
+      "--apply-adaptive-k",
+      "--adaptive-k-policy",
+      "precision",
+      "--apply-symbol-memory"
+    ],
+    "operation": "auto",
+    "required_flags": [
+      "--root",
+      "--query",
+      "--files",
+      "--top",
+      "--budget-bytes",
+      "--no-artifact",
+      "--json"
+    ],
+    "tool_version": 1
+  },
+  "packer_bindings": {
+    "canonical": {
+      "path": "context-guard-kit/context_pack.py",
+      "sha256": "7efd44bad5f4cbbea8a4d6fa5589e9296a6951df425c110f25dcde7db712909b"
+    },
+    "plugin": {
+      "path": "plugins/context-guard/bin/context-guard-pack",
+      "sha256": "7efd44bad5f4cbbea8a4d6fa5589e9296a6951df425c110f25dcde7db712909b"
+    },
+    "require_byte_equality": true
+  },
+  "phase_order": [
+    "validate_public",
+    "materialize_public_projections",
+    "execute_and_seal_all_outputs",
+    "load_scorer_only",
+    "score_structural_records"
+  ],
+  "repetitions": 1,
+  "schema_version": "contextguard.g2-contract/v1",
+  "schemas": {
+    "arms": "schemas/arms.schema.json",
+    "contract": "schemas/contract.schema.json",
+    "graph": "schemas/graph.schema.json",
+    "oracle": "schemas/oracle.schema.json",
+    "result": "schemas/result.schema.json",
+    "run": "schemas/run.schema.json",
+    "tasks": "schemas/tasks.schema.json"
+  },
+  "seeds": [
+    20260812
+  ],
+  "stopping_rule": "one_structural_replay_then_stop",
+  "task_contract": "tasks.json"
+}

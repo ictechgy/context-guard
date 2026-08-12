@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "rational": {"additionalProperties": false, "properties": {"denominator": {"const": 6, "type": "integer"}, "numerator": {"type": "integer"}}, "required": ["denominator", "numerator"], "type": "object"},
+    "interval": {"additionalProperties": false, "properties": {"lower": {"$ref": "#/$defs/rational"}, "upper": {"$ref": "#/$defs/rational"}}, "required": ["lower", "upper"], "type": "object"},
+    "summary": {"additionalProperties": false, "properties": {"interval_95": {"$ref": "#/$defs/interval"}, "mean": {"$ref": "#/$defs/rational"}}, "required": ["interval_95", "mean"], "type": "object"},
+    "per_arm": {"additionalProperties": false, "properties": {"adaptive_only": {"$ref": "#/$defs/summary"}, "combined": {"$ref": "#/$defs/summary"}, "ordinary": {"$ref": "#/$defs/summary"}, "symbol_only": {"$ref": "#/$defs/summary"}}, "required": ["adaptive_only", "combined", "ordinary", "symbol_only"], "type": "object"},
+    "deltas": {"additionalProperties": false, "properties": {"adaptive_only": {"$ref": "#/$defs/summary"}, "combined": {"$ref": "#/$defs/summary"}, "symbol_only": {"$ref": "#/$defs/summary"}}, "required": ["adaptive_only", "combined", "symbol_only"], "type": "object"},
+    "inference": {"additionalProperties": false, "properties": {"confidence_level": {"additionalProperties": false, "properties": {"denominator": {"const": 100, "type": "integer"}, "numerator": {"const": 95, "type": "integer"}}, "required": ["denominator", "numerator"], "type": "object"}, "descriptive_only": {"const": true, "type": "boolean"}, "enumeration_count": {"const": 46656, "type": "integer"}, "method": {"const": "exact_paired_task_block_enumeration", "type": "string"}, "nearest_rank_95": {"additionalProperties": false, "properties": {"lower": {"const": 1167, "type": "integer"}, "upper": {"const": 45490, "type": "integer"}}, "required": ["lower", "upper"], "type": "object"}, "paired_deltas_vs_ordinary": {"$ref": "#/$defs/deltas"}, "per_arm": {"$ref": "#/$defs/per_arm"}, "sampling_unit": {"const": "paired_task_block", "type": "string"}}, "required": ["confidence_level", "descriptive_only", "enumeration_count", "method", "nearest_rank_95", "paired_deltas_vs_ordinary", "per_arm", "sampling_unit"], "type": "object"}
+  },
+  "additionalProperties": false,
+  "properties": {"availability": {"additionalProperties": false, "properties": {"provider_metrics": {"const": "unavailable", "type": "string"}, "savings_claims": {"const": "unavailable", "type": "string"}, "token_metrics": {"const": "unavailable", "type": "string"}, "usd_metrics": {"const": "unavailable", "type": "string"}}, "required": ["provider_metrics", "savings_claims", "token_metrics", "usd_metrics"], "type": "object"}, "cost_inference": {"$ref": "#/$defs/inference"}, "record_count": {"const": 24, "type": "integer"}, "schema_version": {"const": "contextguard.g3-aggregate-results/v2", "type": "string"}, "units": {"const": "byte_equivalent_units", "type": "string"}},
+  "required": ["availability", "cost_inference", "record_count", "schema_version", "units"],
+  "type": "object"
+}

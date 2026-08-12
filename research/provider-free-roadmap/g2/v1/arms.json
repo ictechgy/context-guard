@@ -1,0 +1,43 @@
+{
+  "application_order": [
+    "ordinary",
+    "adaptive_k",
+    "symbol_memory"
+  ],
+  "arms": [
+    {
+      "factors": [],
+      "name": "ordinary"
+    },
+    {
+      "factors": [
+        "adaptive_k"
+      ],
+      "name": "adaptive_only"
+    },
+    {
+      "factors": [
+        "symbol_memory"
+      ],
+      "name": "symbol_only"
+    },
+    {
+      "factors": [
+        "adaptive_k",
+        "symbol_memory"
+      ],
+      "name": "combined"
+    }
+  ],
+  "common": {
+    "budget_bytes": 6000,
+    "files": "task.pack.files",
+    "json": true,
+    "no_artifact": true,
+    "operation": "auto",
+    "query": "task.pack.query",
+    "root": ".",
+    "top": 4
+  },
+  "schema_version": "contextguard.g2-arms/v1"
+}

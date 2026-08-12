@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {"hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"}},
+  "additionalProperties": false,
+  "properties": {
+    "boundary": {"additionalProperties": false, "properties": {"authorized_g2_child_processes": {"const": 24, "type": "integer"}, "claim": {"const": "audited_cpython_process_boundary_not_os_sandbox", "type": "string"}, "credential_decoy_denials": {"const": 1, "type": "integer"}, "dns_denials": {"const": 1, "type": "integer"}, "environment_denials": {"const": 1, "type": "integer"}, "exec_denials": {"const": 1, "type": "integer"}, "native_load_denials": {"const": 1, "type": "integer"}, "network_denials": {"const": 1, "type": "integer"}, "out_of_snapshot_read_denials": {"const": 2, "type": "integer"}, "post_scorer_experimental_executions": {"const": 0, "type": "integer"}, "process_denials": {"const": 1, "type": "integer"}, "scorer_loaded_after_seal_count": {"const": 24, "type": "integer"}}, "required": ["authorized_g2_child_processes", "claim", "credential_decoy_denials", "dns_denials", "environment_denials", "exec_denials", "native_load_denials", "network_denials", "out_of_snapshot_read_denials", "post_scorer_experimental_executions", "process_denials", "scorer_loaded_after_seal_count"], "type": "object"},
+    "deterministic_evidence_sha256": {"$ref": "#/$defs/hash"},
+    "environment": {"additionalProperties": false, "properties": {"implementation": {"const": "cpython", "type": "string"}, "python": {"items": {"type": "integer"}, "maxItems": 3, "minItems": 3, "type": "array"}}, "required": ["implementation", "python"], "type": "object"},
+    "g2_source": {"additionalProperties": false, "properties": {"lock_sha256": {"$ref": "#/$defs/hash"}, "tree_root_sha256": {"$ref": "#/$defs/hash"}, "verifier_sha256": {"$ref": "#/$defs/hash"}}, "required": ["lock_sha256", "tree_root_sha256", "verifier_sha256"], "type": "object"},
+    "oracle_validation_counts": {"additionalProperties": false, "properties": {"adaptive_label_scores": {"const": 48, "type": "integer"}, "required_symbols": {"const": 3, "type": "integer"}, "structure_profiles": {"const": 6, "type": "integer"}}, "required": ["adaptive_label_scores", "required_symbols", "structure_profiles"], "type": "object"},
+    "schema_version": {"const": "contextguard.g3-reproducibility/v2", "type": "string"},
+    "timing_normalization": {"additionalProperties": false, "properties": {"excluded_from_deterministic_digest": {"const": ["timing-summary.json:pack_invocation.*_ns", "timing.jsonl:*.pack_invocation_ns"], "type": "array"}}, "required": ["excluded_from_deterministic_digest"], "type": "object"}
+  },
+  "required": ["boundary", "deterministic_evidence_sha256", "environment", "g2_source", "oracle_validation_counts", "schema_version", "timing_normalization"],
+  "type": "object"
+}

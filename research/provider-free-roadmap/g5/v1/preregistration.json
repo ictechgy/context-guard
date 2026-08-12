@@ -1,0 +1,251 @@
+{
+  "schema_version": "contextguard.g5-p2-preregistration/v1",
+  "status": "preregistered_contract_only",
+  "observation_status": "no_observations",
+  "execution_authorized": false,
+  "sample_size_rationale": "capacity_fixed_not_effect_estimate",
+  "sample_size_derived_from_g3_g4_outcomes": false,
+  "frozen_at": "2026-08-12",
+  "upstream_contract": {
+    "g4_freeze_lock_path": "research/provider-free-roadmap/g4/freeze-lock.json",
+    "g4_freeze_lock_sha256": "ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98",
+    "g4_tree_sha256": "c785b6e937220e1b9c78743df84f27f6cdf22801472a9903831724cc813b9bb4",
+    "g4_verifier_sha256": "3bdcfdf729552ed6143883aa568990413d7fdd6c2ab5e0917dcb7176c9e721a2",
+    "g4_claim_policy_sha256": "b8d32a0907f5b1fb0319d2f47cfc202e610b16cbb1f41fb5b6419503e46bcda2",
+    "g4_schema_set_bytes": 6533,
+    "g4_schema_set_sha256": "b830b0ec173965f093269fd343489c8c006676f3b4565bc566acf3cf52278356"
+  },
+  "design": {
+    "experimental_unit": "scheduled_task_arm_repetition_request",
+    "cluster_unit": "task_lineage",
+    "paired_unit": "complete_task_lineage_repetition_four_arm_block",
+    "task_lineages": [
+      {
+        "task_id": "train_closed",
+        "lineage_id": "train_closed",
+        "partition": "train",
+        "stratum": "closed_pack"
+      },
+      {
+        "task_id": "train_graph",
+        "lineage_id": "train_graph",
+        "partition": "train",
+        "stratum": "realistic_fallback"
+      },
+      {
+        "task_id": "calibration_closed",
+        "lineage_id": "calibration_closed",
+        "partition": "calibration",
+        "stratum": "closed_pack"
+      },
+      {
+        "task_id": "calibration_graph",
+        "lineage_id": "calibration_graph",
+        "partition": "calibration",
+        "stratum": "realistic_fallback"
+      },
+      {
+        "task_id": "evaluation_closed",
+        "lineage_id": "evaluation_closed",
+        "partition": "evaluation",
+        "stratum": "closed_pack"
+      },
+      {
+        "task_id": "evaluation_graph",
+        "lineage_id": "evaluation_graph",
+        "partition": "evaluation",
+        "stratum": "realistic_fallback"
+      }
+    ],
+    "arms": [
+      {
+        "arm": "ordinary",
+        "adaptive": false,
+        "symbol": false
+      },
+      {
+        "arm": "adaptive_only",
+        "adaptive": true,
+        "symbol": false
+      },
+      {
+        "arm": "symbol_only",
+        "adaptive": false,
+        "symbol": true
+      },
+      {
+        "arm": "combined",
+        "adaptive": true,
+        "symbol": true
+      }
+    ],
+    "strata": [
+      "closed_pack",
+      "realistic_fallback"
+    ],
+    "fixed_counts": {
+      "primary_blocks_per_stratum": 30,
+      "primary_blocks_total": 60,
+      "primary_units_per_stratum_arm": 30,
+      "primary_units_total": 240,
+      "replacement_blocks_maximum": 0,
+      "replacement_units_maximum": 0,
+      "scheduled_blocks_total": 60,
+      "scheduled_units_maximum": 240,
+      "units_per_complete_block": 4,
+      "warmup_units": 0
+    },
+    "randomization": {
+      "assignment_timing": "fully_frozen_before_any_observation",
+      "algorithm_id": "fnv1a64_utf8_ascending_v1",
+      "algorithm_specification": "For each ASCII arm name, compute unsigned FNV-1a-64 over UTF-8(seed + NUL + block_id + NUL + arm), sort by ascending unsigned integer and break a hash tie by ascending ASCII arm name.",
+      "offset_basis_decimal": "14695981039346656037",
+      "prime_decimal": "1099511628211",
+      "seed": "contextguard-g5-assignment-v1-20260812",
+      "schedule_path": "research/provider-free-roadmap/g5/v1/schedule.json",
+      "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965"
+    },
+    "stopping_rule": {
+      "kind": "fixed_complete_blocks_no_optional_stopping",
+      "target_complete_blocks_per_stratum": 30,
+      "maximum_replacement_blocks": 0,
+      "maximum_scheduled_units": 240,
+      "interim_analysis": false,
+      "early_significance_stop": false,
+      "sample_extension": false,
+      "stop_when": "after_all_60_prescheduled_blocks_have_one_terminal_state_for_each_of_four_arms"
+    },
+    "pre_outcome_exclusions": [
+      "unscheduled_unit",
+      "duplicate_request_id",
+      "duplicate_receipt_id",
+      "assignment_identity_mismatch",
+      "payload_identity_mismatch",
+      "task_arm_stratum_partition_or_repetition_mismatch",
+      "observer_version_mismatch",
+      "model_identity_mismatch",
+      "provider_receipt_not_authoritative",
+      "transport_error",
+      "timeout",
+      "cancellation",
+      "missing_required_field",
+      "malformed_required_field",
+      "nonmonotonic_timestamp",
+      "incomplete_four_arm_block"
+    ],
+    "replacement_rule": "none; incomplete blocks remain retained_and_excluded_with_missingness_counts",
+    "warmup_rule": "zero_warmup_units; every scheduled unit is accounted"
+  },
+  "observer_contract": {
+    "schema_path": "research/provider-free-roadmap/g5/v1/schemas/authoritative-observation.schema.json",
+    "observer_version": "contextguard.g5-minimized-observer/v1",
+    "executable_runner_present": false,
+    "provider_selection": "unselected_future_authorization_blocking",
+    "model_selection": "unselected_future_authorization_blocking",
+    "network_permission": "not_authorized",
+    "credential_selection": "unselected_future_authorization_blocking",
+    "mutable_price_lookup": false,
+    "price_estimation": false,
+    "raw_content_collection": false,
+    "authoritative_billing_rule": "amount_minor_and_currency_only_from_authoritative_provider_billing_receipt_else_null_and_unavailable",
+    "unavailable_is_null_never_zero": true,
+    "completed_state_rule": "completed_iff_normal_completion_iff_eligible_iff_exclusion_reason_none",
+    "completed_metric_rule": "observed_iff_nonnegative_integer_and_reason_not_applicable; unavailable_iff_null_and_reason_not_in_authoritative_receipt_or_receipt_unavailable_or_not_observed",
+    "correctness_state_rule": "observed_iff_correct_or_incorrect_and_reason_not_applicable; unavailable_iff_outcome_unavailable_and_reason_not_observed",
+    "billing_state_rule": "authoritative_provider_receipt_iff_status_observed_and_non_null_reference; unavailable_iff_status_unavailable_and_reference_null",
+    "excluded_state_rule": "every_nonnormal_event_is_excluded_with_identical_reason_and_all_metrics_costs_correctness_and_receipt_unavailable_null_with_reason_excluded_unit"
+  },
+  "accounting": {
+    "randomized_identity": "randomized_units_equals_analyzed_units_plus_excluded_units",
+    "analyzed_identity": "analyzed_units_equals_observed_metric_units_plus_unavailable_metric_units",
+    "block_policy": "a_prescheduled_block_is_analyzed_only_when_all_four_assigned_arms_are_present_and_not_excluded; incomplete_blocks_are_retained_as_missingness_records",
+    "batch_output_identity": "report_all_16_terminal_exclusion_reason_counts_separately_from_terminal_excluded_unit_and_block_policy_analytic_exclusion_counts_and_per_block_reason_sets",
+    "metric_availability_identity": "for_each_metric_stratum_and_four_arms_report_scheduled_denominator_30_equals_observed_plus_unavailable; for_combined_minus_ordinary_contrast_report_pair_denominator_30_equals_observed_pairs_plus_unavailable_pairs",
+    "correction_fields": [
+      "correction_count",
+      "correction_tokens"
+    ],
+    "retrieval_fields": [
+      "retrieval_count",
+      "retrieval_bytes",
+      "retrieval_tokens"
+    ],
+    "latency_fields": [
+      "pack_start_monotonic_ns",
+      "pack_end_monotonic_ns"
+    ],
+    "authoritative_cost_components": [
+      "provider_input",
+      "provider_output",
+      "provider_correction"
+    ],
+    "unavailable_metric_policy": "separate_null_value_with_closed_unavailability_reason; never_zero_fill",
+    "imputation": "none"
+  },
+  "directional_descriptive_estimands": [
+    "combined_minus_ordinary_input_usage",
+    "combined_minus_ordinary_total_usage",
+    "combined_minus_ordinary_retrieval_count",
+    "combined_minus_ordinary_pack_latency_ns",
+    "combined_minus_ordinary_authoritative_cost_minor_when_same_currency_available",
+    "combined_minus_ordinary_correctness"
+  ],
+  "analysis": {
+    "primary_contrast": "combined_minus_ordinary",
+    "stratification": "analyze_closed_pack_and_realistic_fallback_separately_no_pooled_primary_row",
+    "cluster_unit": "task_lineage",
+    "pairing": "within_complete_task_lineage_repetition_block",
+    "estimand_direction": "arm_minus_ordinary; negative_is_lower_for_usage_retrieval_latency_and_cost; positive_is_higher_for_correctness",
+    "mode": "descriptive_measurement_readiness_only",
+    "independent_clusters_per_stratum": 3,
+    "repetition_role": "technical_repeats_never_independent_clusters",
+    "metric_definitions": {
+      "authoritative_total_cost_minor": "sum_provider_input_provider_output_provider_correction_amount_minor_when_all_observed_from_one_receipt_and_one_currency_else_unavailable",
+      "correctness": "correct_equals_1_incorrect_equals_0_unavailable_is_null",
+      "input_usage": "input_usage.value_when_observed_else_null",
+      "pack_latency_ns": "pack_end_monotonic_ns_minus_pack_start_monotonic_ns_for_eligible_completed_unit",
+      "retrieval_count": "retrieval_count.value_when_observed_else_null",
+      "total_usage": "input_usage.value_plus_output_usage.value_plus_correction_tokens.value_when_all_observed_else_null"
+    },
+    "paired_availability_rule": "within_repetition_pair_available_iff_both_combined_and_ordinary_metric_values_are_observed_else_pair_unavailable",
+    "source_binding_rule": "single_batch_requires_exact_frozen_60_block_240_unit_schedule_and_one_schema_validated_terminal_observation_per_scheduled_unit_with_global_request_and_receipt_identity_uniqueness; pair_rows_are_derived_internally_only_after_four_arm_block_eligibility",
+    "within_repetition_contrast": "exact_integer_combined_value_minus_ordinary_value_before_any_lineage_reduction",
+    "lineage_reduction": {
+      "missing_handling": "mean_of_available_within_repetition_paired_differences_with_observed_and_unavailable_pair_counts_reported_no_imputation",
+      "rounding": "none_exact_rational_numerator_sum_denominator_available_count",
+      "statistic": "arithmetic_mean_of_combined_minus_ordinary_within_repetition_differences_per_task_lineage_and_stratum",
+      "ties": "retain_equal_values_as_zero_paired_difference"
+    },
+    "descriptive_cluster_enumeration": {
+      "enumeration": "all_2_power_3_task_lineage_sign_assignments_per_stratum",
+      "interpretation": "finite_frozen_corpus_descriptive_sensitivity_only_not_confidence_interval_or_test",
+      "rank_rule": "sort_exact_rational_signed_means_ascending_retain_ties",
+      "reported_endpoints": "rank_1_minimum_rank_4_lower_median_rank_5_upper_median_rank_8_maximum",
+      "signed_mean_formula": "for_each_of_8_sign_vectors_compute_exact_rational_sum_of_sign_times_three_lineage_means_divided_by_3",
+      "rounding": "none_exact_rational"
+    },
+    "cost_pairing_currency_rule": "summarize_paired_authoritative_cost_only_when_both_units_and_all_components_share_one_identical_currency_else_report_unavailable",
+    "availability_denominator": "report_observed_and_unavailable_counts_for_each_metric_stratum_arm_and_contrast",
+    "imputation": "none",
+    "exclusion_reporting": "report_all_closed_reason_counts_before_metric_summaries",
+    "interpretation_policy": "no_inferential_hypothesis_rejection_or_generalization; finite_frozen_corpus_descriptive_measurement_readiness_only",
+    "claim_policy": "no_savings_provider_performance_production_readiness_external_validity_or_generalization_claim_regardless_of_sign"
+  },
+  "claims": {
+    "savings": false,
+    "provider_performance": false,
+    "production_readiness": false,
+    "external_validity": false,
+    "generalization": false
+  },
+  "future_execution_boundary": {
+    "status": "future_authorization_required",
+    "provider": "unselected",
+    "model": "unselected",
+    "credential": "unselected",
+    "network": "not_authorized",
+    "write_root": "unselected",
+    "maximum_scheduled_units": 240,
+    "runner": "absent"
+  }
+}

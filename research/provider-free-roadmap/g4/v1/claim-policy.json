@@ -1,0 +1,21 @@
+{
+  "allowed_claims": [
+    "provider_free_rehearsal",
+    "correctness_of_local_contract",
+    "reproducibility",
+    "measurement_readiness"
+  ],
+  "forbidden_claims": [
+    "token_savings",
+    "provider_performance",
+    "production_readiness",
+    "external_validity",
+    "generalization"
+  ],
+  "schema_version": "contextguard.g4-claim-policy/v2",
+  "source_contract": {
+    "g3_freeze_lock_sha256": "20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a",
+    "g3_manifest_sha256": "e647db61ac92c80b59f7fa653aa53d0618f84069a6ecbc01dfc204740af17e4b",
+    "g3_tree_sha256": "593dbd277dd044264140bb748d30ef45c7e029e9c9fbe2bea5877c99ef421c36"
+  }
+}

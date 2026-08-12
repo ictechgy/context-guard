@@ -1,0 +1,62 @@
+{
+  "cases": [
+    {
+      "derived_evidence": {
+        "graph_ranks": [
+          {
+            "path": "app/routing/checksum.py",
+            "rank": 5
+          }
+        ],
+        "import_edges": [
+          {
+            "from": "app/entry.py",
+            "source_line": 1,
+            "source_text": "from .routing.checksum import compute_route",
+            "to": "app/routing/checksum.py"
+          }
+        ]
+      },
+      "task_id": "train_graph"
+    },
+    {
+      "derived_evidence": {
+        "graph_ranks": [
+          {
+            "path": "src/calibration/amber-calibrator.ts",
+            "rank": 5
+          }
+        ],
+        "import_edges": [
+          {
+            "from": "src/controllers/entry.ts",
+            "source_line": 1,
+            "source_text": "import { AmberCalibrator } from \"../calibration/amber-calibrator\";",
+            "to": "src/calibration/amber-calibrator.ts"
+          }
+        ]
+      },
+      "task_id": "calibration_graph"
+    },
+    {
+      "derived_evidence": {
+        "graph_ranks": [
+          {
+            "path": "validators/index.js",
+            "rank": 5
+          }
+        ],
+        "import_edges": [
+          {
+            "from": "validators/index.js",
+            "source_line": 1,
+            "source_text": "export { releaseToken } from \"../app/runner.js\";",
+            "to": "app/runner.js"
+          }
+        ]
+      },
+      "task_id": "evaluation_graph"
+    }
+  ],
+  "schema_version": "contextguard.g2-graph/v1"
+}

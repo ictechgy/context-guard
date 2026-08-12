@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "contextguard.g2-tasks/v1",
+      "type": "string"
+    },
+    "tasks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "fixture_root": {
+            "pattern": "^fixtures/(train|calibration|evaluation)/(closed_pack|realistic_fallback)$",
+            "type": "string"
+          },
+          "fixture_tree_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "lineage_id": {
+            "minLength": 8,
+            "type": "string"
+          },
+          "pack": {
+            "additionalProperties": false,
+            "properties": {
+              "budget_bytes": {
+                "const": 6000,
+                "type": "integer"
+              },
+              "files": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 2,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "json": {
+                "const": true,
+                "type": "boolean"
+              },
+              "no_artifact": {
+                "const": true,
+                "type": "boolean"
+              },
+              "operation": {
+                "const": "auto",
+                "type": "string"
+              },
+              "query": {
+                "minLength": 12,
+                "type": "string"
+              },
+              "root": {
+                "const": ".",
+                "type": "string"
+              },
+              "top": {
+                "const": 4,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "budget_bytes",
+              "files",
+              "json",
+              "no_artifact",
+              "operation",
+              "query",
+              "root",
+              "top"
+            ],
+            "type": "object"
+          },
+          "partition": {
+            "enum": [
+              "train",
+              "calibration",
+              "evaluation"
+            ],
+            "type": "string"
+          },
+          "prompt": {
+            "minLength": 24,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": false,
+            "properties": {
+              "generator_id": {
+                "minLength": 8,
+                "type": "string"
+              },
+              "origin": {
+                "const": "locally-authored-independent-fixture",
+                "type": "string"
+              }
+            },
+            "required": [
+              "generator_id",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "stratum": {
+            "enum": [
+              "closed_pack",
+              "realistic_fallback"
+            ],
+            "type": "string"
+          },
+          "structure_id": {
+            "minLength": 8,
+            "type": "string"
+          },
+          "task_id": {
+            "pattern": "^(train|calibration|evaluation)_(closed|graph)$",
+            "type": "string"
+          },
+          "workspace_policy": {
+            "additionalProperties": false,
+            "properties": {
+              "allowed_sources": {
+                "items": {
+                  "enum": [
+                    "embedded_pack",
+                    "local_exact_slice",
+                    "local_direct_import_neighbor"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "bounded_reads": {
+                "maximum": 3,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "fallback_triggers": {
+                "items": {
+                  "const": "ordinary_required_source_omitted",
+                  "type": "string"
+                },
+                "maxItems": 1,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "read_only": {
+                "type": "boolean"
+              },
+              "workspace_access": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "allowed_sources",
+              "bounded_reads",
+              "fallback_triggers",
+              "read_only",
+              "workspace_access"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "fixture_root",
+          "fixture_tree_sha256",
+          "lineage_id",
+          "pack",
+          "partition",
+          "prompt",
+          "provenance",
+          "stratum",
+          "structure_id",
+          "task_id",
+          "workspace_policy"
+        ],
+        "type": "object"
+      },
+      "maxItems": 6,
+      "minItems": 6,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tasks"
+  ],
+  "type": "object"
+}

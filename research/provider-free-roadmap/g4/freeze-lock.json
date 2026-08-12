@@ -1,0 +1,57 @@
+{
+  "algorithm": "sha256",
+  "g3_source": {
+    "lock_sha256": "20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a",
+    "manifest_sha256": "e647db61ac92c80b59f7fa653aa53d0618f84069a6ecbc01dfc204740af17e4b",
+    "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
+    "schema_set_bytes": 25254,
+    "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
+    "tree_root_sha256": "593dbd277dd044264140bb748d30ef45c7e029e9c9fbe2bea5877c99ef421c36"
+  },
+  "inventory": [
+    {
+      "bytes": 2681,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g4/v1/README.md",
+      "sha256": "0e39cc33a5f45a3dfe1d6f6af5308ada3a5c361fc5233b3fe818c54cfe082777"
+    },
+    {
+      "bytes": 664,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g4/v1/claim-policy.json",
+      "sha256": "b8d32a0907f5b1fb0319d2f47cfc202e610b16cbb1f41fb5b6419503e46bcda2"
+    },
+    {
+      "bytes": 1155,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g4/v1/schemas/claim-policy.schema.json",
+      "sha256": "99552ae323d30537f7ec27dd7a3042c23d666773d98d1b4ffdffe3ed28e1dabe"
+    },
+    {
+      "bytes": 3686,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g4/v1/schemas/claim-report.schema.json",
+      "sha256": "43d61f2656e9b99ca8a24ac3f115ba4b21dbdec5be4e08d01af6ff7d4da3a038"
+    },
+    {
+      "bytes": 1692,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g4/v1/schemas/source-records.schema.json",
+      "sha256": "d6be29c202989f22cb1b49f0deccc03b3ee926b9067df4d5b19a3785c3ed5a7e"
+    },
+    {
+      "bytes": 22950,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g4/v1/verify.py",
+      "sha256": "3bdcfdf729552ed6143883aa568990413d7fdd6c2ab5e0917dcb7176c9e721a2"
+    },
+    {
+      "bytes": 15713,
+      "mode": "0644",
+      "path": "tests/provider-free-roadmap/test_g4_claim_gates.py",
+      "sha256": "9a3202f5946421ec149876aaee6176c5a1227775be54ac3890e3395da791f90f"
+    }
+  ],
+  "schema_version": "contextguard.g4-freeze-lock/v1",
+  "tree_root_sha256": "c785b6e937220e1b9c78743df84f27f6cdf22801472a9903831724cc813b9bb4"
+}

@@ -1,0 +1,3 @@
+An amber laboratory thermometer was removed from service after a glass crack.
+This note is unrelated to the software calibration window.
+The retired window controller entrypoint label is inventory-only.

@@ -1,0 +1,291 @@
+{
+  "$defs": {
+    "binding": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 8,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "arm_contract": {
+      "const": "arms.json",
+      "type": "string"
+    },
+    "budgets": {
+      "additionalProperties": false,
+      "properties": {
+        "pack_bytes": {
+          "const": 6000,
+          "type": "integer"
+        },
+        "top": {
+          "const": 4,
+          "type": "integer"
+        },
+        "workspace_reads": {
+          "const": 3,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pack_bytes",
+        "top",
+        "workspace_reads"
+      ],
+      "type": "object"
+    },
+    "execution_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "assurance_scope": {
+          "const": "exact_pinned_cpython_audit_hook_process/v1",
+          "type": "string"
+        },
+        "audit_denials": {
+          "const": [
+            "socket_and_dns",
+            "process_spawn_and_exec",
+            "native_and_late_dynamic_load",
+            "writes_and_filesystem_mutation",
+            "out_of_snapshot_reads",
+            "environment_mutation"
+          ],
+          "type": "array"
+        },
+        "child_environment": {
+          "const": [
+            "LANG"
+          ],
+          "type": "array"
+        },
+        "credentials": {
+          "const": "prohibited",
+          "type": "string"
+        },
+        "network": {
+          "const": "prohibited",
+          "type": "string"
+        },
+        "not_a_security_sandbox": {
+          "const": true,
+          "type": "boolean"
+        },
+        "npm": {
+          "const": "prohibited",
+          "type": "string"
+        },
+        "out_of_scope_adversaries": {
+          "const": [
+            "host_or_root_compromise",
+            "hostile_same_uid_process",
+            "compromised_python_interpreter",
+            "native_code_compromise",
+            "os_wide_isolation"
+          ],
+          "type": "array"
+        },
+        "provider": {
+          "const": "prohibited",
+          "type": "string"
+        },
+        "python_flags": {
+          "const": [
+            "-I",
+            "-B"
+          ],
+          "type": "array"
+        },
+        "runtime_activation": {
+          "const": "prohibited",
+          "type": "string"
+        },
+        "runtime_binding": {
+          "const": "exact_lock_bound_cpython_3_14_executable_bytes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assurance_scope",
+        "audit_denials",
+        "child_environment",
+        "credentials",
+        "network",
+        "not_a_security_sandbox",
+        "npm",
+        "out_of_scope_adversaries",
+        "provider",
+        "python_flags",
+        "runtime_binding",
+        "runtime_activation"
+      ],
+      "type": "object"
+    },
+    "operation_receipt": {
+      "additionalProperties": false,
+      "properties": {
+        "factor_flag_order": {
+          "const": [
+            "--apply-adaptive-k",
+            "--adaptive-k-policy",
+            "precision",
+            "--apply-symbol-memory"
+          ],
+          "type": "array"
+        },
+        "operation": {
+          "const": "auto",
+          "type": "string"
+        },
+        "required_flags": {
+          "const": [
+            "--root",
+            "--query",
+            "--files",
+            "--top",
+            "--budget-bytes",
+            "--no-artifact",
+            "--json"
+          ],
+          "type": "array"
+        },
+        "tool_version": {
+          "const": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "factor_flag_order",
+        "operation",
+        "required_flags",
+        "tool_version"
+      ],
+      "type": "object"
+    },
+    "packer_bindings": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical": {
+          "$ref": "#/$defs/binding"
+        },
+        "plugin": {
+          "$ref": "#/$defs/binding"
+        },
+        "require_byte_equality": {
+          "const": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "canonical",
+        "plugin",
+        "require_byte_equality"
+      ],
+      "type": "object"
+    },
+    "phase_order": {
+      "const": [
+        "validate_public",
+        "materialize_public_projections",
+        "execute_and_seal_all_outputs",
+        "load_scorer_only",
+        "score_structural_records"
+      ],
+      "type": "array"
+    },
+    "repetitions": {
+      "const": 1,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "contextguard.g2-contract/v1",
+      "type": "string"
+    },
+    "schemas": {
+      "additionalProperties": false,
+      "properties": {
+        "arms": {
+          "const": "schemas/arms.schema.json",
+          "type": "string"
+        },
+        "contract": {
+          "const": "schemas/contract.schema.json",
+          "type": "string"
+        },
+        "graph": {
+          "const": "schemas/graph.schema.json",
+          "type": "string"
+        },
+        "oracle": {
+          "const": "schemas/oracle.schema.json",
+          "type": "string"
+        },
+        "result": {
+          "const": "schemas/result.schema.json",
+          "type": "string"
+        },
+        "run": {
+          "const": "schemas/run.schema.json",
+          "type": "string"
+        },
+        "tasks": {
+          "const": "schemas/tasks.schema.json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "arms",
+        "contract",
+        "graph",
+        "oracle",
+        "result",
+        "run",
+        "tasks"
+      ],
+      "type": "object"
+    },
+    "seeds": {
+      "const": [
+        20260812
+      ],
+      "type": "array"
+    },
+    "stopping_rule": {
+      "const": "one_structural_replay_then_stop",
+      "type": "string"
+    },
+    "task_contract": {
+      "const": "tasks.json",
+      "type": "string"
+    }
+  },
+  "required": [
+    "arm_contract",
+    "budgets",
+    "execution_boundary",
+    "operation_receipt",
+    "packer_bindings",
+    "phase_order",
+    "repetitions",
+    "schema_version",
+    "schemas",
+    "seeds",
+    "stopping_rule",
+    "task_contract"
+  ],
+  "type": "object"
+}

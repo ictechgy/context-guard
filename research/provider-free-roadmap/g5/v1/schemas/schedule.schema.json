@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "arm": {
+      "enum": [
+        "ordinary",
+        "adaptive_only",
+        "symbol_only",
+        "combined"
+      ],
+      "type": "string"
+    },
+    "unit": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "$ref": "#/$defs/arm"
+        },
+        "assigned_order": {
+          "minimum": 1,
+          "maximum": 4,
+          "type": "integer"
+        },
+        "assignment_id": {
+          "pattern": "^assignment-primary-[0-9]{3}-(ordinary|adaptive_only|symbol_only|combined)$",
+          "type": "string"
+        },
+        "scheduled_unit_id": {
+          "pattern": "^unit-primary-[0-9]{3}-0[1-4]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "arm",
+        "assigned_order",
+        "assignment_id",
+        "scheduled_unit_id"
+      ],
+      "type": "object"
+    },
+    "block": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^primary-[0-9]{3}$",
+          "type": "string"
+        },
+        "kind": {
+          "const": "primary",
+          "type": "string"
+        },
+        "lineage_id": {
+          "enum": [
+            "train_closed",
+            "train_graph",
+            "calibration_closed",
+            "calibration_graph",
+            "evaluation_closed",
+            "evaluation_graph"
+          ],
+          "type": "string"
+        },
+        "partition": {
+          "enum": [
+            "train",
+            "calibration",
+            "evaluation"
+          ],
+          "type": "string"
+        },
+        "repetition": {
+          "minimum": 1,
+          "maximum": 10,
+          "type": "integer"
+        },
+        "replacement_index": {
+          "minimum": 0,
+          "maximum": 0,
+          "type": "integer"
+        },
+        "stratum": {
+          "enum": [
+            "closed_pack",
+            "realistic_fallback"
+          ],
+          "type": "string"
+        },
+        "task_id": {
+          "enum": [
+            "train_closed",
+            "train_graph",
+            "calibration_closed",
+            "calibration_graph",
+            "evaluation_closed",
+            "evaluation_graph"
+          ],
+          "type": "string"
+        },
+        "units": {
+          "items": {
+            "$ref": "#/$defs/unit"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "block_id",
+        "kind",
+        "lineage_id",
+        "partition",
+        "repetition",
+        "replacement_index",
+        "stratum",
+        "task_id",
+        "units"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "algorithm": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "const": "For each ASCII arm name, compute unsigned FNV-1a-64 over UTF-8(seed + NUL + block_id + NUL + arm), sort by ascending unsigned integer and break a hash tie by ascending ASCII arm name.",
+          "type": "string"
+        },
+        "id": {
+          "const": "fnv1a64_utf8_ascending_v1",
+          "type": "string"
+        },
+        "offset_basis_decimal": {
+          "const": "14695981039346656037",
+          "type": "string"
+        },
+        "prime_decimal": {
+          "const": "1099511628211",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "id",
+        "offset_basis_decimal",
+        "prime_decimal"
+      ],
+      "type": "object"
+    },
+    "block_count": {
+      "const": 60,
+      "type": "integer"
+    },
+    "blocks": {
+      "items": {
+        "$ref": "#/$defs/block"
+      },
+      "maxItems": 60,
+      "minItems": 60,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": "contextguard.g5-fixed-schedule/v1",
+      "type": "string"
+    },
+    "seed": {
+      "const": "contextguard-g5-assignment-v1-20260812",
+      "type": "string"
+    },
+    "unit_count": {
+      "const": 240,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "algorithm",
+    "block_count",
+    "blocks",
+    "schema_version",
+    "seed",
+    "unit_count"
+  ],
+  "type": "object"
+}

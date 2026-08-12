@@ -1,0 +1,227 @@
+{
+  "schema_version": "contextguard.g2-tasks/v1",
+  "tasks": [
+    {
+      "fixture_root": "fixtures/train/closed_pack",
+      "fixture_tree_sha256": "99307f56d8fd316a0c560cc2d23750947180d9f76cd9e125a7645c242fc5e19b",
+      "lineage_id": "lineage-train-lantern-v1",
+      "pack": {
+        "budget_bytes": 6000,
+        "files": [
+          "brief.txt"
+        ],
+        "json": true,
+        "no_artifact": true,
+        "operation": "auto",
+        "query": "lantern quorum violet archive decision",
+        "root": ".",
+        "top": 4
+      },
+      "partition": "train",
+      "prompt": "Determine the violet archive decision from the lantern quorum packet.",
+      "provenance": {
+        "generator_id": "g2-train-lantern",
+        "origin": "locally-authored-independent-fixture"
+      },
+      "stratum": "closed_pack",
+      "structure_id": "structure-train-two-source-ledger",
+      "task_id": "train_closed",
+      "workspace_policy": {
+        "allowed_sources": [
+          "embedded_pack"
+        ],
+        "bounded_reads": 0,
+        "fallback_triggers": [],
+        "read_only": false,
+        "workspace_access": false
+      }
+    },
+    {
+      "fixture_root": "fixtures/train/realistic_fallback",
+      "fixture_tree_sha256": "3f756ba905403cd2d26c07ff83bcefa97cf9e7bd8688d3d197176d7e9fd9522d",
+      "lineage_id": "lineage-train-cobalt-v1",
+      "pack": {
+        "budget_bytes": 6000,
+        "files": [
+          "app/entry.py"
+        ],
+        "json": true,
+        "no_artifact": true,
+        "operation": "auto",
+        "query": "resolver entrypoint handbook routing",
+        "root": ".",
+        "top": 4
+      },
+      "partition": "train",
+      "prompt": "Resolve the cobalt route checksum using the local Python module graph.",
+      "provenance": {
+        "generator_id": "g2-train-cobalt",
+        "origin": "locally-authored-independent-fixture"
+      },
+      "stratum": "realistic_fallback",
+      "structure_id": "structure-train-python-outgoing-chain",
+      "task_id": "train_graph",
+      "workspace_policy": {
+        "allowed_sources": [
+          "embedded_pack",
+          "local_exact_slice",
+          "local_direct_import_neighbor"
+        ],
+        "bounded_reads": 3,
+        "fallback_triggers": [
+          "ordinary_required_source_omitted"
+        ],
+        "read_only": true,
+        "workspace_access": true
+      }
+    },
+    {
+      "fixture_root": "fixtures/calibration/closed_pack",
+      "fixture_tree_sha256": "4fa37b90537ff4ae5b2029a543e934b6c9e83d6972e454ef2761ca3d025c2adc",
+      "lineage_id": "lineage-calibration-harbor-v1",
+      "pack": {
+        "budget_bytes": 6000,
+        "files": [
+          "dispatch.md"
+        ],
+        "json": true,
+        "no_artifact": true,
+        "operation": "auto",
+        "query": "harbor saffron berth dispatch",
+        "root": ".",
+        "top": 4
+      },
+      "partition": "calibration",
+      "prompt": "Identify the saffron berth dispatch code from the harbor packet.",
+      "provenance": {
+        "generator_id": "g2-calibration-harbor",
+        "origin": "locally-authored-independent-fixture"
+      },
+      "stratum": "closed_pack",
+      "structure_id": "structure-calibration-markdown-csv-join",
+      "task_id": "calibration_closed",
+      "workspace_policy": {
+        "allowed_sources": [
+          "embedded_pack"
+        ],
+        "bounded_reads": 0,
+        "fallback_triggers": [],
+        "read_only": false,
+        "workspace_access": false
+      }
+    },
+    {
+      "fixture_root": "fixtures/calibration/realistic_fallback",
+      "fixture_tree_sha256": "707dc3289757229731eedf0d5961980697b6931f5b78ab61f22e9742fac1c533",
+      "lineage_id": "lineage-calibration-amber-v1",
+      "pack": {
+        "budget_bytes": 6000,
+        "files": [
+          "src/controllers/entry.ts"
+        ],
+        "json": true,
+        "no_artifact": true,
+        "operation": "auto",
+        "query": "controller entrypoint handbook window",
+        "root": ".",
+        "top": 4
+      },
+      "partition": "calibration",
+      "prompt": "Compute the amber calibration window through the TypeScript import graph.",
+      "provenance": {
+        "generator_id": "g2-calibration-amber",
+        "origin": "locally-authored-independent-fixture"
+      },
+      "stratum": "realistic_fallback",
+      "structure_id": "structure-calibration-typescript-outgoing-fork",
+      "task_id": "calibration_graph",
+      "workspace_policy": {
+        "allowed_sources": [
+          "embedded_pack",
+          "local_exact_slice",
+          "local_direct_import_neighbor"
+        ],
+        "bounded_reads": 3,
+        "fallback_triggers": [
+          "ordinary_required_source_omitted"
+        ],
+        "read_only": true,
+        "workspace_access": true
+      }
+    },
+    {
+      "fixture_root": "fixtures/evaluation/closed_pack",
+      "fixture_tree_sha256": "2eaa9107e87c0036c51c3e22c1f7b6d338b7eef2eeb2ae40b9df50b79121768a",
+      "lineage_id": "lineage-evaluation-orchard-v1",
+      "pack": {
+        "budget_bytes": 6000,
+        "files": [
+          "question.txt"
+        ],
+        "json": true,
+        "no_artifact": true,
+        "operation": "auto",
+        "query": "orchard silver row verdict",
+        "root": ".",
+        "top": 4
+      },
+      "partition": "evaluation",
+      "prompt": "Return the silver row verdict from the orchard matrix packet.",
+      "provenance": {
+        "generator_id": "g2-evaluation-orchard",
+        "origin": "locally-authored-independent-fixture"
+      },
+      "stratum": "closed_pack",
+      "structure_id": "structure-evaluation-question-json-lookup",
+      "task_id": "evaluation_closed",
+      "workspace_policy": {
+        "allowed_sources": [
+          "embedded_pack"
+        ],
+        "bounded_reads": 0,
+        "fallback_triggers": [],
+        "read_only": false,
+        "workspace_access": false
+      }
+    },
+    {
+      "fixture_root": "fixtures/evaluation/realistic_fallback",
+      "fixture_tree_sha256": "a869c39314b9ee09f8f588a18a946286a2a5cc84ad516a8ef8e9acdb00ea0b5c",
+      "lineage_id": "lineage-evaluation-indigo-v1",
+      "pack": {
+        "budget_bytes": 6000,
+        "files": [
+          "app/runner.js"
+        ],
+        "json": true,
+        "no_artifact": true,
+        "operation": "auto",
+        "query": "runner entrypoint handbook execution",
+        "root": ".",
+        "top": 4
+      },
+      "partition": "evaluation",
+      "prompt": "Validate the indigo release token through the JavaScript dependency graph.",
+      "provenance": {
+        "generator_id": "g2-evaluation-indigo",
+        "origin": "locally-authored-independent-fixture"
+      },
+      "stratum": "realistic_fallback",
+      "structure_id": "structure-evaluation-esm-incoming-fan-in",
+      "task_id": "evaluation_graph",
+      "workspace_policy": {
+        "allowed_sources": [
+          "embedded_pack",
+          "local_exact_slice",
+          "local_direct_import_neighbor"
+        ],
+        "bounded_reads": 3,
+        "fallback_triggers": [
+          "ordinary_required_source_omitted"
+        ],
+        "read_only": true,
+        "workspace_access": true
+      }
+    }
+  ]
+}
