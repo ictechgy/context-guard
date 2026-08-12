@@ -46,6 +46,36 @@ The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or
 changes a host request. A caller chooses when to launch either binary.
 
+The packaged Python module `context_guard_receipt.external_approval` is a
+programmatic, non-CLI approval boundary for a separately implemented external
+runner. It does not contain a provider runner or obtain credentials, open a
+network connection, create an output root, publish a package, or activate a
+runtime. An issuer can HMAC-authenticate one closed approval whose scope binds
+the exact candidate commit, manifest, checksums and artifact IDs; provider and
+model; observer, operation version and receipt schema; runtime version,
+executable, argv and environment identities; credential consumer and allowed scopes;
+HTTPS destinations; call, spend, currency and timeout caps; owner-private
+output root; and retention. Redirects and proxies are fixed off. Approvals use
+an internally observed Unix clock, expire after at most one year, are
+revocable, and carry one nonce.
+
+`authorize_and_consume` requires independent approval-verification and state
+authentication keys. It serializes threads and processes, validates an exact
+requested scope, checks expiry and revocation, and durably records the hashed
+nonce before invoking the trusted materializer with a copied scope. Replay,
+scope expansion, malformed data, unsafe state metadata, or uncertain state
+durability refuses before that callback. The state directory must already
+exist as an owner-private `0700` directory. It
+stores only sorted SHA-256 selectors and an authenticated registry; it stores
+no approval, provider/model name, destination, output path, nonce, revocation
+handle, or key. The state directory is part of the operator trust boundary: an
+actor able to restore an older valid filesystem snapshot can roll back any
+purely local registry, so deployments needing rollback-resistant one-use
+semantics must place it on a separately protected monotonic store. The caller
+must also implement the bound network/runtime/output controls; this module is
+an authorization gate, not an OS sandbox or an execution engine. An approval
+does not grant npm publication or evidence-claim authority.
+
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
 evidence and cannot close the provider join. It does not observe a host, read
 settings, contact a provider, or establish provider or host authority. It does
