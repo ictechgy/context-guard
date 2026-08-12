@@ -13,9 +13,9 @@
     "boundary-tests": {
       "module": "tests.test_provider_free_roadmap_boundary",
       "test_artifact": {
-        "bytes": 45382,
+        "bytes": 48140,
         "path": "tests/test_provider_free_roadmap_boundary.py",
-        "sha256": "bd4e9c1dbb03fb017e13e255964ea2b43ce82e63c840bcd52f8d1b49943deae3"
+        "sha256": "2012425e8669ce70b0aaa3a38b4d10cace5f84ae82fd1285659e02ac0a113250"
       }
     },
     "g2-contract-tests": {

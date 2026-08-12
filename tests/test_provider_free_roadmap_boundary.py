@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -68,6 +71,29 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+    def assert_profile_honors_frozen_python_binding(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        frozen = json.loads(G2_LOCK.read_text(encoding="utf-8"))["python_binding"]
+        executable = Path(sys.executable).resolve(strict=True)
+        raw = executable.read_bytes()
+        current = {
+            "bytes": len(raw),
+            "implementation": sys.implementation.name,
+            "path": str(executable),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "version": (
+                f"{sys.version_info.major}.{sys.version_info.minor}."
+                f"{sys.version_info.micro}"
+            ),
+        }
+        if current == frozen:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "changed pinned Python executable\n")
 
     def mutated_manifest(self, root: Path, mutation) -> Path:
         value = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -282,6 +308,10 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             self.assertIsNotNone(spec.loader)
             verifier = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(verifier)
+            frozen_binding = copy.deepcopy(
+                json.loads(G2_LOCK.read_text(encoding="utf-8"))["python_binding"]
+            )
+            verifier.python_binding = lambda: copy.deepcopy(frozen_binding)
             self.write_json(
                 root / "research/provider-free-roadmap/g2/freeze-lock.json",
                 verifier.rebuild_lock(root),
@@ -325,7 +355,7 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             "--profile",
             "g2-contract-tests",
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_profile_honors_frozen_python_binding(result)
 
     def test_g3_freeze_and_profile_capture_every_consumed_artifact(self) -> None:
         contract = json.loads(BOUNDARY.read_text(encoding="utf-8"))
@@ -407,13 +437,13 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         verifier.capture_g3_inventory(root, lock)
 
-    def test_bound_g3_rehearsal_profile_passes_with_lang_only_child(self) -> None:
+    def test_bound_g3_rehearsal_profile_honors_frozen_python_binding(self) -> None:
         if sys.flags.isolated == 1 and Path(__file__).as_posix().endswith("test_g3_rehearsal.py"):
             self.skipTest("outer boundary test only")
         result = self.run_verify(
             "run", "--contract", str(BOUNDARY), "--profile", "g3-rehearsal-tests"
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_profile_honors_frozen_python_binding(result)
 
     def test_g4_freeze_and_profile_capture_every_consumed_artifact(self) -> None:
         contract = json.loads(BOUNDARY.read_text(encoding="utf-8"))
@@ -505,11 +535,11 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 verifier.capture_g4_inventory(root, lock)
 
-    def test_bound_g4_claim_gate_profile_passes_with_lang_only_child(self) -> None:
+    def test_bound_g4_claim_gate_profile_honors_frozen_python_binding(self) -> None:
         result = self.run_verify(
             "run", "--contract", str(BOUNDARY), "--profile", "g4-claim-gates"
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_profile_honors_frozen_python_binding(result)
 
     def test_g5_freeze_and_profile_capture_every_consumed_artifact(self) -> None:
         contract = json.loads(BOUNDARY.read_text(encoding="utf-8"))
@@ -920,7 +950,6 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         for name in (
             "PYTHONPATH",
             "PYTHONSTARTUP",
-            "LD_PRELOAD",
             "AWS_PROFILE",
         ):
             secret_value = f"do-not-disclose-{name.lower()}"
@@ -935,9 +964,52 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
                     env=environment,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"prohibited inherited environment name: {name}", result.stderr)
-                self.assertNotIn(secret_value, result.stdout)
-                self.assertNotIn(secret_value, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    f"prohibited inherited environment name: {name}\n",
+                )
+                self.assertNotIn(secret_value, result.stdout + result.stderr)
+
+    def test_run_rejects_loader_control_name_before_profile_execution(self) -> None:
+        result = self.run_verify(
+            "run",
+            "--contract",
+            str(BOUNDARY),
+            "--profile",
+            "boundary-tests",
+            env=self.clean_env(LD_PRELOAD=""),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "prohibited inherited environment name: LD_PRELOAD\n",
+        )
+
+    def test_environment_validator_does_not_disclose_loader_value(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "provider_free_environment_verifier", VERIFY
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+
+        secret_value = "do-not-disclose-ld_preload"
+        stderr = io.StringIO()
+        with mock.patch.dict(
+            os.environ, self.clean_env(LD_PRELOAD=secret_value), clear=True
+        ):
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit):
+                    verifier.validate_inherited_environment()
+
+        self.assertEqual(
+            stderr.getvalue(),
+            "prohibited inherited environment name: LD_PRELOAD\n",
+        )
+        self.assertNotIn(secret_value, stderr.getvalue())
 
 
 if __name__ == "__main__":
