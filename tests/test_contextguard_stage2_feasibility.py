@@ -65,6 +65,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "CHANGELOG.md",
         "README.ko.md",
         "README.md",
+        "apps/contextguard-mac/Tests/ContextGuardMacCoreTests/AuditCLIAdapterTests.swift",
         "bench/token-savings-12task/README.md",
         "bench/token-savings-12task/study-plan-v2.json",
         "context-guard-kit/bash_reference_policy.py",
