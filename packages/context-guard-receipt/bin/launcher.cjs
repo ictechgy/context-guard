@@ -136,7 +136,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',
   'python/context_guard_receipt/reference_expiry.py': '2445292456776d5fcbf789f75a71781d64f12865958249d192cfc5a5ff27f2f6',
   'python/context_guard_receipt/router.py': '22b395d0a8a0522fcc9b12c1b12493e90aafb9e374937725a2bdaf223188529c',
-  'python/context_guard_receipt/runner.py': '2193f7ae1032990b2ff5d954bd97ea6de67d58a9eb2cf395e939b25593a79cf8',
+  'python/context_guard_receipt/runner.py': '05659031a491b89d93f7bd4d5d69d122cd51fa511100021c727e6939a2b822c1',
   'python/context_guard_receipt/sanitizer.py': 'ddf7d4d81dbb73156fa2274c7adf06475c4688b1e08341835aff4eeb81a72fc8',
   'python/context_guard_receipt/store.py': '6bf5f033ebc1cfaf72dbfa685ed4ce3339dfe0af53b88bab726ed0847767e8ed',
   'python/context_guard_receipt/tool_schemas.py': 'f84a8bc2f2232250dfe0782aaddf35c9842720f4815c6d2d8e4bd95757546bbc',

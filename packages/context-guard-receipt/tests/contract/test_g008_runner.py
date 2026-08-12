@@ -1323,6 +1323,27 @@ class G008RunnerContractTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.killpg(spawned[0].pid, 0)
 
+    def test_process_table_helper_that_closes_stdout_at_deadline_is_timeout(self) -> None:
+        """Break caught: a deadline-bound ps wait is mislabeled internal."""
+
+        module = runner_module()
+        real_popen = subprocess.Popen
+
+        def stalled_after_output(*_args, **kwargs):
+            code = (
+                "import os,time; "
+                "os.write(1,b'1 0 1 0 S\\n'); os.close(1); time.sleep(1)"
+            )
+            return real_popen((sys.executable, "-I", "-c", code), **kwargs)
+
+        deadline = time.monotonic() + 0.05
+        with mock.patch.object(
+            module.subprocess, "Popen", side_effect=stalled_after_output
+        ):
+            with self.assertRaises(module._RunnerAbort) as caught:
+                module._read_process_table(deadline=deadline, clock=time.monotonic)
+        self.assertEqual(caught.exception.code, module.RunnerErrorCode.TIMEOUT)
+
     def test_setsid_descendant_that_closes_stdio_blocks_normal_publication(self) -> None:
         """Break caught: a detached new group outlives its normally exited leader."""
 
