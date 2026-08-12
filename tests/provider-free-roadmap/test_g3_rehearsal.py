@@ -23,9 +23,9 @@ LOCK = G3 / "freeze-lock.json"
 SCHEMAS = V1 / "schemas"
 G2_LOCK = ROOT / "research/provider-free-roadmap/g2/freeze-lock.json"
 G2_VERIFIER = ROOT / "research/provider-free-roadmap/g2/v1/verify.py"
-G2_LOCK_SHA256 = "722b1b65a3d927b2549ba1befe9c60ffcaceea6b32fc6cbd1ebbd35f3adb91f8"
-G2_TREE_SHA256 = "9ed2bafba81227924fb0d09ff0bc1697426f05944d3da33d94d1f2f4b0c4ccb6"
-G2_VERIFIER_SHA256 = "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
+G2_LOCK_SHA256 = "8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283"
+G2_TREE_SHA256 = "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc"
+G2_VERIFIER_SHA256 = "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
 ARMS = ("ordinary", "adaptive_only", "symbol_only", "combined")
 TASKS = (
     "train_closed", "train_graph", "calibration_closed", "calibration_graph",

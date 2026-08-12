@@ -13,57 +13,57 @@
     "boundary-tests": {
       "module": "tests.test_provider_free_roadmap_boundary",
       "test_artifact": {
-        "bytes": 48140,
+        "bytes": 55701,
         "path": "tests/test_provider_free_roadmap_boundary.py",
-        "sha256": "2012425e8669ce70b0aaa3a38b4d10cace5f84ae82fd1285659e02ac0a113250"
+        "sha256": "d40470bc64713b862e9d05bbe804fe866fe09aeae569b132a4be3ab2e79f27d9"
       }
     },
     "g2-contract-tests": {
       "module": "g2_contract_tests",
       "test_artifact": {
-        "bytes": 51417,
+        "bytes": 52561,
         "path": "tests/provider-free-roadmap/test_g2_ablation_contract.py",
-        "sha256": "4ecdb84177a5abac6f92482089ef604c2746bad8d7a29c501783722645be18e8"
+        "sha256": "9e74c3dffe3e7d94cc08096ace58bbf0581115fa1d837fb2a8a257ebfd7b5663"
       },
       "verifier_artifact": {
-        "bytes": 80880,
+        "bytes": 81813,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
+        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
       }
     },
     "g3-rehearsal-tests": {
       "g2_verifier_artifact": {
-        "bytes": 80880,
+        "bytes": 81813,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
+        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
       },
       "g3_lock_artifact": {
         "bytes": 3330,
         "path": "research/provider-free-roadmap/g3/freeze-lock.json",
-        "sha256": "20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a"
+        "sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
       },
       "module": "g3_rehearsal_tests",
       "test_artifact": {
         "bytes": 42280,
         "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-        "sha256": "4ab9a5ea13ea6b5549dab5e3eed02242b593d76dccf3b1588d1bd88fb2b19fb7"
+        "sha256": "6dede3f5afc1b0260c929fe9331a3cba7c567a1d9e640937c3c9e48070c73175"
       }
     },
     "g4-claim-gates": {
       "g2_verifier_artifact": {
-        "bytes": 80880,
+        "bytes": 81813,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
+        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
       },
       "g3_lock_artifact": {
         "bytes": 3330,
         "path": "research/provider-free-roadmap/g3/freeze-lock.json",
-        "sha256": "20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a"
+        "sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
       },
       "g4_lock_artifact": {
         "bytes": 2202,
         "path": "research/provider-free-roadmap/g4/freeze-lock.json",
-        "sha256": "ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98"
+        "sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
       },
       "module": "g4_claim_gate_tests",
       "test_artifact": {
@@ -76,12 +76,12 @@
       "g4_lock_artifact": {
         "bytes": 2202,
         "path": "research/provider-free-roadmap/g4/freeze-lock.json",
-        "sha256": "ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98"
+        "sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
       },
       "g5_lock_artifact": {
         "bytes": 2438,
         "path": "research/provider-free-roadmap/g5/freeze-lock.json",
-        "sha256": "5096f78a17cec6e7081aaefa400741120132578a38ad8e32c1976dad5e095a69"
+        "sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
       },
       "module": "g5_p2_preregistration_tests",
       "test_artifact": {
@@ -94,12 +94,12 @@
       "g5_lock_artifact": {
         "bytes": 2438,
         "path": "research/provider-free-roadmap/g5/freeze-lock.json",
-        "sha256": "5096f78a17cec6e7081aaefa400741120132578a38ad8e32c1976dad5e095a69"
+        "sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
       },
       "g6_lock_artifact": {
         "bytes": 2069,
         "path": "research/provider-free-roadmap/g6/freeze-lock.json",
-        "sha256": "406a7a7de9ce98d0596cc63fe2035c988c21445ef8820f8aae33c09b49a55c22"
+        "sha256": "cce80538f5c47248c59cd9df6b0748bba825bdd5c8a8327011b71e2edbe8e64c"
       },
       "module": "g6_prepared_unapproved_tests",
       "test_artifact": {

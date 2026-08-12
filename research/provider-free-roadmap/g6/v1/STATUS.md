@@ -7,14 +7,14 @@ runtime activation, npm activity, publication, or savings claim occurred.
 Frozen artifact identities:
 
 - G1 P1-v8 evidence manifest: `4aa1677dd0a17142722552f34a37ac9b0e6e03a09eba812a3303e1b843581ee0`
-- G2 freeze lock: `722b1b65a3d927b2549ba1befe9c60ffcaceea6b32fc6cbd1ebbd35f3adb91f8`
-- G3 freeze lock: `20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a`
-- G4 freeze lock: `ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98`
-- G5 freeze lock: `5096f78a17cec6e7081aaefa400741120132578a38ad8e32c1976dad5e095a69`
-- G5 tree: `409521febe7eb834d275b454c451614d57e5e3c567bc3e9bcb7f4d0f812ba0dc`
-- G6 preparation packet: `83c778e0a836cc05c1f6b461e3f2c0c41dd6d64a4db3b9a795353cfe893f377e`
-- G6 packet schema: `ff379bbfd6ab714170e40974222bab7312b74d4a205aa6e08f8d4210e87ea374`
-- G6 verifier: `69644e1db8b302293104c3e61d870bc6f91817062182c46f8e2954c407e37fc2`
+- G2 freeze lock: `8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283`
+- G3 freeze lock: `0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105`
+- G4 freeze lock: `6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767`
+- G5 freeze lock: `c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307`
+- G5 tree: `2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8`
+- G6 preparation packet: `4009d0f13b813ce3d768fff0f025ba2cf092eb9a2046c1a7925207226404768d`
+- G6 packet schema: `6fc50d0b1abff32b9ca3089a9e9df0eca3880bd47d877f55e231f1de63c6f887`
+- G6 verifier: `a26365241de2fa1e5b80b8f984d46c3ea4df8763a06ae90d6eacc83a5995ada5`
 - G6 test: `980ccbafe1cc050ba452c0b36caa87a6660587bbcc77ec291d16a6c0c81c7fa5`
 
 Provider-free verification commands:

@@ -35,17 +35,17 @@ G5_LOCK = REPO_ROOT / "research/provider-free-roadmap/g5/freeze-lock.json"
 G5_TEST = REPO_ROOT / "tests/provider-free-roadmap/test_g5_p2_preregistration.py"
 G6_LOCK = REPO_ROOT / "research/provider-free-roadmap/g6/freeze-lock.json"
 G6_TEST = REPO_ROOT / "tests/provider-free-roadmap/test_g6_approval_packet.py"
-PINNED_G2_LOCK_SHA256 = "722b1b65a3d927b2549ba1befe9c60ffcaceea6b32fc6cbd1ebbd35f3adb91f8"
-PINNED_G2_TREE_ROOT_SHA256 = "9ed2bafba81227924fb0d09ff0bc1697426f05944d3da33d94d1f2f4b0c4ccb6"
-PINNED_G2_VERIFIER_SHA256 = "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
-PINNED_G3_LOCK_SHA256 = "20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a"
-PINNED_G3_TREE_ROOT_SHA256 = "593dbd277dd044264140bb748d30ef45c7e029e9c9fbe2bea5877c99ef421c36"
-PINNED_G4_LOCK_SHA256 = "ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98"
-PINNED_G4_TREE_ROOT_SHA256 = "c785b6e937220e1b9c78743df84f27f6cdf22801472a9903831724cc813b9bb4"
-PINNED_G5_LOCK_SHA256 = "5096f78a17cec6e7081aaefa400741120132578a38ad8e32c1976dad5e095a69"
-PINNED_G5_TREE_ROOT_SHA256 = "409521febe7eb834d275b454c451614d57e5e3c567bc3e9bcb7f4d0f812ba0dc"
-PINNED_G6_LOCK_SHA256 = "406a7a7de9ce98d0596cc63fe2035c988c21445ef8820f8aae33c09b49a55c22"
-PINNED_G6_TREE_ROOT_SHA256 = "c369a18d5b44671819de4bb0d1e0cc8cb1c15c9618ed30518606eb6ea826d51a"
+PINNED_G2_LOCK_SHA256 = "8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283"
+PINNED_G2_TREE_ROOT_SHA256 = "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc"
+PINNED_G2_VERIFIER_SHA256 = "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+PINNED_G3_LOCK_SHA256 = "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
+PINNED_G3_TREE_ROOT_SHA256 = "ef13371780b940826dd5a1134777e1bae84b578702ee1fe5c83fa6698032fa6b"
+PINNED_G4_LOCK_SHA256 = "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
+PINNED_G4_TREE_ROOT_SHA256 = "ad18cc7cf413dff75999aa3c9d258c25205cc5f8e393b7c1fa961b1bc813bda4"
+PINNED_G5_LOCK_SHA256 = "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
+PINNED_G5_TREE_ROOT_SHA256 = "2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8"
+PINNED_G6_LOCK_SHA256 = "cce80538f5c47248c59cd9df6b0748bba825bdd5c8a8327011b71e2edbe8e64c"
+PINNED_G6_TREE_ROOT_SHA256 = "392639bf52d9a9b37c7a9b3edde2beb06b51cc4cec6003c716c36db0f3d05f43"
 
 
 class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
@@ -243,6 +243,111 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("roadmap output roots", result.stderr)
 
+    def test_inventory_git_children_disable_network_and_credential_helpers(self) -> None:
+        spec = importlib.util.spec_from_file_location("provider_free_git_verifier", VERIFY)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        expected_environment = {
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_KEY_0": "credential.helper",
+            "GIT_CONFIG_KEY_1": "core.askPass",
+            "GIT_CONFIG_KEY_2": "protocol.allow",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_VALUE_1": "/usr/bin/false",
+            "GIT_CONFIG_VALUE_2": "never",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "LANG": "C",
+            "PATH": "/usr/bin:/bin",
+        }
+        inherited_credential_environment = {
+            "GIT_ASKPASS": "/tmp/untrusted-askpass",
+            "GIT_CONFIG_GLOBAL": "/tmp/untrusted-gitconfig",
+            "GIT_SSH_COMMAND": "/tmp/untrusted-ssh",
+            "HOME": "/tmp/untrusted-home",
+            "SSH_ASKPASS": "/tmp/untrusted-ssh-askpass",
+        }
+        self.assertEqual(verifier.GIT_OBJECT_ENVIRONMENT, expected_environment)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment_log = root / "git-environments.jsonl"
+            fake_git = root / "git"
+            fake_git.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                f"with open({json.dumps(str(environment_log))}, 'a', encoding='utf-8') as stream:\n"
+                "    stream.write(json.dumps(dict(os.environ), sort_keys=True) + '\\n')\n"
+                "if sys.argv[-2:] == ['cat-file', '--batch']:\n"
+                "    for object_name in sys.stdin.buffer.read().splitlines():\n"
+                "        sys.stdout.buffer.write(object_name + b' blob 1\\nx\\n')\n"
+                "else:\n"
+                "    sys.stdout.buffer.write(b'local-object\\n')\n",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o755)
+
+            with (
+                mock.patch.object(verifier, "SYSTEM_GIT", fake_git),
+                mock.patch.dict(os.environ, inherited_credential_environment),
+            ):
+                self.assertEqual(verifier.run_git(root, "rev-parse", "HEAD"), b"local-object\n")
+                self.assertEqual(verifier.read_git_blobs(root, ["local-blob"]), [b"x"])
+
+            observed = [
+                json.loads(line)
+                for line in environment_log.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len(observed), 2)
+            for child_environment in observed:
+                for name, value in expected_environment.items():
+                    self.assertEqual(child_environment.get(name), value)
+                for name, inherited_value in inherited_credential_environment.items():
+                    self.assertNotEqual(child_environment.get(name), inherited_value)
+
+    def test_inventory_git_reads_are_bounded_and_do_not_expose_timeout_payload(self) -> None:
+        spec = importlib.util.spec_from_file_location("provider_free_git_timeout_verifier", VERIFY)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        secret_payload = b"private-git-payload"
+        cases = (
+            ("object", verifier.run_git, "unable to read the pinned local Git object\n"),
+            ("blobs", verifier.read_git_blobs, "unable to read the pinned local Git blobs\n"),
+        )
+
+        for label, operation, expected_stderr in cases:
+            with self.subTest(label=label):
+                def expire(*args, **kwargs):
+                    self.assertEqual(kwargs.get("timeout"), 30)
+                    raise subprocess.TimeoutExpired(
+                        cmd=args[0],
+                        timeout=30,
+                        output=secret_payload,
+                        stderr=secret_payload,
+                    )
+
+                stderr = io.StringIO()
+                caught: BaseException | None = None
+                with mock.patch.object(verifier.subprocess, "run", side_effect=expire):
+                    with contextlib.redirect_stderr(stderr):
+                        try:
+                            if label == "object":
+                                operation(Path(tempfile.gettempdir()), "rev-parse", "HEAD")
+                            else:
+                                operation(Path(tempfile.gettempdir()), ["deadbeef"])
+                        except BaseException as exc:
+                            caught = exc
+
+                self.assertIsInstance(caught, SystemExit)
+                self.assertEqual(stderr.getvalue(), expected_stderr)
+                self.assertNotIn(secret_payload.decode("ascii"), stderr.getvalue())
+
     def test_bound_profile_child_uses_isolated_python_and_exact_environment(self) -> None:
         if sys.flags.isolated != 1:
             self.skipTest("asserted inside the bound execution profile child")
@@ -425,15 +530,29 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 verifier.capture_g3_inventory(root, lock)
 
-        for kind in ("regular", "symlink", "hardlink", "special"):
+        kinds = ("regular", "symlink", "hardlink", "special")
+        self.assertEqual(set(kinds), {"regular", "symlink", "hardlink", "special"})
+        for kind in kinds:
             with self.subTest(kind=kind):
                 temporary, root = copied_root()
                 with temporary:
                     extra = root / "research/provider-free-roadmap/g3/v1/extra.txt"
                     if kind == "regular":
                         extra.write_text("unlisted\n", encoding="utf-8")
-                    else:
+                    elif kind == "symlink":
                         extra.symlink_to("manifest.json")
+                    elif kind == "hardlink":
+                        os.link(
+                            root / "research/provider-free-roadmap/g3/v1/manifest.json",
+                            extra,
+                        )
+                    else:
+                        os.mkfifo(extra)
+                    if kind == "hardlink":
+                        self.assertFalse(extra.is_symlink())
+                        self.assertGreater(extra.stat().st_nlink, 1)
+                    elif kind == "special":
+                        self.assertFalse(stat.S_ISREG(extra.lstat().st_mode))
                     with self.assertRaises(SystemExit):
                         verifier.capture_g3_inventory(root, lock)
 
@@ -454,7 +573,7 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         self.assertEqual(lock["tree_root_sha256"], PINNED_G4_TREE_ROOT_SHA256)
         self.assertEqual(lock["g3_source"], {
             "lock_sha256": PINNED_G3_LOCK_SHA256,
-            "manifest_sha256": "e647db61ac92c80b59f7fa653aa53d0618f84069a6ecbc01dfc204740af17e4b",
+            "manifest_sha256": "ceb3c9807dad9f5ddc501f3439ac0bc5e7350e67e5c56ac27aa84e80cbd5d677",
             "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
             "schema_set_bytes": 25254,
             "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
@@ -503,7 +622,9 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             (root / "research/provider-free-roadmap/g4/v1/verify.py").chmod(0o755)
             with self.assertRaises(SystemExit):
                 verifier.capture_g4_inventory(root, lock)
-        for kind in ("regular", "symlink"):
+        kinds = ("regular", "symlink", "hardlink")
+        self.assertEqual(set(kinds), {"regular", "symlink", "hardlink"})
+        for kind in kinds:
             with self.subTest(kind=kind):
                 temporary, root = copied_root()
                 with temporary:
@@ -549,12 +670,12 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), PINNED_G5_LOCK_SHA256)
         self.assertEqual(lock["tree_root_sha256"], PINNED_G5_TREE_ROOT_SHA256)
         self.assertEqual(lock["g4_source"], {
-            "claim_policy_sha256": "b8d32a0907f5b1fb0319d2f47cfc202e610b16cbb1f41fb5b6419503e46bcda2",
+            "claim_policy_sha256": "1d8990fe47208c360ef47b2ba2cbba963cf60c10f1aeef3e82833ba9d38d3d46",
             "lock_sha256": PINNED_G4_LOCK_SHA256,
             "schema_set_bytes": 6533,
-            "schema_set_sha256": "b830b0ec173965f093269fd343489c8c006676f3b4565bc566acf3cf52278356",
+            "schema_set_sha256": "d17b2f510d501902c14fb0b346b7c1e20f05f4fa83f94db0316f06b4705b0fb0",
             "tree_root_sha256": PINNED_G4_TREE_ROOT_SHA256,
-            "verifier_sha256": "3bdcfdf729552ed6143883aa568990413d7fdd6c2ab5e0917dcb7176c9e721a2",
+            "verifier_sha256": "acc5c26cfefc6b145626ec04d34e4c9acb32a88ac5c81b3f930f583dd778cd09",
         })
         inventory = {entry["path"]: entry for entry in lock["inventory"]}
         expected = {
@@ -599,7 +720,9 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             (root / "research/provider-free-roadmap/g5/v1/verify.py").chmod(0o755)
             with self.assertRaises(SystemExit):
                 verifier.capture_g5_inventory(root, lock)
-        for kind in ("regular", "symlink", "hardlink"):
+        kinds = ("regular", "symlink", "hardlink", "special")
+        self.assertEqual(set(kinds), {"regular", "symlink", "hardlink", "special"})
+        for kind in kinds:
             with self.subTest(kind=kind):
                 temporary, root = copied_root()
                 with temporary:
@@ -651,12 +774,12 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         self.assertEqual(lock["tree_root_sha256"], PINNED_G6_TREE_ROOT_SHA256)
         self.assertEqual(lock["g5_source"], {
             "lock_sha256": PINNED_G5_LOCK_SHA256,
-            "preregistration_sha256": "d0dc7a54a69e1bf601f795c3f372e54e2a08c406a89a7b3699e038c0c14e7227",
+            "preregistration_sha256": "9d306a6a1ab85a79d562fed611ab55471ec678630a590843eb4a19ca959498bf",
             "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
             "schema_set_bytes": 41710,
-            "schema_set_sha256": "9878506250d0ae01f1a656d6f6215e00f573374e9afecf92c27632b7f15899b3",
+            "schema_set_sha256": "c98921e1fc29345eafe22f58a3e5f14f0be357a3e086aeaaa0e2932cafc8ab98",
             "tree_root_sha256": PINNED_G5_TREE_ROOT_SHA256,
-            "verifier_sha256": "951d764a4c1721ad6d680776173592ae7dd334b0817208aaa07bee637bffdcbf",
+            "verifier_sha256": "520ad6e66cb8116afcb128e49812511297844571103a39f11ea50262d437a686",
         })
         inventory = {entry["path"]: entry for entry in lock["inventory"]}
         expected = {
@@ -849,6 +972,39 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(verified_marker.is_file())
             self.assertFalse(replacement_marker.exists())
+
+    def test_verified_profile_timeout_is_bounded_and_does_not_expose_payload(self) -> None:
+        spec = importlib.util.spec_from_file_location("provider_free_timeout_verifier", VERIFY)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        secret_payload = b"private-profile-payload"
+
+        def expire(*args, **kwargs):
+            self.assertEqual(kwargs.get("timeout"), 300)
+            raise subprocess.TimeoutExpired(
+                cmd=args[0], timeout=300, output=secret_payload, stderr=secret_payload
+            )
+
+        stderr = io.StringIO()
+        caught: BaseException | None = None
+        with mock.patch.object(verifier.subprocess, "run", side_effect=expire):
+            with contextlib.redirect_stderr(stderr):
+                try:
+                    verifier.execute_verified_profile_bytes(
+                        Path(sys.executable),
+                        REPO_ROOT,
+                        "tests/test_provider_free_roadmap_boundary.py",
+                        secret_payload,
+                        {"LANG": "C", "PATH": "/usr/bin:/bin"},
+                    )
+                except BaseException as exc:
+                    caught = exc
+
+        self.assertIsInstance(caught, SystemExit)
+        self.assertEqual(stderr.getvalue(), "boundary-tests profile timed out\n")
+        self.assertNotIn(secret_payload.decode("ascii"), stderr.getvalue())
 
     def test_run_rejects_synchronized_profile_contract_and_module_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

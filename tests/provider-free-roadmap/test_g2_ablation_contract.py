@@ -737,6 +737,36 @@ const template = `export { releaseToken } from "../app/runner.js";`;
         self.assertEqual(payload["isolated"], 1)
         self.assertEqual(payload["no_bytecode"], 1)
 
+    def test_packer_child_timeout_is_bounded_and_reports_task_arm_context(self) -> None:
+        verifier = self.load_verifier()
+        secret_query = "never-echo-this-timeout-input"
+        task = {
+            "task_id": "timeout_probe",
+            "pack": {
+                "budget_bytes": 1024,
+                "files": ["input.txt"],
+                "query": secret_query,
+                "top": 1,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(verifier.VerificationError) as captured:
+                verifier.execute_arm(
+                    b"while True:\n    pass\n",
+                    Path(temporary),
+                    ["input.txt"],
+                    task,
+                    "ordinary",
+                    timeout_seconds=0.05,
+                )
+        self.assertEqual(
+            str(captured.exception),
+            "bound packer failed for timeout_probe/ordinary: "
+            "captured packer child timed out",
+        )
+        self.assertNotIn(secret_query, str(captured.exception))
+        self.assertIsNone(captured.exception.__cause__)
+
     def test_arms_are_exact_factor_isolated_auto_operations(self) -> None:
         arms = self.read_json(ROOT, "research/provider-free-roadmap/g2/v1/arms.json")
         self.assertEqual([item["name"] for item in arms["arms"]], list(ARMS))

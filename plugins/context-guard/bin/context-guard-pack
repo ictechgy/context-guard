@@ -3577,9 +3577,18 @@ def build_graph_rank(
     query_terms: set[str],
     seed_paths: set[str],
     secret_scan: dict[str, Any],
+    complete_secret_paths: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     signature_paths = {str(item.get("path", "")) for item in signatures}
-    secret_paths = {str(item.get("path", "")) for item in secret_scan.get("files_with_risks", []) if isinstance(item, dict)}
+    secret_paths = (
+        complete_secret_paths
+        if complete_secret_paths is not None
+        else {
+            str(item.get("path", ""))
+            for item in secret_scan.get("files_with_risks", [])
+            if isinstance(item, dict)
+        }
+    )
     degree: dict[str, int] = {}
     for edge in edges:
         degree[edge["from"]] = degree.get(edge["from"], 0) + 1
@@ -3676,6 +3685,7 @@ def build_repo_map_payload(
     build_payload: dict[str, Any],
     *,
     root_arg: str,
+    complete_secret_paths_out: set[str] | None = None,
 ) -> dict[str, Any]:
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
@@ -3683,6 +3693,13 @@ def build_repo_map_payload(
     record_by_path = {str(record["path"]): record for record in records}
     signatures = extract_signatures(records)
     secret_scan = build_secret_scan(records)
+    complete_secret_paths = {
+        str(record.get("path", ""))
+        for record in records
+        if record.get("secret_risk_counts")
+    }
+    if complete_secret_paths_out is not None:
+        complete_secret_paths_out.update(complete_secret_paths)
     edges = collect_import_edges(records)
     graph_rank = build_graph_rank(
         records,
@@ -3691,6 +3708,7 @@ def build_repo_map_payload(
         query_terms=query_terms,
         seed_paths=seed_paths,
         secret_scan=secret_scan,
+        complete_secret_paths=complete_secret_paths,
     )
     retrieval = repo_map_retrieval(record_by_path, signatures, graph_rank, root_arg=root_arg)
     tree = build_token_tree(records)
@@ -3741,7 +3759,10 @@ def line_identity_from_dict(value: object) -> str:
 
 
 def apply_symbol_memory_graph(
-    manifest: dict[str, Any], repo_map: dict[str, Any]
+    manifest: dict[str, Any],
+    repo_map: dict[str, Any],
+    *,
+    complete_secret_paths: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Add bounded direct graph neighbors to an explicit auto-pack manifest."""
 
@@ -3771,11 +3792,15 @@ def apply_symbol_memory_graph(
         if isinstance(repo_map.get("secret_scan"), dict)
         else {}
     )
-    risky_paths = {
-        str(item.get("path", ""))
-        for item in secret_scan.get("files_with_risks", [])
-        if isinstance(item, dict) and item.get("path")
-    }
+    risky_paths = (
+        complete_secret_paths
+        if complete_secret_paths is not None
+        else {
+            str(item.get("path", ""))
+            for item in secret_scan.get("files_with_risks", [])
+            if isinstance(item, dict) and item.get("path")
+        }
+    )
     direct_neighbors: set[str] = set()
     for edge in edges:
         if not isinstance(edge, dict):
@@ -4135,6 +4160,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     repo_map_payload: dict[str, Any] | None = None
     graph_application: dict[str, Any] | None = None
     apply_symbol_memory = bool(getattr(args, "apply_symbol_memory", False))
+    complete_secret_paths: set[str] | None = set() if apply_symbol_memory else None
     if getattr(args, "symbol_memory", False) or apply_symbol_memory or args.explain:
         repo_map_payload = build_repo_map_payload(
             root,
@@ -4142,6 +4168,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             suggest_payload,
             build_payload,
             root_arg=root_arg,
+            complete_secret_paths_out=complete_secret_paths,
         )
     if apply_symbol_memory and isinstance(repo_map_payload, dict):
         repo_map_payload["safety"]["explain_only"] = False
@@ -4150,7 +4177,9 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             "Graph ranking is applied only to the bounded direct-neighbor expansion recorded in graph_application; exact source retrieval remains available.",
         ]
         manifest, graph_application = apply_symbol_memory_graph(
-            manifest, repo_map_payload
+            manifest,
+            repo_map_payload,
+            complete_secret_paths=complete_secret_paths,
         )
         suggest_payload["manifest"] = manifest
         specs = manifest_to_source_specs(manifest)
@@ -4162,6 +4191,10 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             store_artifact=False,
             delta_from_pack_id=args.delta_from_pack_id,
             sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
+        )
+        suggest_payload["estimated_pack_bytes"] = build_payload.get("pack_bytes", 0)
+        suggest_payload["token_proxy"] = copy.deepcopy(
+            build_payload.get("token_proxy", {})
         )
     if not args.no_artifact:
         receipt_rel = Path(PACK_DIR) / f"{build_payload['pack_id']}.json"
@@ -4271,7 +4304,7 @@ def print_adaptive_k_text(payload: dict[str, Any]) -> None:
     else:
         reason_text = str(reason_codes)
     application = payload.get("adaptive_k_application")
-    applied = isinstance(application, dict)
+    applied = isinstance(application, dict) and application.get("status") == "applied"
     print(
         "adaptive-k: "
         f"recommended={adaptive.get('recommended_k', 0)}/{adaptive.get('requested_top', 0)} "

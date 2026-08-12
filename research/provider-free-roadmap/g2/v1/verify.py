@@ -37,7 +37,7 @@ ARMS = ("ordinary", "adaptive_only", "symbol_only", "combined")
 PARTITIONS = ("train", "calibration", "evaluation")
 CANONICAL_PACKER = Path("context-guard-kit/context_pack.py")
 PLUGIN_PACKER = Path("plugins/context-guard/bin/context-guard-pack")
-PACKER_SHA256 = "7efd44bad5f4cbbea8a4d6fa5589e9296a6951df425c110f25dcde7db712909b"
+PACKER_SHA256 = "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
 LOCK_SCHEMA = "contextguard.g2-freeze-lock/v2"
 TREE_DOMAIN = b"contextguard.g2-v1-tree/v2\x00"
 ENTRY_DOMAIN = b"contextguard.g2-v1-entry/v2\x00"
@@ -73,6 +73,7 @@ SEALED_FIELDS = (
     "selected_paths",
     "symbol_memory",
 )
+PACKER_CHILD_TIMEOUT_SECONDS = 30.0
 
 
 class VerificationError(Exception):
@@ -1445,8 +1446,17 @@ raise SystemExit(module.main(list(request["arguments"])))
 def run_captured_packer_child(
     *, packer_bytes: bytes, sanitizer_bytes: bytes, workspace: Path,
     arguments: list[str], frozen_inventory: list[str], entrypoint: str = "packer",
+    timeout_seconds: float = PACKER_CHILD_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[bytes]:
     del sanitizer_bytes  # The reviewed packer's byte-identical built-in sanitizer is forced.
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise VerificationError("invalid captured packer child timeout")
+    bounded_timeout = min(float(timeout_seconds), PACKER_CHILD_TIMEOUT_SECONDS)
     python = python_binding()
     request = {
         "arguments": arguments, "entrypoint": entrypoint,
@@ -1454,21 +1464,34 @@ def run_captured_packer_child(
         "packer_b64": base64.b64encode(packer_bytes).decode("ascii"),
         "workspace": str(Path(workspace).resolve(strict=True)),
     }
-    return subprocess.run(
-        [str(python["path"]), "-I", "-B", "-c", PACKER_CHILD_BOOTSTRAP],
-        cwd=workspace,
-        env={"LANG": "C.UTF-8"},
-        input=json.dumps(request, sort_keys=True, separators=(",", ":")).encode(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        return subprocess.run(
+            [str(python["path"]), "-I", "-B", "-c", PACKER_CHILD_BOOTSTRAP],
+            cwd=workspace,
+            env={"LANG": "C.UTF-8"},
+            input=json.dumps(request, sort_keys=True, separators=(",", ":")).encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=bounded_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise VerificationError("captured packer child timed out") from None
 
 
-def execute_arm(packer_bytes: bytes, workspace: Path, inventory: list[str], task: dict, arm: str) -> dict:
-    result = run_captured_packer_child(
-        packer_bytes=packer_bytes, sanitizer_bytes=b"", workspace=workspace,
-        arguments=arm_arguments(task, arm), frozen_inventory=inventory,
-    )
+def execute_arm(
+    packer_bytes: bytes, workspace: Path, inventory: list[str], task: dict, arm: str,
+    *, timeout_seconds: float = PACKER_CHILD_TIMEOUT_SECONDS,
+) -> dict:
+    try:
+        result = run_captured_packer_child(
+            packer_bytes=packer_bytes, sanitizer_bytes=b"", workspace=workspace,
+            arguments=arm_arguments(task, arm), frozen_inventory=inventory,
+            timeout_seconds=timeout_seconds,
+        )
+    except VerificationError as exc:
+        raise VerificationError(
+            f"bound packer failed for {task['task_id']}/{arm}: {exc}"
+        ) from None
     if result.returncode != 0:
         raise VerificationError(f"bound packer failed for {task['task_id']}/{arm}: {result.stderr.decode('utf-8', 'replace')}")
     return load_json_bytes(result.stdout, f"bound packer output {task['task_id']}/{arm}")

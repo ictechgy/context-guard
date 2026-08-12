@@ -113,6 +113,13 @@ class ContextGuardProgressiveContextTests(unittest.TestCase):
                 )
                 self.assertLess(applied["pack_bytes"], advisory["pack_bytes"])
                 self.assertIn("KEEP.md", applied["build"]["pack"])
+                applied_text = self._run_pack(
+                    script,
+                    root,
+                    *(arg for arg in common if arg != "--json"),
+                    "--apply-adaptive-k",
+                ).stdout
+                self.assertIn("apply=true", applied_text)
 
                 gated = json.loads(
                     self._run_pack(
@@ -132,6 +139,16 @@ class ContextGuardProgressiveContextTests(unittest.TestCase):
                     gated["adaptive_k_application"]["regression_gates_passed"]
                 )
                 self.assertEqual(gated["manifest"], advisory["manifest"])
+                gated_text = self._run_pack(
+                    script,
+                    root,
+                    *(arg for arg in common if arg != "--json"),
+                    "--apply-adaptive-k",
+                    "--adaptive-k-min-precision-proxy",
+                    "1.0",
+                ).stdout
+                self.assertIn("apply=false", gated_text)
+                self.assertNotIn("apply=true", gated_text)
 
     def test_auto_explicitly_applies_direct_graph_neighbors(self) -> None:
         for script in PACK_SCRIPTS:
@@ -185,6 +202,14 @@ class ContextGuardProgressiveContextTests(unittest.TestCase):
                     ["src/app.py", "src/helper.py"],
                 )
                 self.assertIn("graph-selected", applied["build"]["pack"])
+                self.assertEqual(
+                    applied["suggest"]["estimated_pack_bytes"],
+                    applied["pack_bytes"],
+                )
+                self.assertEqual(
+                    applied["suggest"]["token_proxy"],
+                    applied["token_proxy"],
+                )
                 graph = applied["graph_application"]
                 self.assertEqual(
                     graph["schema_version"],
@@ -262,6 +287,99 @@ class ContextGuardProgressiveContextTests(unittest.TestCase):
                 graph = applied["graph_application"]
                 self.assertEqual(graph["selected_source_count"], 0)
                 self.assertEqual(graph["excluded_secret_risk_count"], 1)
+
+    def test_graph_application_excludes_risk_neighbor_beyond_public_file_cap(self) -> None:
+        secret = "ghp_" + ("B" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source_dir = root / "src"
+                source_dir.mkdir()
+                (source_dir / "app.py").write_text(
+                    "from .z_credentials import value\n\n"
+                    "def entrypoint():\n"
+                    "    return value\n",
+                    encoding="utf-8",
+                )
+                for index in range(20):
+                    (source_dir / f"a_risk_{index:02d}.py").write_text(
+                        f"value = {secret!r}\n",
+                        encoding="utf-8",
+                    )
+                (source_dir / "z_credentials.py").write_text(
+                    f"value = {secret!r}\n",
+                    encoding="utf-8",
+                )
+
+                proc = self._run_pack(
+                    script,
+                    root,
+                    "auto",
+                    "--root",
+                    ".",
+                    "--files",
+                    "src/app.py",
+                    "--top",
+                    "1",
+                    "--budget-bytes",
+                    "5000",
+                    "--json",
+                    "--no-artifact",
+                    "--apply-symbol-memory",
+                    "--explain",
+                )
+                applied = json.loads(proc.stdout)
+                public_scan = applied["explain"]["repo_map"]["secret_scan"]
+
+                self.assertNotIn(secret, proc.stdout + proc.stderr)
+                self.assertEqual(len(public_scan["files_with_risks"]), 20)
+                self.assertEqual(public_scan["files_omitted_by_cap"], 1)
+                self.assertNotIn(
+                    "src/z_credentials.py",
+                    [item["path"] for item in public_scan["files_with_risks"]],
+                )
+                self.assertEqual(
+                    [item["path"] for item in applied["manifest"]["sources"]],
+                    ["src/app.py"],
+                )
+                graph = applied["graph_application"]
+                self.assertEqual(graph["selected_source_count"], 0)
+                self.assertEqual(graph["excluded_secret_risk_count"], 1)
+
+    def test_adaptive_k_text_reports_no_change_as_not_applied(self) -> None:
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "src").mkdir()
+                (root / "src" / "entry.py").write_text(
+                    "def entrypoint():\n    return 'entry'\n",
+                    encoding="utf-8",
+                )
+                common = [
+                    "auto",
+                    "--root",
+                    ".",
+                    "--files",
+                    "src/entry.py",
+                    "--top",
+                    "1",
+                    "--budget-bytes",
+                    "5000",
+                    "--no-artifact",
+                    "--apply-adaptive-k",
+                ]
+
+                no_change = self._run_pack(script, root, *common).stdout
+                no_change_json = json.loads(
+                    self._run_pack(script, root, *common, "--json").stdout
+                )
+                self.assertEqual(
+                    no_change_json["adaptive_k_application"]["status"],
+                    "no_change",
+                )
+                self.assertIn("adaptive-k:", no_change)
+                self.assertIn("apply=false", no_change)
+                self.assertNotIn("apply=true", no_change)
 
     def test_help_and_docs_expose_progressive_context_opt_in_flags(self) -> None:
         for script in PACK_SCRIPTS:

@@ -29,46 +29,46 @@ PINNED_OUTPUT_ROOTS = (
     "tests/provider-free-roadmap",
 )
 PINNED_G2_LOCK_PATH = "research/provider-free-roadmap/g2/freeze-lock.json"
-PINNED_G2_LOCK_SHA256 = "722b1b65a3d927b2549ba1befe9c60ffcaceea6b32fc6cbd1ebbd35f3adb91f8"
-PINNED_G2_TREE_ROOT_SHA256 = "9ed2bafba81227924fb0d09ff0bc1697426f05944d3da33d94d1f2f4b0c4ccb6"
-PINNED_G2_VERIFIER_SHA256 = "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520"
+PINNED_G2_LOCK_SHA256 = "8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283"
+PINNED_G2_TREE_ROOT_SHA256 = "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc"
+PINNED_G2_VERIFIER_SHA256 = "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
 PINNED_G3_LOCK_PATH = "research/provider-free-roadmap/g3/freeze-lock.json"
-PINNED_G3_LOCK_SHA256 = "20cf16e701e3d55a11c084033efaa06c0129f80fcf1ae7743514953d7440624a"
-PINNED_G3_TREE_ROOT_SHA256 = "593dbd277dd044264140bb748d30ef45c7e029e9c9fbe2bea5877c99ef421c36"
+PINNED_G3_LOCK_SHA256 = "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
+PINNED_G3_TREE_ROOT_SHA256 = "ef13371780b940826dd5a1134777e1bae84b578702ee1fe5c83fa6698032fa6b"
 PINNED_G4_LOCK_PATH = "research/provider-free-roadmap/g4/freeze-lock.json"
-PINNED_G4_LOCK_SHA256 = "ab8ca24009db87e352457b38e0b2b597cbbf7b64b942d9acafadb91a680a4b98"
-PINNED_G4_TREE_ROOT_SHA256 = "c785b6e937220e1b9c78743df84f27f6cdf22801472a9903831724cc813b9bb4"
+PINNED_G4_LOCK_SHA256 = "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
+PINNED_G4_TREE_ROOT_SHA256 = "ad18cc7cf413dff75999aa3c9d258c25205cc5f8e393b7c1fa961b1bc813bda4"
 PINNED_G5_LOCK_PATH = "research/provider-free-roadmap/g5/freeze-lock.json"
-PINNED_G5_LOCK_SHA256 = "5096f78a17cec6e7081aaefa400741120132578a38ad8e32c1976dad5e095a69"
-PINNED_G5_TREE_ROOT_SHA256 = "409521febe7eb834d275b454c451614d57e5e3c567bc3e9bcb7f4d0f812ba0dc"
+PINNED_G5_LOCK_SHA256 = "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
+PINNED_G5_TREE_ROOT_SHA256 = "2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8"
 PINNED_G6_LOCK_PATH = "research/provider-free-roadmap/g6/freeze-lock.json"
-PINNED_G6_LOCK_SHA256 = "406a7a7de9ce98d0596cc63fe2035c988c21445ef8820f8aae33c09b49a55c22"
-PINNED_G6_TREE_ROOT_SHA256 = "c369a18d5b44671819de4bb0d1e0cc8cb1c15c9618ed30518606eb6ea826d51a"
+PINNED_G6_LOCK_SHA256 = "cce80538f5c47248c59cd9df6b0748bba825bdd5c8a8327011b71e2edbe8e64c"
+PINNED_G6_TREE_ROOT_SHA256 = "392639bf52d9a9b37c7a9b3edde2beb06b51cc4cec6003c716c36db0f3d05f43"
 PINNED_EXECUTION_PROFILES = {
     "boundary-tests": {
         "module": "tests.test_provider_free_roadmap_boundary",
         "test_artifact": {
-            "bytes": 48140,
+            "bytes": 55701,
             "path": "tests/test_provider_free_roadmap_boundary.py",
-            "sha256": "2012425e8669ce70b0aaa3a38b4d10cace5f84ae82fd1285659e02ac0a113250",
+            "sha256": "d40470bc64713b862e9d05bbe804fe866fe09aeae569b132a4be3ab2e79f27d9",
         },
     },
     "g2-contract-tests": {
         "module": "g2_contract_tests",
         "test_artifact": {
-            "bytes": 51417,
+            "bytes": 52561,
             "path": "tests/provider-free-roadmap/test_g2_ablation_contract.py",
-            "sha256": "4ecdb84177a5abac6f92482089ef604c2746bad8d7a29c501783722645be18e8",
+            "sha256": "9e74c3dffe3e7d94cc08096ace58bbf0581115fa1d837fb2a8a257ebfd7b5663",
         },
         "verifier_artifact": {
-            "bytes": 80880,
+            "bytes": 81813,
             "path": "research/provider-free-roadmap/g2/v1/verify.py",
-            "sha256": "bd5e83e646d3db943452a99501e44c83ab50be6474235c8d3c30316a793fb520",
+            "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f",
         },
     },
     "g3-rehearsal-tests": {
         "g2_verifier_artifact": {
-            "bytes": 80880,
+            "bytes": 81813,
             "path": "research/provider-free-roadmap/g2/v1/verify.py",
             "sha256": PINNED_G2_VERIFIER_SHA256,
         },
@@ -81,12 +81,12 @@ PINNED_EXECUTION_PROFILES = {
         "test_artifact": {
             "bytes": 42280,
             "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-            "sha256": "4ab9a5ea13ea6b5549dab5e3eed02242b593d76dccf3b1588d1bd88fb2b19fb7",
+            "sha256": "6dede3f5afc1b0260c929fe9331a3cba7c567a1d9e640937c3c9e48070c73175",
         },
     },
     "g4-claim-gates": {
         "g2_verifier_artifact": {
-            "bytes": 80880,
+            "bytes": 81813,
             "path": "research/provider-free-roadmap/g2/v1/verify.py",
             "sha256": PINNED_G2_VERIFIER_SHA256,
         },
@@ -324,6 +324,23 @@ BOUNDARY_KEYS = {
     "schema_version",
 }
 SYSTEM_GIT = Path("/usr/bin/git")
+PROFILE_TIMEOUT_SECONDS = 300
+GIT_TIMEOUT_SECONDS = 30
+GIT_OBJECT_ENVIRONMENT = {
+    "GIT_CONFIG_COUNT": "3",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_KEY_0": "credential.helper",
+    "GIT_CONFIG_KEY_1": "core.askPass",
+    "GIT_CONFIG_KEY_2": "protocol.allow",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_VALUE_0": "",
+    "GIT_CONFIG_VALUE_1": "/usr/bin/false",
+    "GIT_CONFIG_VALUE_2": "never",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "LANG": "C",
+    "PATH": "/usr/bin:/bin",
+}
 APPLE_RUNTIME_ENVIRONMENT = "__CF_USER_TEXT_ENCODING"
 APPLE_RUNTIME_VALUE = re.compile(r"0x[0-9A-Fa-f]+:0x[0-9A-Fa-f]+:0x[0-9A-Fa-f]+")
 
@@ -331,6 +348,27 @@ APPLE_RUNTIME_VALUE = re.compile(r"0x[0-9A-Fa-f]+:0x[0-9A-Fa-f]+:0x[0-9A-Fa-f]+"
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(1)
+
+
+def run_bounded_profile(
+    profile_name: str,
+    command: list[str],
+    root: Path,
+    environment: dict[str, str],
+    payload: bytes,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=PROFILE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail(f"{profile_name} profile timed out")
 
 
 def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -514,25 +552,33 @@ def validated_roots(manifest: dict) -> tuple[list[str], list[str]]:
 def run_git(root: Path, *arguments: str) -> bytes:
     if not SYSTEM_GIT.is_file():
         fail("required local Git executable is unavailable")
-    result = subprocess.run(
-        [str(SYSTEM_GIT), "-C", str(root), *arguments],
-        env={"LANG": "C", "PATH": "/usr/bin:/bin"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        result = subprocess.run(
+            [str(SYSTEM_GIT), "-C", str(root), *arguments],
+            env=dict(GIT_OBJECT_ENVIRONMENT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail("unable to read the pinned local Git object")
     if result.returncode != 0:
         fail("unable to read the pinned local Git object")
     return result.stdout
 
 
 def read_git_blobs(root: Path, object_names: list[str]) -> list[bytes]:
-    result = subprocess.run(
-        [str(SYSTEM_GIT), "-C", str(root), "cat-file", "--batch"],
-        env={"LANG": "C", "PATH": "/usr/bin:/bin"},
-        input=("\n".join(object_names) + "\n").encode("ascii"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        result = subprocess.run(
+            [str(SYSTEM_GIT), "-C", str(root), "cat-file", "--batch"],
+            env=dict(GIT_OBJECT_ENVIRONMENT),
+            input=("\n".join(object_names) + "\n").encode("ascii"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail("unable to read the pinned local Git blobs")
     if result.returncode != 0:
         fail("unable to read the pinned local Git blobs")
     blobs: list[bytes] = []
@@ -745,7 +791,8 @@ def execute_verified_profile_bytes(
 ) -> subprocess.CompletedProcess[bytes]:
     if hashlib.sha256(PINNED_PROFILE_BOOTSTRAP).hexdigest() != PINNED_PROFILE_BOOTSTRAP_SHA256:
         fail("invalid pinned profile bootstrap")
-    return subprocess.run(
+    return run_bounded_profile(
+        "boundary-tests",
         [
             str(executable),
             "-I",
@@ -754,11 +801,9 @@ def execute_verified_profile_bytes(
             PINNED_PROFILE_BOOTSTRAP.decode("ascii"),
             pinned_filename,
         ],
-        cwd=root,
-        env=dict(child_environment),
-        input=raw,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        root,
+        dict(child_environment),
+        raw,
     )
 
 
@@ -782,16 +827,15 @@ def execute_verified_g2_profile_bytes(
         "tree_root": tree_root,
         "verifier": base64.b64encode(verifier_raw).decode("ascii"),
     }
-    return subprocess.run(
+    return run_bounded_profile(
+        "g2-contract-tests",
         [
             str(executable), "-I", "-B", "-c",
             PINNED_G2_PROFILE_BOOTSTRAP.decode("ascii"), pinned_filename,
         ],
-        cwd=root,
-        env={"LANG": child_environment["LANG"]},
-        input=json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        root,
+        {"LANG": child_environment["LANG"]},
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii"),
     )
 
 
@@ -976,13 +1020,12 @@ def execute_verified_g3_profile_bytes(
         "schemas": schemas,
         "test": base64.b64encode(test_raw).decode("ascii"),
     }
-    return subprocess.run(
+    return run_bounded_profile(
+        "g3-rehearsal-tests",
         [str(executable), "-I", "-B", "-c", PINNED_G3_PROFILE_BOOTSTRAP.decode("ascii"), pinned_filename],
-        cwd=root,
-        env={"LANG": child_environment["LANG"]},
-        input=json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        root,
+        {"LANG": child_environment["LANG"]},
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
     )
 
 
@@ -1005,7 +1048,7 @@ def verify_independently_pinned_g4_lock(root: Path, profile: dict) -> tuple[byte
         or lock.get("tree_root_sha256") != PINNED_G4_TREE_ROOT_SHA256
         or lock.get("g3_source") != {
             "lock_sha256": PINNED_G3_LOCK_SHA256,
-            "manifest_sha256": "e647db61ac92c80b59f7fa653aa53d0618f84069a6ecbc01dfc204740af17e4b",
+            "manifest_sha256": "ceb3c9807dad9f5ddc501f3439ac0bc5e7350e67e5c56ac27aa84e80cbd5d677",
             "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
             "schema_set_bytes": 25254,
             "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
@@ -1131,11 +1174,12 @@ def execute_verified_g4_profile_bytes(
         "g4_verifier": encode(g4_inventory[g4_prefix + "verify.py"]),
         "test": encode(test_raw),
     }
-    return subprocess.run(
+    return run_bounded_profile(
+        "g4-claim-gates",
         [str(executable), "-I", "-B", "-c", PINNED_G4_PROFILE_BOOTSTRAP.decode("ascii"), pinned_filename],
-        cwd=root, env={"LANG": child_environment["LANG"]},
-        input=json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        root,
+        {"LANG": child_environment["LANG"]},
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
     )
 
 
@@ -1157,12 +1201,12 @@ def verify_independently_pinned_g5_lock(root: Path, profile: dict) -> tuple[byte
         or lock.get("schema_version") != "contextguard.g5-freeze-lock/v1"
         or lock.get("tree_root_sha256") != PINNED_G5_TREE_ROOT_SHA256
         or lock.get("g4_source") != {
-            "claim_policy_sha256": "b8d32a0907f5b1fb0319d2f47cfc202e610b16cbb1f41fb5b6419503e46bcda2",
+            "claim_policy_sha256": "1d8990fe47208c360ef47b2ba2cbba963cf60c10f1aeef3e82833ba9d38d3d46",
             "lock_sha256": PINNED_G4_LOCK_SHA256,
             "schema_set_bytes": 6533,
-            "schema_set_sha256": "b830b0ec173965f093269fd343489c8c006676f3b4565bc566acf3cf52278356",
+            "schema_set_sha256": "d17b2f510d501902c14fb0b346b7c1e20f05f4fa83f94db0316f06b4705b0fb0",
             "tree_root_sha256": PINNED_G4_TREE_ROOT_SHA256,
-            "verifier_sha256": "3bdcfdf729552ed6143883aa568990413d7fdd6c2ab5e0917dcb7176c9e721a2",
+            "verifier_sha256": "acc5c26cfefc6b145626ec04d34e4c9acb32a88ac5c81b3f930f583dd778cd09",
         }
     ):
         fail("invalid independently pinned g5 freeze lock")
@@ -1286,11 +1330,12 @@ def execute_verified_g5_profile_bytes(
         "g5_verifier": encode(g5_inventory[g5_prefix + "verify.py"]),
         "test": encode(test_raw),
     }
-    return subprocess.run(
+    return run_bounded_profile(
+        "g5-p2-preregistration",
         [str(executable), "-I", "-B", "-c", PINNED_G5_PROFILE_BOOTSTRAP.decode("ascii"), pinned_filename],
-        cwd=root, env={"LANG": child_environment["LANG"]},
-        input=json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        root,
+        {"LANG": child_environment["LANG"]},
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
     )
 
 
@@ -1313,12 +1358,12 @@ def verify_independently_pinned_g6_lock(root: Path, profile: dict) -> tuple[byte
         or lock.get("tree_root_sha256") != PINNED_G6_TREE_ROOT_SHA256
         or lock.get("g5_source") != {
             "lock_sha256": PINNED_G5_LOCK_SHA256,
-            "preregistration_sha256": "d0dc7a54a69e1bf601f795c3f372e54e2a08c406a89a7b3699e038c0c14e7227",
+            "preregistration_sha256": "9d306a6a1ab85a79d562fed611ab55471ec678630a590843eb4a19ca959498bf",
             "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
             "schema_set_bytes": 41710,
-            "schema_set_sha256": "9878506250d0ae01f1a656d6f6215e00f573374e9afecf92c27632b7f15899b3",
+            "schema_set_sha256": "c98921e1fc29345eafe22f58a3e5f14f0be357a3e086aeaaa0e2932cafc8ab98",
             "tree_root_sha256": PINNED_G5_TREE_ROOT_SHA256,
-            "verifier_sha256": "951d764a4c1721ad6d680776173592ae7dd334b0817208aaa07bee637bffdcbf",
+            "verifier_sha256": "520ad6e66cb8116afcb128e49812511297844571103a39f11ea50262d437a686",
         }
     ):
         fail("invalid independently pinned g6 freeze lock")
@@ -1447,11 +1492,12 @@ def execute_verified_g6_profile_bytes(
         "g6_inventory_paths": sorted(g6_inventory),
         "test": encode(test_raw),
     }
-    return subprocess.run(
+    return run_bounded_profile(
+        "g6-prepared-unapproved",
         [str(executable), "-I", "-B", "-c", PINNED_G6_PROFILE_BOOTSTRAP.decode("ascii"), pinned_filename],
-        cwd=root, env={"LANG": child_environment["LANG"]},
-        input=json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        root,
+        {"LANG": child_environment["LANG"]},
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
     )
 
 
