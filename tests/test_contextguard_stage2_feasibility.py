@@ -318,7 +318,7 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g007_sanitizer.py', 'sha256': '933397c2b0d1dc2f4944dadab5ce83af97eb5a79a42670d9e5ba26d6cd504200'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_cli.py', 'sha256': '541d9f1a3218b0225bee6015cd26b9d027d59663d1974b91dc51ba5c5f98e0ae'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_expansion.py', 'sha256': '4a3d1bbd3b5ee6fffde6eb4c523e55d749894807d991af083fc0cdae263605da'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_runner.py', 'sha256': '489252498bce09bfb57b5237a60ac7df587a8cc52df1e598327f75e863bf772b'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_runner.py', 'sha256': '2db61d6ae4dce10138930cc6b2918f8a3d498db7407da9085d6d0a9e3b6b0b6f'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g009_cli.py', 'sha256': '9c967aff4e2961890953865e7c4598d031b14761eee3e3ce3a76a194383b165a'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g009_diagnostics.py', 'sha256': '454031b9b2bf48d17b8108f616d34484dc9c0366d03deb5b8252b76365c497c8'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g009_ledger.py', 'sha256': 'b5bfc17842d505cf1c3deaa497bf286578ca8843b9b41ee9f1995467f19b9de4'},
