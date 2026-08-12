@@ -1,0 +1,385 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "id": {
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "type": "string"
+    },
+    "availability": {
+      "enum": [
+        "observed",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "unavailable_reason": {
+      "enum": [
+        "not_applicable",
+        "not_in_authoritative_receipt",
+        "receipt_unavailable",
+        "not_observed",
+        "excluded_unit"
+      ],
+      "type": "string"
+    },
+    "metric_integer": {
+      "additionalProperties": false,
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/availability"
+        },
+        "unavailable_reason": {
+          "$ref": "#/$defs/unavailable_reason"
+        },
+        "value": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "availability",
+        "unavailable_reason",
+        "value"
+      ],
+      "type": "object"
+    },
+    "cost_component": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_minor": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "availability": {
+          "$ref": "#/$defs/availability"
+        },
+        "component": {
+          "enum": [
+            "provider_input",
+            "provider_output",
+            "provider_correction"
+          ],
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receipt_reference": {
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unavailable_reason": {
+          "$ref": "#/$defs/unavailable_reason"
+        }
+      },
+      "required": [
+        "amount_minor",
+        "availability",
+        "component",
+        "currency",
+        "receipt_reference",
+        "unavailable_reason"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "contextguard.g5-authoritative-observation/v1",
+      "type": "string"
+    },
+    "observer_version": {
+      "const": "contextguard.g5-minimized-observer/v1",
+      "type": "string"
+    },
+    "scheduled_unit_id": {
+      "$ref": "#/$defs/id"
+    },
+    "block_id": {
+      "$ref": "#/$defs/id"
+    },
+    "task_id": {
+      "enum": [
+        "train_closed",
+        "train_graph",
+        "calibration_closed",
+        "calibration_graph",
+        "evaluation_closed",
+        "evaluation_graph"
+      ],
+      "type": "string"
+    },
+    "lineage_id": {
+      "enum": [
+        "train_closed",
+        "train_graph",
+        "calibration_closed",
+        "calibration_graph",
+        "evaluation_closed",
+        "evaluation_graph"
+      ],
+      "type": "string"
+    },
+    "partition": {
+      "enum": [
+        "train",
+        "calibration",
+        "evaluation"
+      ],
+      "type": "string"
+    },
+    "stratum": {
+      "enum": [
+        "closed_pack",
+        "realistic_fallback"
+      ],
+      "type": "string"
+    },
+    "arm": {
+      "enum": [
+        "ordinary",
+        "adaptive_only",
+        "symbol_only",
+        "combined"
+      ],
+      "type": "string"
+    },
+    "assigned_order": {
+      "minimum": 1,
+      "maximum": 4,
+      "type": "integer"
+    },
+    "repetition": {
+      "minimum": 1,
+      "maximum": 11,
+      "type": "integer"
+    },
+    "assignment_id": {
+      "$ref": "#/$defs/id"
+    },
+    "payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "model_identity": {
+      "$ref": "#/$defs/id"
+    },
+    "request_id": {
+      "$ref": "#/$defs/id"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/id"
+    },
+    "unit_status": {
+      "enum": [
+        "completed",
+        "excluded"
+      ],
+      "type": "string"
+    },
+    "completion_event": {
+      "enum": [
+        "normal_completion",
+        "unscheduled_unit",
+        "duplicate_request_id",
+        "duplicate_receipt_id",
+        "assignment_identity_mismatch",
+        "payload_identity_mismatch",
+        "task_arm_stratum_partition_or_repetition_mismatch",
+        "observer_version_mismatch",
+        "model_identity_mismatch",
+        "provider_receipt_not_authoritative",
+        "transport_error",
+        "timeout",
+        "cancellation",
+        "missing_required_field",
+        "malformed_required_field",
+        "nonmonotonic_timestamp",
+        "incomplete_four_arm_block"
+      ],
+      "type": "string"
+    },
+    "event_count": {
+      "minimum": 1,
+      "maximum": 1024,
+      "type": "integer"
+    },
+    "pack_start_monotonic_ns": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "pack_end_monotonic_ns": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "correctness": {
+      "additionalProperties": false,
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/availability"
+        },
+        "outcome": {
+          "enum": [
+            "correct",
+            "incorrect",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "unavailable_reason": {
+          "$ref": "#/$defs/unavailable_reason"
+        }
+      },
+      "required": [
+        "availability",
+        "outcome",
+        "unavailable_reason"
+      ],
+      "type": "object"
+    },
+    "input_usage": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "output_usage": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "correction_count": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "correction_tokens": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "retrieval_count": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "retrieval_bytes": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "retrieval_tokens": {
+      "$ref": "#/$defs/metric_integer"
+    },
+    "billing_receipt": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "enum": [
+            "authoritative_provider_receipt",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "reference": {
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "observed",
+            "unavailable"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "authority",
+        "reference",
+        "status"
+      ],
+      "type": "object"
+    },
+    "cost_components": {
+      "items": {
+        "$ref": "#/$defs/cost_component"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "exclusion_reason": {
+      "enum": [
+        "none",
+        "unscheduled_unit",
+        "duplicate_request_id",
+        "duplicate_receipt_id",
+        "assignment_identity_mismatch",
+        "payload_identity_mismatch",
+        "task_arm_stratum_partition_or_repetition_mismatch",
+        "observer_version_mismatch",
+        "model_identity_mismatch",
+        "provider_receipt_not_authoritative",
+        "transport_error",
+        "timeout",
+        "cancellation",
+        "missing_required_field",
+        "malformed_required_field",
+        "nonmonotonic_timestamp",
+        "incomplete_four_arm_block"
+      ],
+      "type": "string"
+    },
+    "audit_status": {
+      "enum": [
+        "eligible",
+        "excluded"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "observer_version",
+    "scheduled_unit_id",
+    "block_id",
+    "task_id",
+    "lineage_id",
+    "partition",
+    "stratum",
+    "arm",
+    "assigned_order",
+    "repetition",
+    "assignment_id",
+    "payload_sha256",
+    "model_identity",
+    "request_id",
+    "receipt_id",
+    "unit_status",
+    "completion_event",
+    "event_count",
+    "pack_start_monotonic_ns",
+    "pack_end_monotonic_ns",
+    "correctness",
+    "input_usage",
+    "output_usage",
+    "correction_count",
+    "correction_tokens",
+    "retrieval_count",
+    "retrieval_bytes",
+    "retrieval_tokens",
+    "billing_receipt",
+    "cost_components",
+    "exclusion_reason",
+    "audit_status"
+  ],
+  "type": "object"
+}

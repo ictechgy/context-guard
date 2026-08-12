@@ -1,0 +1,124 @@
+{
+  "allowed_inherited_environment": [
+    "LANG",
+    "PATH"
+  ],
+  "child_environment": {
+    "copy_from_inherited": [
+      "LANG",
+      "PATH"
+    ]
+  },
+  "execution_profiles": {
+    "boundary-tests": {
+      "module": "tests.test_provider_free_roadmap_boundary",
+      "test_artifact": {
+        "bytes": 55701,
+        "path": "tests/test_provider_free_roadmap_boundary.py",
+        "sha256": "d40470bc64713b862e9d05bbe804fe866fe09aeae569b132a4be3ab2e79f27d9"
+      }
+    },
+    "g2-contract-tests": {
+      "module": "g2_contract_tests",
+      "test_artifact": {
+        "bytes": 52561,
+        "path": "tests/provider-free-roadmap/test_g2_ablation_contract.py",
+        "sha256": "9e74c3dffe3e7d94cc08096ace58bbf0581115fa1d837fb2a8a257ebfd7b5663"
+      },
+      "verifier_artifact": {
+        "bytes": 81813,
+        "path": "research/provider-free-roadmap/g2/v1/verify.py",
+        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+      }
+    },
+    "g3-rehearsal-tests": {
+      "g2_verifier_artifact": {
+        "bytes": 81813,
+        "path": "research/provider-free-roadmap/g2/v1/verify.py",
+        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+      },
+      "g3_lock_artifact": {
+        "bytes": 3330,
+        "path": "research/provider-free-roadmap/g3/freeze-lock.json",
+        "sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
+      },
+      "module": "g3_rehearsal_tests",
+      "test_artifact": {
+        "bytes": 42280,
+        "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
+        "sha256": "6dede3f5afc1b0260c929fe9331a3cba7c567a1d9e640937c3c9e48070c73175"
+      }
+    },
+    "g4-claim-gates": {
+      "g2_verifier_artifact": {
+        "bytes": 81813,
+        "path": "research/provider-free-roadmap/g2/v1/verify.py",
+        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+      },
+      "g3_lock_artifact": {
+        "bytes": 3330,
+        "path": "research/provider-free-roadmap/g3/freeze-lock.json",
+        "sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
+      },
+      "g4_lock_artifact": {
+        "bytes": 2202,
+        "path": "research/provider-free-roadmap/g4/freeze-lock.json",
+        "sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
+      },
+      "module": "g4_claim_gate_tests",
+      "test_artifact": {
+        "bytes": 15713,
+        "path": "tests/provider-free-roadmap/test_g4_claim_gates.py",
+        "sha256": "9a3202f5946421ec149876aaee6176c5a1227775be54ac3890e3395da791f90f"
+      }
+    },
+    "g5-p2-preregistration": {
+      "g4_lock_artifact": {
+        "bytes": 2202,
+        "path": "research/provider-free-roadmap/g4/freeze-lock.json",
+        "sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
+      },
+      "g5_lock_artifact": {
+        "bytes": 2438,
+        "path": "research/provider-free-roadmap/g5/freeze-lock.json",
+        "sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
+      },
+      "module": "g5_p2_preregistration_tests",
+      "test_artifact": {
+        "bytes": 45206,
+        "path": "tests/provider-free-roadmap/test_g5_p2_preregistration.py",
+        "sha256": "e3d80b078668a5b461be540ed52b95fd94b97147fe788889fedab1b2d6974e8a"
+      }
+    },
+    "g6-prepared-unapproved": {
+      "g5_lock_artifact": {
+        "bytes": 2438,
+        "path": "research/provider-free-roadmap/g5/freeze-lock.json",
+        "sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
+      },
+      "g6_lock_artifact": {
+        "bytes": 2069,
+        "path": "research/provider-free-roadmap/g6/freeze-lock.json",
+        "sha256": "cce80538f5c47248c59cd9df6b0748bba825bdd5c8a8327011b71e2edbe8e64c"
+      },
+      "module": "g6_prepared_unapproved_tests",
+      "test_artifact": {
+        "bytes": 15895,
+        "path": "tests/provider-free-roadmap/test_g6_approval_packet.py",
+        "sha256": "980ccbafe1cc050ba452c0b36caa87a6660587bbcc77ec291d16a6c0c81c7fa5"
+      }
+    }
+  },
+  "new_output_roots": [
+    "research/provider-free-roadmap",
+    "tests/provider-free-roadmap"
+  ],
+  "prohibitions": {
+    "credential_access": "No credential, auth, keychain, cookie, token, .env, provider configuration, or user-login material may be read, requested, forwarded, or persisted.",
+    "network_and_provider_calls": "No network, DNS, socket, remote Git/GitHub/npm, model, host, or provider call may be attempted.",
+    "npm_publication": "No npm pack, publish, dist-tag, registry mutation, candidate dispatch, or release action is authorized.",
+    "runtime_activation": "No serve, run, emit, listener, hook activation, host interception, transcript rewriting, package activation, or provider-backed execution is authorized.",
+    "token_savings_claims": "No token-savings, cost-savings, parity, quality, production-readiness, or generalization claim may be made from this provider-free work."
+  },
+  "schema_version": "contextguard.provider-free-roadmap-boundary/v1"
+}

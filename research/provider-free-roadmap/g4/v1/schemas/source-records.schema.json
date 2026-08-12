@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "arm": {"enum": ["ordinary", "adaptive_only", "symbol_only", "combined"], "type": "string"},
+    "hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "partition": {"enum": ["train", "calibration", "evaluation"], "type": "string"},
+    "stratum": {"enum": ["closed_pack", "realistic_fallback"], "type": "string"},
+    "task": {"pattern": "^(train|calibration|evaluation)_(closed|graph)$", "type": "string"},
+    "record": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {"$ref": "#/$defs/arm"},
+        "eligibility": {"const": true, "type": "boolean"},
+        "partition": {"$ref": "#/$defs/partition"},
+        "receipt_sha256": {"$ref": "#/$defs/hash"},
+        "record_id": {"$ref": "#/$defs/hash"},
+        "schema_version": {"const": "contextguard.g4-source-record/v1", "type": "string"},
+        "stratum": {"$ref": "#/$defs/stratum"},
+        "task_id": {"$ref": "#/$defs/task"},
+        "validation_outcome": {"const": "full_g2_local_contract_validated", "type": "string"}
+      },
+      "required": ["arm", "eligibility", "partition", "receipt_sha256", "record_id", "schema_version", "stratum", "task_id", "validation_outcome"],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "record_count": {"const": 24, "type": "integer"},
+    "records": {"items": {"$ref": "#/$defs/record"}, "maxItems": 24, "minItems": 24, "type": "array", "uniqueItems": true},
+    "schema_version": {"const": "contextguard.g4-source-records/v1", "type": "string"}
+  },
+  "required": ["record_count", "records", "schema_version"],
+  "type": "object"
+}

@@ -1,0 +1,28 @@
+{
+  "arms": [
+    "ordinary",
+    "adaptive_only",
+    "symbol_only",
+    "combined"
+  ],
+  "budgets": {
+    "pack_bytes": 6000,
+    "top": 4,
+    "workspace_reads": 3
+  },
+  "output_mode": "structural_selections_only",
+  "repetitions": 1,
+  "schema_version": "contextguard.g2-run/v1",
+  "seeds": [
+    20260812
+  ],
+  "stopping_rule": "one_structural_replay_then_stop",
+  "task_ids": [
+    "train_closed",
+    "train_graph",
+    "calibration_closed",
+    "calibration_graph",
+    "evaluation_closed",
+    "evaluation_graph"
+  ]
+}

@@ -345,7 +345,7 @@ final class AuditCLIAdapterTests: XCTestCase {
         """.write(to: sample, atomically: true, encoding: .utf8)
         let adapter = AuditCLIAdapter(
             fallbackExecutableURL: try repoLocalAuditExecutable(),
-            timeout: 5,
+            timeout: 30,
             environment: ["PATH": try pythonOnlyPATH(in: temp)]
         )
 

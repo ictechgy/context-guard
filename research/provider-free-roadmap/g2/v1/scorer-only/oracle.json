@@ -1,0 +1,203 @@
+{
+  "entries": [
+    {
+      "adaptive_labels": [
+        {
+          "decision": "retain",
+          "origin": "heuristic",
+          "path": "evidence.txt"
+        },
+        {
+          "decision": "retain",
+          "origin": "explicit",
+          "path": "brief.txt"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "history.md"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "distractor.txt"
+        }
+      ],
+      "answer_signature": "violet-lantern-731",
+      "expected_output": "ARCHIVE-VIOLET-731",
+      "required_paths": [
+        "brief.txt",
+        "evidence.txt"
+      ],
+      "required_symbols": [],
+      "task_id": "train_closed"
+    },
+    {
+      "adaptive_labels": [
+        {
+          "decision": "retain",
+          "origin": "heuristic",
+          "path": "operator-handbook.md"
+        },
+        {
+          "decision": "retain",
+          "origin": "explicit",
+          "path": "app/entry.py"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "cobalt_notes.md"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "supply.yaml"
+        }
+      ],
+      "answer_signature": "cobalt-route-419",
+      "expected_output": "COBALT-419",
+      "required_paths": [
+        "app/entry.py",
+        "app/routing/checksum.py"
+      ],
+      "required_symbols": [
+        "compute_route"
+      ],
+      "task_id": "train_graph"
+    },
+    {
+      "adaptive_labels": [
+        {
+          "decision": "retain",
+          "origin": "heuristic",
+          "path": "ledger.csv"
+        },
+        {
+          "decision": "retain",
+          "origin": "explicit",
+          "path": "dispatch.md"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "tides.txt"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "radio-notes.txt"
+        }
+      ],
+      "answer_signature": "saffron-berth-k9",
+      "expected_output": "BERTH-K9",
+      "required_paths": [
+        "dispatch.md",
+        "ledger.csv"
+      ],
+      "required_symbols": [],
+      "task_id": "calibration_closed"
+    },
+    {
+      "adaptive_labels": [
+        {
+          "decision": "retain",
+          "origin": "heuristic",
+          "path": "operator-handbook.md"
+        },
+        {
+          "decision": "retain",
+          "origin": "explicit",
+          "path": "src/controllers/entry.ts"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "thermometer.txt"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "window-guide.md"
+        }
+      ],
+      "answer_signature": "amber-window-246",
+      "expected_output": "AMBER-246",
+      "required_paths": [
+        "src/controllers/entry.ts",
+        "src/calibration/amber-calibrator.ts"
+      ],
+      "required_symbols": [
+        "AmberCalibrator"
+      ],
+      "task_id": "calibration_graph"
+    },
+    {
+      "adaptive_labels": [
+        {
+          "decision": "retain",
+          "origin": "explicit",
+          "path": "question.txt"
+        },
+        {
+          "decision": "retain",
+          "origin": "heuristic",
+          "path": "matrix.json"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "pruning.md"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "crates.tsv"
+        }
+      ],
+      "answer_signature": "silver-row-q4",
+      "expected_output": "ORCHARD-Q4",
+      "required_paths": [
+        "question.txt",
+        "matrix.json"
+      ],
+      "required_symbols": [],
+      "task_id": "evaluation_closed"
+    },
+    {
+      "adaptive_labels": [
+        {
+          "decision": "retain",
+          "origin": "heuristic",
+          "path": "operator-handbook.md"
+        },
+        {
+          "decision": "retain",
+          "origin": "explicit",
+          "path": "app/runner.js"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "auditors/check.js"
+        },
+        {
+          "decision": "drop",
+          "origin": "heuristic",
+          "path": "queue.toml"
+        }
+      ],
+      "answer_signature": "indigo-token-852",
+      "expected_output": "INDIGO-852",
+      "required_paths": [
+        "app/runner.js",
+        "validators/index.js"
+      ],
+      "required_symbols": [
+        "verifyIndigo"
+      ],
+      "task_id": "evaluation_graph"
+    }
+  ],
+  "schema_version": "contextguard.g2-oracle/v1"
+}

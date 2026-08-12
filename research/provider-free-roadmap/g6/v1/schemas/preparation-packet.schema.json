@@ -1,0 +1,545 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "blocking_selection": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "const": "blocking_unselected",
+          "type": "string"
+        },
+        "value": {
+          "const": null,
+          "type": "null"
+        }
+      },
+      "required": [
+        "state",
+        "value"
+      ],
+      "type": "object"
+    },
+    "disabled_optional_surface": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "state": {
+          "const": "blocking_unselected",
+          "type": "string"
+        },
+        "value": {
+          "const": null,
+          "type": "null"
+        }
+      },
+      "required": [
+        "authorized",
+        "state",
+        "value"
+      ],
+      "type": "object"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approval_evidence": {
+      "const": null,
+      "type": "null"
+    },
+    "authority_effect": {
+      "const": "none",
+      "type": "string"
+    },
+    "authority_flags": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "claim_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "credential_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "network_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "npm_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "provider_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "publication_authorized": {
+          "const": false,
+          "type": "boolean"
+        },
+        "runtime_authorized": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "candidate_authorized",
+        "claim_authorized",
+        "credential_authorized",
+        "network_authorized",
+        "npm_authorized",
+        "provider_authorized",
+        "publication_authorized",
+        "runtime_authorized"
+      ],
+      "type": "object"
+    },
+    "command_materializable": {
+      "const": false,
+      "type": "boolean"
+    },
+    "execution_authorized": {
+      "const": false,
+      "type": "boolean"
+    },
+    "execution_selections": {
+      "additionalProperties": false,
+      "properties": {
+        "credential": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "external_decision": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "model": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "network": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "observer": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "output": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "provider": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "request_surface": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "retention": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "runtime": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "source_candidate": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "spend": {
+          "$ref": "#/$defs/blocking_selection"
+        }
+      },
+      "required": [
+        "credential",
+        "external_decision",
+        "model",
+        "network",
+        "observer",
+        "output",
+        "provider",
+        "request_surface",
+        "retention",
+        "runtime",
+        "source_candidate",
+        "spend"
+      ],
+      "type": "object"
+    },
+    "external_approval_required": {
+      "const": true,
+      "type": "boolean"
+    },
+    "external_requirements": {
+      "additionalProperties": false,
+      "properties": {
+        "expiry": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "one_use": {
+          "$ref": "#/$defs/blocking_selection"
+        },
+        "revocation": {
+          "$ref": "#/$defs/blocking_selection"
+        }
+      },
+      "required": [
+        "expiry",
+        "one_use",
+        "revocation"
+      ],
+      "type": "object"
+    },
+    "future_approval_requirements": {
+      "additionalProperties": false,
+      "properties": {
+        "credential_consumer_identity_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "credential_scope_allowlist_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "exact_destination_scheme_host_port_allowlist_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "exact_operation_surface_version_receipt_schema_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "exact_output_root_mode_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "exact_provider_observer_identity_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "exact_runtime_binary_version_hash_argv_env_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "exact_source_candidate_identity_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "finite_expiry_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "finite_retention_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "finite_spend_cap_and_currency_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "finite_timeout_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "one_use_nonce_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "proxy_default_deny": {
+          "const": true,
+          "type": "boolean"
+        },
+        "redirect_default_deny": {
+          "const": true,
+          "type": "boolean"
+        },
+        "revocation_handle_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "scope_expansion_forbidden": {
+          "const": true,
+          "type": "boolean"
+        },
+        "secret_values_forbidden": {
+          "const": true,
+          "type": "boolean"
+        },
+        "shell_forbidden": {
+          "const": true,
+          "type": "boolean"
+        },
+        "subsequent_evidence_review_required_before_claims": {
+          "const": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "credential_consumer_identity_required",
+        "credential_scope_allowlist_required",
+        "exact_destination_scheme_host_port_allowlist_required",
+        "exact_operation_surface_version_receipt_schema_required",
+        "exact_output_root_mode_required",
+        "exact_provider_observer_identity_required",
+        "exact_runtime_binary_version_hash_argv_env_required",
+        "exact_source_candidate_identity_required",
+        "finite_expiry_required",
+        "finite_retention_required",
+        "finite_spend_cap_and_currency_required",
+        "finite_timeout_required",
+        "one_use_nonce_required",
+        "proxy_default_deny",
+        "redirect_default_deny",
+        "revocation_handle_required",
+        "scope_expansion_forbidden",
+        "secret_values_forbidden",
+        "shell_forbidden",
+        "subsequent_evidence_review_required_before_claims"
+      ],
+      "type": "object"
+    },
+    "future_call_cap_requirement": {
+      "additionalProperties": false,
+      "properties": {
+        "finite_call_cap_required": {
+          "const": true,
+          "type": "boolean"
+        },
+        "maximum_calls_upper_bound": {
+          "maximum": 240,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "finite_call_cap_required",
+        "maximum_calls_upper_bound"
+      ],
+      "type": "object"
+    },
+    "optional_surfaces": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "$ref": "#/$defs/disabled_optional_surface"
+        },
+        "npm": {
+          "$ref": "#/$defs/disabled_optional_surface"
+        },
+        "publication": {
+          "$ref": "#/$defs/disabled_optional_surface"
+        },
+        "runtime_activation": {
+          "$ref": "#/$defs/disabled_optional_surface"
+        }
+      },
+      "required": [
+        "claim",
+        "npm",
+        "publication",
+        "runtime_activation"
+      ],
+      "type": "object"
+    },
+    "packet_status": {
+      "const": "prepared_unapproved",
+      "type": "string"
+    },
+    "runner_present": {
+      "const": false,
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "contextguard.g6-prepared-unapproved/v1",
+      "type": "string"
+    },
+    "unapproved_constraints": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_effect": {
+          "const": "none",
+          "type": "string"
+        },
+        "maximum_scheduled_units": {
+          "const": 240,
+          "type": "integer"
+        },
+        "replacement_blocks": {
+          "const": 0,
+          "type": "integer"
+        },
+        "source": {
+          "const": "frozen_g5_capacity_constraint_only",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authority_effect",
+        "maximum_scheduled_units",
+        "replacement_blocks",
+        "source"
+      ],
+      "type": "object"
+    },
+    "upstream_contract": {
+      "additionalProperties": false,
+      "properties": {
+        "g5_freeze_lock_path": {
+          "const": "research/provider-free-roadmap/g5/freeze-lock.json",
+          "type": "string"
+        },
+        "g5_freeze_lock_sha256": {
+          "const": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307",
+          "type": "string"
+        },
+        "g5_preregistration": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "const": 12139,
+              "type": "integer"
+            },
+            "path": {
+              "const": "research/provider-free-roadmap/g5/v1/preregistration.json",
+              "type": "string"
+            },
+            "sha256": {
+              "const": "9d306a6a1ab85a79d562fed611ab55471ec678630a590843eb4a19ca959498bf",
+              "type": "string"
+            }
+          },
+          "required": [
+            "bytes",
+            "path",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "g5_schedule": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "const": 65964,
+              "type": "integer"
+            },
+            "path": {
+              "const": "research/provider-free-roadmap/g5/v1/schedule.json",
+              "type": "string"
+            },
+            "sha256": {
+              "const": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
+              "type": "string"
+            }
+          },
+          "required": [
+            "bytes",
+            "path",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "g5_schema_set": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "const": 41710,
+              "type": "integer"
+            },
+            "sha256": {
+              "const": "c98921e1fc29345eafe22f58a3e5f14f0be357a3e086aeaaa0e2932cafc8ab98",
+              "type": "string"
+            }
+          },
+          "required": [
+            "bytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "g5_tree_sha256": {
+          "const": "2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8",
+          "type": "string"
+        },
+        "g5_verifier": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "const": 45010,
+              "type": "integer"
+            },
+            "path": {
+              "const": "research/provider-free-roadmap/g5/v1/verify.py",
+              "type": "string"
+            },
+            "sha256": {
+              "const": "520ad6e66cb8116afcb128e49812511297844571103a39f11ea50262d437a686",
+              "type": "string"
+            }
+          },
+          "required": [
+            "bytes",
+            "path",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "g5_freeze_lock_path",
+        "g5_freeze_lock_sha256",
+        "g5_tree_sha256",
+        "g5_preregistration",
+        "g5_schedule",
+        "g5_schema_set",
+        "g5_verifier"
+      ],
+      "type": "object"
+    },
+    "verification_interpretation": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_after_integrity_success": {
+          "const": false,
+          "type": "boolean"
+        },
+        "integrity_success_means": {
+          "const": "captured_bytes_match_prepared_unapproved_contract_only",
+          "type": "string"
+        },
+        "provider_token_usd_savings": {
+          "const": "unavailable",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorization_after_integrity_success",
+        "integrity_success_means",
+        "provider_token_usd_savings"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "packet_status",
+    "execution_authorized",
+    "authority_effect",
+    "external_approval_required",
+    "approval_evidence",
+    "runner_present",
+    "command_materializable",
+    "authority_flags",
+    "upstream_contract",
+    "unapproved_constraints",
+    "execution_selections",
+    "external_requirements",
+    "future_approval_requirements",
+    "future_call_cap_requirement",
+    "optional_surfaces",
+    "verification_interpretation"
+  ],
+  "type": "object"
+}

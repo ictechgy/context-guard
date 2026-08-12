@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "arm": {"enum": ["ordinary", "adaptive_only", "symbol_only", "combined"], "type": "string"},
+    "counts4": {"additionalProperties": false, "properties": {"adaptive_only": {"const": 6, "type": "integer"}, "combined": {"const": 6, "type": "integer"}, "ordinary": {"const": 6, "type": "integer"}, "symbol_only": {"const": 6, "type": "integer"}}, "required": ["adaptive_only", "combined", "ordinary", "symbol_only"], "type": "object"},
+    "counts3": {"additionalProperties": false, "properties": {"calibration": {"const": 8, "type": "integer"}, "evaluation": {"const": 8, "type": "integer"}, "train": {"const": 8, "type": "integer"}}, "required": ["calibration", "evaluation", "train"], "type": "object"},
+    "counts2": {"additionalProperties": false, "properties": {"closed_pack": {"const": 12, "type": "integer"}, "realistic_fallback": {"const": 12, "type": "integer"}}, "required": ["closed_pack", "realistic_fallback"], "type": "object"},
+    "claim": {"additionalProperties": false, "properties": {"claim": {"enum": ["provider_free_rehearsal", "correctness_of_local_contract", "reproducibility", "measurement_readiness", "token_savings", "provider_performance", "production_readiness", "external_validity", "generalization"], "type": "string"}, "claim_allowed": {"type": "boolean"}}, "required": ["claim", "claim_allowed"], "type": "object"},
+    "row": {"additionalProperties": false, "properties": {"arm": {"$ref": "#/$defs/arm"}, "eligible_count": {"const": 1, "type": "integer"}, "partition": {"enum": ["train", "calibration", "evaluation"], "type": "string"}, "record_count": {"const": 1, "type": "integer"}, "stratum": {"enum": ["closed_pack", "realistic_fallback"], "type": "string"}}, "required": ["arm", "eligible_count", "partition", "record_count", "stratum"], "type": "object"}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "boundary": {"additionalProperties": false, "properties": {"claim": {"const": "audited_cpython_process_boundary_not_os_sandbox", "type": "string"}, "dns_denials": {"const": 1, "type": "integer"}, "network_denials": {"const": 1, "type": "integer"}, "process_denials": {"const": 1, "type": "integer"}, "write_denials": {"const": 1, "type": "integer"}}, "required": ["claim", "dns_denials", "network_denials", "process_denials", "write_denials"], "type": "object"},
+    "claims": {"items": {"$ref": "#/$defs/claim"}, "maxItems": 9, "minItems": 9, "type": "array", "uniqueItems": true},
+    "combined_count_only": {"additionalProperties": false, "properties": {"eligible_count": {"const": 24, "type": "integer"}, "record_count": {"const": 24, "type": "integer"}, "scope": {"const": "descriptive_count_only_no_pooled_inference", "type": "string"}, "task_count": {"const": 6, "type": "integer"}}, "required": ["eligible_count", "record_count", "scope", "task_count"], "type": "object"},
+    "conservation": {"additionalProperties": false, "properties": {"by_arm": {"$ref": "#/$defs/counts4"}, "by_partition": {"$ref": "#/$defs/counts3"}, "by_stratum": {"$ref": "#/$defs/counts2"}, "total_records": {"const": 24, "type": "integer"}}, "required": ["by_arm", "by_partition", "by_stratum", "total_records"], "type": "object"},
+    "rows": {"items": {"$ref": "#/$defs/row"}, "maxItems": 24, "minItems": 24, "type": "array", "uniqueItems": true},
+    "schema_version": {"const": "contextguard.g4-claim-report/v1", "type": "string"},
+    "source_records_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "required": ["boundary", "claims", "combined_count_only", "conservation", "rows", "schema_version", "source_records_sha256"],
+  "type": "object"
+}

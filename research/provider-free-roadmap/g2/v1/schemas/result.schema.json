@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "unavailable": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "unavailable",
+          "type": "string"
+        },
+        "value": {
+          "const": null,
+          "type": "null"
+        }
+      },
+      "required": [
+        "status",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "arm": {
+      "enum": [
+        "ordinary",
+        "adaptive_only",
+        "symbol_only",
+        "combined"
+      ],
+      "type": "string"
+    },
+    "observers": {
+      "additionalProperties": false,
+      "properties": {
+        "correction": {
+          "$ref": "#/$defs/unavailable"
+        },
+        "cost": {
+          "$ref": "#/$defs/unavailable"
+        },
+        "latency": {
+          "$ref": "#/$defs/unavailable"
+        },
+        "provider": {
+          "$ref": "#/$defs/unavailable"
+        },
+        "retrieval": {
+          "$ref": "#/$defs/unavailable"
+        }
+      },
+      "required": [
+        "correction",
+        "cost",
+        "latency",
+        "provider",
+        "retrieval"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "contextguard.g2-result/v1",
+      "type": "string"
+    },
+    "selected_paths": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 9,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "structural_status": {
+      "const": "selection_recorded",
+      "type": "string"
+    },
+    "task_id": {
+      "pattern": "^(train|calibration|evaluation)_(closed|graph)$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "arm",
+    "observers",
+    "schema_version",
+    "selected_paths",
+    "structural_status",
+    "task_id"
+  ],
+  "type": "object"
+}

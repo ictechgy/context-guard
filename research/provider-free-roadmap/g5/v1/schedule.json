@@ -1,0 +1,2174 @@
+{
+  "algorithm": {
+    "description": "For each ASCII arm name, compute unsigned FNV-1a-64 over UTF-8(seed + NUL + block_id + NUL + arm), sort by ascending unsigned integer and break a hash tie by ascending ASCII arm name.",
+    "id": "fnv1a64_utf8_ascending_v1",
+    "offset_basis_decimal": "14695981039346656037",
+    "prime_decimal": "1099511628211"
+  },
+  "block_count": 60,
+  "blocks": [
+    {
+      "block_id": "primary-001",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 1,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-001-ordinary",
+          "scheduled_unit_id": "unit-primary-001-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-001-symbol_only",
+          "scheduled_unit_id": "unit-primary-001-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-001-adaptive_only",
+          "scheduled_unit_id": "unit-primary-001-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-001-combined",
+          "scheduled_unit_id": "unit-primary-001-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-002",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 1,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-002-combined",
+          "scheduled_unit_id": "unit-primary-002-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-002-ordinary",
+          "scheduled_unit_id": "unit-primary-002-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-002-adaptive_only",
+          "scheduled_unit_id": "unit-primary-002-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-002-symbol_only",
+          "scheduled_unit_id": "unit-primary-002-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-003",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 1,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-003-combined",
+          "scheduled_unit_id": "unit-primary-003-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-003-ordinary",
+          "scheduled_unit_id": "unit-primary-003-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-003-symbol_only",
+          "scheduled_unit_id": "unit-primary-003-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-003-adaptive_only",
+          "scheduled_unit_id": "unit-primary-003-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-004",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 1,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-004-ordinary",
+          "scheduled_unit_id": "unit-primary-004-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-004-combined",
+          "scheduled_unit_id": "unit-primary-004-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-004-symbol_only",
+          "scheduled_unit_id": "unit-primary-004-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-004-adaptive_only",
+          "scheduled_unit_id": "unit-primary-004-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-005",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 1,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-005-ordinary",
+          "scheduled_unit_id": "unit-primary-005-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-005-combined",
+          "scheduled_unit_id": "unit-primary-005-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-005-symbol_only",
+          "scheduled_unit_id": "unit-primary-005-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-005-adaptive_only",
+          "scheduled_unit_id": "unit-primary-005-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-006",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 1,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-006-adaptive_only",
+          "scheduled_unit_id": "unit-primary-006-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-006-symbol_only",
+          "scheduled_unit_id": "unit-primary-006-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-006-combined",
+          "scheduled_unit_id": "unit-primary-006-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-006-ordinary",
+          "scheduled_unit_id": "unit-primary-006-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-007",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 2,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-007-ordinary",
+          "scheduled_unit_id": "unit-primary-007-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-007-symbol_only",
+          "scheduled_unit_id": "unit-primary-007-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-007-adaptive_only",
+          "scheduled_unit_id": "unit-primary-007-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-007-combined",
+          "scheduled_unit_id": "unit-primary-007-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-008",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 2,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-008-combined",
+          "scheduled_unit_id": "unit-primary-008-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-008-symbol_only",
+          "scheduled_unit_id": "unit-primary-008-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-008-adaptive_only",
+          "scheduled_unit_id": "unit-primary-008-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-008-ordinary",
+          "scheduled_unit_id": "unit-primary-008-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-009",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 2,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-009-ordinary",
+          "scheduled_unit_id": "unit-primary-009-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-009-symbol_only",
+          "scheduled_unit_id": "unit-primary-009-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-009-adaptive_only",
+          "scheduled_unit_id": "unit-primary-009-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-009-combined",
+          "scheduled_unit_id": "unit-primary-009-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-010",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 2,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-010-combined",
+          "scheduled_unit_id": "unit-primary-010-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-010-ordinary",
+          "scheduled_unit_id": "unit-primary-010-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-010-adaptive_only",
+          "scheduled_unit_id": "unit-primary-010-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-010-symbol_only",
+          "scheduled_unit_id": "unit-primary-010-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-011",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 2,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-011-adaptive_only",
+          "scheduled_unit_id": "unit-primary-011-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-011-symbol_only",
+          "scheduled_unit_id": "unit-primary-011-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-011-ordinary",
+          "scheduled_unit_id": "unit-primary-011-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-011-combined",
+          "scheduled_unit_id": "unit-primary-011-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-012",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 2,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-012-adaptive_only",
+          "scheduled_unit_id": "unit-primary-012-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-012-ordinary",
+          "scheduled_unit_id": "unit-primary-012-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-012-symbol_only",
+          "scheduled_unit_id": "unit-primary-012-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-012-combined",
+          "scheduled_unit_id": "unit-primary-012-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-013",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 3,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-013-adaptive_only",
+          "scheduled_unit_id": "unit-primary-013-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-013-combined",
+          "scheduled_unit_id": "unit-primary-013-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-013-symbol_only",
+          "scheduled_unit_id": "unit-primary-013-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-013-ordinary",
+          "scheduled_unit_id": "unit-primary-013-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-014",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 3,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-014-symbol_only",
+          "scheduled_unit_id": "unit-primary-014-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-014-adaptive_only",
+          "scheduled_unit_id": "unit-primary-014-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-014-ordinary",
+          "scheduled_unit_id": "unit-primary-014-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-014-combined",
+          "scheduled_unit_id": "unit-primary-014-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-015",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 3,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-015-combined",
+          "scheduled_unit_id": "unit-primary-015-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-015-ordinary",
+          "scheduled_unit_id": "unit-primary-015-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-015-symbol_only",
+          "scheduled_unit_id": "unit-primary-015-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-015-adaptive_only",
+          "scheduled_unit_id": "unit-primary-015-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-016",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 3,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-016-adaptive_only",
+          "scheduled_unit_id": "unit-primary-016-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-016-ordinary",
+          "scheduled_unit_id": "unit-primary-016-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-016-symbol_only",
+          "scheduled_unit_id": "unit-primary-016-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-016-combined",
+          "scheduled_unit_id": "unit-primary-016-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-017",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 3,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-017-ordinary",
+          "scheduled_unit_id": "unit-primary-017-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-017-symbol_only",
+          "scheduled_unit_id": "unit-primary-017-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-017-adaptive_only",
+          "scheduled_unit_id": "unit-primary-017-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-017-combined",
+          "scheduled_unit_id": "unit-primary-017-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-018",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 3,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-018-symbol_only",
+          "scheduled_unit_id": "unit-primary-018-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-018-ordinary",
+          "scheduled_unit_id": "unit-primary-018-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-018-adaptive_only",
+          "scheduled_unit_id": "unit-primary-018-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-018-combined",
+          "scheduled_unit_id": "unit-primary-018-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-019",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 4,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-019-symbol_only",
+          "scheduled_unit_id": "unit-primary-019-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-019-adaptive_only",
+          "scheduled_unit_id": "unit-primary-019-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-019-ordinary",
+          "scheduled_unit_id": "unit-primary-019-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-019-combined",
+          "scheduled_unit_id": "unit-primary-019-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-020",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 4,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-020-adaptive_only",
+          "scheduled_unit_id": "unit-primary-020-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-020-combined",
+          "scheduled_unit_id": "unit-primary-020-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-020-ordinary",
+          "scheduled_unit_id": "unit-primary-020-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-020-symbol_only",
+          "scheduled_unit_id": "unit-primary-020-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-021",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 4,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-021-adaptive_only",
+          "scheduled_unit_id": "unit-primary-021-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-021-combined",
+          "scheduled_unit_id": "unit-primary-021-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-021-symbol_only",
+          "scheduled_unit_id": "unit-primary-021-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-021-ordinary",
+          "scheduled_unit_id": "unit-primary-021-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-022",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 4,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-022-adaptive_only",
+          "scheduled_unit_id": "unit-primary-022-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-022-combined",
+          "scheduled_unit_id": "unit-primary-022-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-022-symbol_only",
+          "scheduled_unit_id": "unit-primary-022-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-022-ordinary",
+          "scheduled_unit_id": "unit-primary-022-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-023",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 4,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-023-combined",
+          "scheduled_unit_id": "unit-primary-023-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-023-symbol_only",
+          "scheduled_unit_id": "unit-primary-023-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-023-adaptive_only",
+          "scheduled_unit_id": "unit-primary-023-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-023-ordinary",
+          "scheduled_unit_id": "unit-primary-023-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-024",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 4,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-024-symbol_only",
+          "scheduled_unit_id": "unit-primary-024-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-024-combined",
+          "scheduled_unit_id": "unit-primary-024-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-024-ordinary",
+          "scheduled_unit_id": "unit-primary-024-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-024-adaptive_only",
+          "scheduled_unit_id": "unit-primary-024-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-025",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 5,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-025-ordinary",
+          "scheduled_unit_id": "unit-primary-025-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-025-symbol_only",
+          "scheduled_unit_id": "unit-primary-025-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-025-combined",
+          "scheduled_unit_id": "unit-primary-025-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-025-adaptive_only",
+          "scheduled_unit_id": "unit-primary-025-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-026",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 5,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-026-ordinary",
+          "scheduled_unit_id": "unit-primary-026-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-026-adaptive_only",
+          "scheduled_unit_id": "unit-primary-026-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-026-combined",
+          "scheduled_unit_id": "unit-primary-026-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-026-symbol_only",
+          "scheduled_unit_id": "unit-primary-026-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-027",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 5,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-027-combined",
+          "scheduled_unit_id": "unit-primary-027-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-027-adaptive_only",
+          "scheduled_unit_id": "unit-primary-027-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-027-ordinary",
+          "scheduled_unit_id": "unit-primary-027-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-027-symbol_only",
+          "scheduled_unit_id": "unit-primary-027-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-028",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 5,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-028-symbol_only",
+          "scheduled_unit_id": "unit-primary-028-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-028-combined",
+          "scheduled_unit_id": "unit-primary-028-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-028-adaptive_only",
+          "scheduled_unit_id": "unit-primary-028-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-028-ordinary",
+          "scheduled_unit_id": "unit-primary-028-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-029",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 5,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-029-combined",
+          "scheduled_unit_id": "unit-primary-029-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-029-adaptive_only",
+          "scheduled_unit_id": "unit-primary-029-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-029-symbol_only",
+          "scheduled_unit_id": "unit-primary-029-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-029-ordinary",
+          "scheduled_unit_id": "unit-primary-029-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-030",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 5,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-030-symbol_only",
+          "scheduled_unit_id": "unit-primary-030-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-030-ordinary",
+          "scheduled_unit_id": "unit-primary-030-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-030-combined",
+          "scheduled_unit_id": "unit-primary-030-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-030-adaptive_only",
+          "scheduled_unit_id": "unit-primary-030-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-031",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 6,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-031-symbol_only",
+          "scheduled_unit_id": "unit-primary-031-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-031-combined",
+          "scheduled_unit_id": "unit-primary-031-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-031-ordinary",
+          "scheduled_unit_id": "unit-primary-031-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-031-adaptive_only",
+          "scheduled_unit_id": "unit-primary-031-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-032",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 6,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-032-symbol_only",
+          "scheduled_unit_id": "unit-primary-032-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-032-adaptive_only",
+          "scheduled_unit_id": "unit-primary-032-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-032-ordinary",
+          "scheduled_unit_id": "unit-primary-032-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-032-combined",
+          "scheduled_unit_id": "unit-primary-032-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-033",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 6,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-033-adaptive_only",
+          "scheduled_unit_id": "unit-primary-033-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-033-symbol_only",
+          "scheduled_unit_id": "unit-primary-033-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-033-combined",
+          "scheduled_unit_id": "unit-primary-033-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-033-ordinary",
+          "scheduled_unit_id": "unit-primary-033-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-034",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 6,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-034-ordinary",
+          "scheduled_unit_id": "unit-primary-034-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-034-combined",
+          "scheduled_unit_id": "unit-primary-034-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-034-symbol_only",
+          "scheduled_unit_id": "unit-primary-034-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-034-adaptive_only",
+          "scheduled_unit_id": "unit-primary-034-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-035",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 6,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-035-symbol_only",
+          "scheduled_unit_id": "unit-primary-035-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-035-combined",
+          "scheduled_unit_id": "unit-primary-035-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-035-adaptive_only",
+          "scheduled_unit_id": "unit-primary-035-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-035-ordinary",
+          "scheduled_unit_id": "unit-primary-035-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-036",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 6,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-036-ordinary",
+          "scheduled_unit_id": "unit-primary-036-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-036-symbol_only",
+          "scheduled_unit_id": "unit-primary-036-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-036-combined",
+          "scheduled_unit_id": "unit-primary-036-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-036-adaptive_only",
+          "scheduled_unit_id": "unit-primary-036-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-037",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 7,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-037-adaptive_only",
+          "scheduled_unit_id": "unit-primary-037-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-037-symbol_only",
+          "scheduled_unit_id": "unit-primary-037-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-037-ordinary",
+          "scheduled_unit_id": "unit-primary-037-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-037-combined",
+          "scheduled_unit_id": "unit-primary-037-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-038",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 7,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-038-ordinary",
+          "scheduled_unit_id": "unit-primary-038-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-038-symbol_only",
+          "scheduled_unit_id": "unit-primary-038-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-038-combined",
+          "scheduled_unit_id": "unit-primary-038-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-038-adaptive_only",
+          "scheduled_unit_id": "unit-primary-038-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-039",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 7,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-039-adaptive_only",
+          "scheduled_unit_id": "unit-primary-039-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-039-combined",
+          "scheduled_unit_id": "unit-primary-039-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-039-ordinary",
+          "scheduled_unit_id": "unit-primary-039-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-039-symbol_only",
+          "scheduled_unit_id": "unit-primary-039-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-040",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 7,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-040-symbol_only",
+          "scheduled_unit_id": "unit-primary-040-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-040-combined",
+          "scheduled_unit_id": "unit-primary-040-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-040-adaptive_only",
+          "scheduled_unit_id": "unit-primary-040-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-040-ordinary",
+          "scheduled_unit_id": "unit-primary-040-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-041",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 7,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-041-combined",
+          "scheduled_unit_id": "unit-primary-041-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-041-symbol_only",
+          "scheduled_unit_id": "unit-primary-041-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-041-adaptive_only",
+          "scheduled_unit_id": "unit-primary-041-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-041-ordinary",
+          "scheduled_unit_id": "unit-primary-041-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-042",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 7,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-042-symbol_only",
+          "scheduled_unit_id": "unit-primary-042-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-042-adaptive_only",
+          "scheduled_unit_id": "unit-primary-042-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-042-ordinary",
+          "scheduled_unit_id": "unit-primary-042-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-042-combined",
+          "scheduled_unit_id": "unit-primary-042-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-043",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 8,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-043-symbol_only",
+          "scheduled_unit_id": "unit-primary-043-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-043-combined",
+          "scheduled_unit_id": "unit-primary-043-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-043-adaptive_only",
+          "scheduled_unit_id": "unit-primary-043-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-043-ordinary",
+          "scheduled_unit_id": "unit-primary-043-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-044",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 8,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-044-symbol_only",
+          "scheduled_unit_id": "unit-primary-044-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-044-combined",
+          "scheduled_unit_id": "unit-primary-044-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-044-adaptive_only",
+          "scheduled_unit_id": "unit-primary-044-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-044-ordinary",
+          "scheduled_unit_id": "unit-primary-044-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-045",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 8,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-045-ordinary",
+          "scheduled_unit_id": "unit-primary-045-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-045-combined",
+          "scheduled_unit_id": "unit-primary-045-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-045-adaptive_only",
+          "scheduled_unit_id": "unit-primary-045-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-045-symbol_only",
+          "scheduled_unit_id": "unit-primary-045-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-046",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 8,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-046-adaptive_only",
+          "scheduled_unit_id": "unit-primary-046-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-046-ordinary",
+          "scheduled_unit_id": "unit-primary-046-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-046-symbol_only",
+          "scheduled_unit_id": "unit-primary-046-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-046-combined",
+          "scheduled_unit_id": "unit-primary-046-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-047",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 8,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-047-symbol_only",
+          "scheduled_unit_id": "unit-primary-047-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-047-adaptive_only",
+          "scheduled_unit_id": "unit-primary-047-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-047-ordinary",
+          "scheduled_unit_id": "unit-primary-047-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-047-combined",
+          "scheduled_unit_id": "unit-primary-047-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-048",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 8,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-048-symbol_only",
+          "scheduled_unit_id": "unit-primary-048-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-048-adaptive_only",
+          "scheduled_unit_id": "unit-primary-048-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-048-combined",
+          "scheduled_unit_id": "unit-primary-048-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-048-ordinary",
+          "scheduled_unit_id": "unit-primary-048-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-049",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 9,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-049-adaptive_only",
+          "scheduled_unit_id": "unit-primary-049-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-049-ordinary",
+          "scheduled_unit_id": "unit-primary-049-02"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-049-combined",
+          "scheduled_unit_id": "unit-primary-049-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-049-symbol_only",
+          "scheduled_unit_id": "unit-primary-049-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-050",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 9,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-050-symbol_only",
+          "scheduled_unit_id": "unit-primary-050-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-050-combined",
+          "scheduled_unit_id": "unit-primary-050-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-050-adaptive_only",
+          "scheduled_unit_id": "unit-primary-050-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-050-ordinary",
+          "scheduled_unit_id": "unit-primary-050-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-051",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 9,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-051-adaptive_only",
+          "scheduled_unit_id": "unit-primary-051-01"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-051-symbol_only",
+          "scheduled_unit_id": "unit-primary-051-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-051-ordinary",
+          "scheduled_unit_id": "unit-primary-051-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-051-combined",
+          "scheduled_unit_id": "unit-primary-051-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-052",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 9,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-052-ordinary",
+          "scheduled_unit_id": "unit-primary-052-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-052-combined",
+          "scheduled_unit_id": "unit-primary-052-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-052-adaptive_only",
+          "scheduled_unit_id": "unit-primary-052-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-052-symbol_only",
+          "scheduled_unit_id": "unit-primary-052-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-053",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 9,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "ordinary",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-053-ordinary",
+          "scheduled_unit_id": "unit-primary-053-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-053-adaptive_only",
+          "scheduled_unit_id": "unit-primary-053-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-053-symbol_only",
+          "scheduled_unit_id": "unit-primary-053-03"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-053-combined",
+          "scheduled_unit_id": "unit-primary-053-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-054",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 9,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-054-symbol_only",
+          "scheduled_unit_id": "unit-primary-054-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-054-combined",
+          "scheduled_unit_id": "unit-primary-054-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-054-adaptive_only",
+          "scheduled_unit_id": "unit-primary-054-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-054-ordinary",
+          "scheduled_unit_id": "unit-primary-054-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-055",
+      "kind": "primary",
+      "lineage_id": "train_closed",
+      "partition": "train",
+      "repetition": 10,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "train_closed",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-055-adaptive_only",
+          "scheduled_unit_id": "unit-primary-055-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-055-combined",
+          "scheduled_unit_id": "unit-primary-055-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-055-symbol_only",
+          "scheduled_unit_id": "unit-primary-055-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-055-ordinary",
+          "scheduled_unit_id": "unit-primary-055-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-056",
+      "kind": "primary",
+      "lineage_id": "train_graph",
+      "partition": "train",
+      "repetition": 10,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "train_graph",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-056-combined",
+          "scheduled_unit_id": "unit-primary-056-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-056-adaptive_only",
+          "scheduled_unit_id": "unit-primary-056-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-056-symbol_only",
+          "scheduled_unit_id": "unit-primary-056-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-056-ordinary",
+          "scheduled_unit_id": "unit-primary-056-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-057",
+      "kind": "primary",
+      "lineage_id": "calibration_closed",
+      "partition": "calibration",
+      "repetition": 10,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "calibration_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-057-combined",
+          "scheduled_unit_id": "unit-primary-057-01"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-057-ordinary",
+          "scheduled_unit_id": "unit-primary-057-02"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-057-adaptive_only",
+          "scheduled_unit_id": "unit-primary-057-03"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-057-symbol_only",
+          "scheduled_unit_id": "unit-primary-057-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-058",
+      "kind": "primary",
+      "lineage_id": "calibration_graph",
+      "partition": "calibration",
+      "repetition": 10,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "calibration_graph",
+      "units": [
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-058-adaptive_only",
+          "scheduled_unit_id": "unit-primary-058-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-058-combined",
+          "scheduled_unit_id": "unit-primary-058-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-058-symbol_only",
+          "scheduled_unit_id": "unit-primary-058-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-058-ordinary",
+          "scheduled_unit_id": "unit-primary-058-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-059",
+      "kind": "primary",
+      "lineage_id": "evaluation_closed",
+      "partition": "evaluation",
+      "repetition": 10,
+      "replacement_index": 0,
+      "stratum": "closed_pack",
+      "task_id": "evaluation_closed",
+      "units": [
+        {
+          "arm": "combined",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-059-combined",
+          "scheduled_unit_id": "unit-primary-059-01"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-059-adaptive_only",
+          "scheduled_unit_id": "unit-primary-059-02"
+        },
+        {
+          "arm": "symbol_only",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-059-symbol_only",
+          "scheduled_unit_id": "unit-primary-059-03"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-059-ordinary",
+          "scheduled_unit_id": "unit-primary-059-04"
+        }
+      ]
+    },
+    {
+      "block_id": "primary-060",
+      "kind": "primary",
+      "lineage_id": "evaluation_graph",
+      "partition": "evaluation",
+      "repetition": 10,
+      "replacement_index": 0,
+      "stratum": "realistic_fallback",
+      "task_id": "evaluation_graph",
+      "units": [
+        {
+          "arm": "symbol_only",
+          "assigned_order": 1,
+          "assignment_id": "assignment-primary-060-symbol_only",
+          "scheduled_unit_id": "unit-primary-060-01"
+        },
+        {
+          "arm": "combined",
+          "assigned_order": 2,
+          "assignment_id": "assignment-primary-060-combined",
+          "scheduled_unit_id": "unit-primary-060-02"
+        },
+        {
+          "arm": "ordinary",
+          "assigned_order": 3,
+          "assignment_id": "assignment-primary-060-ordinary",
+          "scheduled_unit_id": "unit-primary-060-03"
+        },
+        {
+          "arm": "adaptive_only",
+          "assigned_order": 4,
+          "assignment_id": "assignment-primary-060-adaptive_only",
+          "scheduled_unit_id": "unit-primary-060-04"
+        }
+      ]
+    }
+  ],
+  "schema_version": "contextguard.g5-fixed-schedule/v1",
+  "seed": "contextguard-g5-assignment-v1-20260812",
+  "unit_count": 240
+}

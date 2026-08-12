@@ -48,7 +48,9 @@ AUTO_SCHEMA_VERSION = "contextguard.pack-auto.v1"
 AUTO_EXPLAIN_SCHEMA_VERSION = "contextguard.pack-auto-explain.v1"
 REPO_MAP_SCHEMA_VERSION = "contextguard.pack-repo-map.v1"
 ADAPTIVE_K_SCHEMA_VERSION = "contextguard.pack-adaptive-k.v1"
+ADAPTIVE_K_APPLICATION_SCHEMA_VERSION = "contextguard.pack-adaptive-k-application.v1"
 SYMBOL_MEMORY_SCHEMA_VERSION = "contextguard.pack-symbol-memory.v1"
+GRAPH_APPLICATION_SCHEMA_VERSION = "contextguard.pack-graph-application.v1"
 CONTENT_ADDRESS_SCHEMA_VERSION = "contextguard.pack-content-address.v1"
 ROLLING_DELTA_SCHEMA_VERSION = "contextguard.pack-rolling-delta.v1"
 SKETCH_DUPLICATE_SHINGLE_WIDTH = 5
@@ -85,6 +87,8 @@ MAX_ADAPTIVE_K_VERIFICATION_HINTS = 12
 ADAPTIVE_K_POLICIES = ("balanced", "recall", "precision")
 MAX_SYMBOL_MEMORY_ITEMS = 12
 MAX_SYMBOL_MEMORY_GRAPH_ITEMS = 12
+MAX_GRAPH_APPLICATION_SOURCES = 4
+MAX_GRAPH_APPLICATION_LINES = 80
 PACK_DIR = ".context-guard/packs"
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
@@ -3124,6 +3128,57 @@ def line_range_identity(value: object) -> str:
     return str(value)
 
 
+def apply_adaptive_k_manifest(
+    manifest: dict[str, Any],
+    advisory: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    raw_sources = manifest.get("sources", [])
+    sources = copy.deepcopy(raw_sources) if isinstance(raw_sources, list) else []
+    gates = advisory.get("regression_gates", {})
+    gates_passed = isinstance(gates, dict) and gates.get("status") == "pass"
+    recommended_k = max(0, int(advisory.get("recommended_k", 0) or 0))
+    protected_prefixes = ("file:", "output:", "test-output:", "diff:")
+    protected_indexes = {
+        index
+        for index, item in enumerate(sources)
+        if isinstance(item, dict)
+        and str(item.get("label", "")).startswith(protected_prefixes)
+    }
+    retained: list[dict[str, Any]] = []
+    if gates_passed:
+        target_count = max(recommended_k, len(protected_indexes))
+        for index, item in enumerate(sources):
+            if not isinstance(item, dict):
+                continue
+            if index in protected_indexes or len(retained) < target_count:
+                retained.append(item)
+    else:
+        retained = [item for item in sources if isinstance(item, dict)]
+    omitted_count = len(sources) - len(retained)
+    status = "applied" if gates_passed and omitted_count else "no_change"
+    if not gates_passed:
+        status = "gate_failed"
+    applied_manifest = {"version": 1, "sources": retained}
+    return applied_manifest, {
+        "schema_version": ADAPTIVE_K_APPLICATION_SCHEMA_VERSION,
+        "mode": "explicit_opt_in",
+        "status": status,
+        "recommended_k": recommended_k,
+        "input_source_count": len(sources),
+        "applied_source_count": len(retained),
+        "omitted_source_count": omitted_count,
+        "regression_gates_passed": gates_passed,
+        "explicit_sources_retained": all(
+            sources[index] in retained for index in protected_indexes
+        ),
+        "claim_boundary": {
+            "deterministic_local_only": True,
+            "exact_source_fallback_retained": True,
+            "provider_token_or_cost_savings_claim_allowed": False,
+        },
+    }
+
+
 def copy_explain_fields(item: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for field in fields:
@@ -3522,9 +3577,18 @@ def build_graph_rank(
     query_terms: set[str],
     seed_paths: set[str],
     secret_scan: dict[str, Any],
+    complete_secret_paths: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     signature_paths = {str(item.get("path", "")) for item in signatures}
-    secret_paths = {str(item.get("path", "")) for item in secret_scan.get("files_with_risks", []) if isinstance(item, dict)}
+    secret_paths = (
+        complete_secret_paths
+        if complete_secret_paths is not None
+        else {
+            str(item.get("path", ""))
+            for item in secret_scan.get("files_with_risks", [])
+            if isinstance(item, dict)
+        }
+    )
     degree: dict[str, int] = {}
     for edge in edges:
         degree[edge["from"]] = degree.get(edge["from"], 0) + 1
@@ -3621,6 +3685,7 @@ def build_repo_map_payload(
     build_payload: dict[str, Any],
     *,
     root_arg: str,
+    complete_secret_paths_out: set[str] | None = None,
 ) -> dict[str, Any]:
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
@@ -3628,6 +3693,13 @@ def build_repo_map_payload(
     record_by_path = {str(record["path"]): record for record in records}
     signatures = extract_signatures(records)
     secret_scan = build_secret_scan(records)
+    complete_secret_paths = {
+        str(record.get("path", ""))
+        for record in records
+        if record.get("secret_risk_counts")
+    }
+    if complete_secret_paths_out is not None:
+        complete_secret_paths_out.update(complete_secret_paths)
     edges = collect_import_edges(records)
     graph_rank = build_graph_rank(
         records,
@@ -3636,6 +3708,7 @@ def build_repo_map_payload(
         query_terms=query_terms,
         seed_paths=seed_paths,
         secret_scan=secret_scan,
+        complete_secret_paths=complete_secret_paths,
     )
     retrieval = repo_map_retrieval(record_by_path, signatures, graph_rank, root_arg=root_arg)
     tree = build_token_tree(records)
@@ -3685,7 +3758,118 @@ def line_identity_from_dict(value: object) -> str:
     return f"{value.get('start')}:{value.get('end')}"
 
 
-def build_symbol_memory_payload(repo_map: dict[str, Any]) -> dict[str, Any]:
+def apply_symbol_memory_graph(
+    manifest: dict[str, Any],
+    repo_map: dict[str, Any],
+    *,
+    complete_secret_paths: set[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Add bounded direct graph neighbors to an explicit auto-pack manifest."""
+
+    raw_sources = manifest.get("sources")
+    if not isinstance(raw_sources, list):
+        raise PackError("manifest sources must be a list")
+    existing_sources = [
+        copy.deepcopy(item) for item in raw_sources if isinstance(item, dict)
+    ]
+    existing_paths = {
+        str(item.get("path", "")) for item in existing_sources if item.get("path")
+    }
+    graph = repo_map.get("graph") if isinstance(repo_map.get("graph"), dict) else {}
+    edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    rank_items = (
+        repo_map.get("graph_rank")
+        if isinstance(repo_map.get("graph_rank"), list)
+        else []
+    )
+    rank_by_path = {
+        str(item.get("path", "")): item
+        for item in rank_items
+        if isinstance(item, dict) and item.get("path")
+    }
+    secret_scan = (
+        repo_map.get("secret_scan")
+        if isinstance(repo_map.get("secret_scan"), dict)
+        else {}
+    )
+    risky_paths = (
+        complete_secret_paths
+        if complete_secret_paths is not None
+        else {
+            str(item.get("path", ""))
+            for item in secret_scan.get("files_with_risks", [])
+            if isinstance(item, dict) and item.get("path")
+        }
+    )
+    direct_neighbors: set[str] = set()
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = edge.get("from")
+        target = edge.get("to")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        if source in existing_paths and target not in existing_paths:
+            direct_neighbors.add(target)
+        if target in existing_paths and source not in existing_paths:
+            direct_neighbors.add(source)
+
+    eligible: list[tuple[int, str, int]] = []
+    excluded_secret_risk_count = 0
+    for path in direct_neighbors:
+        if path in risky_paths:
+            excluded_secret_risk_count += 1
+            continue
+        item = rank_by_path.get(path)
+        if item is None or repo_map_path_has_sensitive_evidence(path):
+            continue
+        score = int(item.get("score", 0) or 0)
+        line_count = int(item.get("line_count", 0) or 0)
+        if score <= 0 or line_count <= 0:
+            continue
+        eligible.append((score, path, line_count))
+    eligible.sort(key=lambda item: (-item[0], item[1]))
+
+    seed_priorities = [
+        int(item.get("priority", 0) or 0) for item in existing_sources
+    ]
+    maximum_graph_priority = max(1, min(seed_priorities, default=2) - 1)
+    selected_sources: list[dict[str, Any]] = []
+    for score, path, line_count in eligible[:MAX_GRAPH_APPLICATION_SOURCES]:
+        source = {
+            "path": path,
+            "priority": max(1, min(score, maximum_graph_priority)),
+            "label": f"graph:{path}"[:MAX_LABEL_CHARS],
+            "lines": {"start": 1, "end": min(line_count, MAX_GRAPH_APPLICATION_LINES)},
+        }
+        existing_sources.append(source)
+        selected_sources.append(
+            {
+                "path": source["path"],
+                "priority": source["priority"],
+                "lines": copy.deepcopy(source["lines"]),
+                "reason": "direct_import_neighbor",
+            }
+        )
+    result_manifest = build_suggest_manifest(existing_sources)
+    return result_manifest, {
+        "schema_version": GRAPH_APPLICATION_SCHEMA_VERSION,
+        "mode": "explicit_opt_in",
+        "selected_source_count": len(selected_sources),
+        "selected_sources": selected_sources,
+        "candidate_count": len(eligible),
+        "candidate_cap": MAX_GRAPH_APPLICATION_SOURCES,
+        "candidate_cap_reached": len(eligible) > MAX_GRAPH_APPLICATION_SOURCES,
+        "excluded_secret_risk_count": excluded_secret_risk_count,
+        "exact_source_fallback_retained": True,
+        "deterministic_local_only": True,
+        "provider_token_or_cost_savings_claim_allowed": False,
+    }
+
+
+def build_symbol_memory_payload(
+    repo_map: dict[str, Any], *, applied: bool = False
+) -> dict[str, Any]:
     retrieval_by_path_lines: dict[tuple[str, str], dict[str, Any]] = {}
     for item in repo_map.get("retrieval", []):
         if not isinstance(item, dict):
@@ -3736,7 +3920,7 @@ def build_symbol_memory_payload(repo_map: dict[str, Any]) -> dict[str, Any]:
     retrieval = repo_map.get("retrieval", []) if isinstance(repo_map.get("retrieval"), list) else []
     return {
         "schema_version": SYMBOL_MEMORY_SCHEMA_VERSION,
-        "mode": "advisory",
+        "mode": "applied" if applied else "advisory",
         "source": "contextguard.pack-repo-map.v1",
         "summary": {
             "symbols": len(symbols),
@@ -3756,8 +3940,9 @@ def build_symbol_memory_payload(repo_map: dict[str, Any]) -> dict[str, Any]:
         "claim_boundary": {
             "deterministic_local_only": True,
             "no_network_model_embedding_lsp_or_tree_sitter_dependency": True,
-            "advisory_does_not_change_manifest_pack_or_receipt": True,
-            "graph_rank_is_explain_only": True,
+            "advisory_does_not_change_manifest_pack_or_receipt": not applied,
+            "explicit_graph_application_changes_manifest_and_pack": applied,
+            "graph_rank_is_explain_only": not applied,
             "provider_token_or_cost_savings_claim_allowed": False,
         },
     }
@@ -3903,6 +4088,12 @@ def build_auto_explain_payload(
         explain["repo_map"] = copy.deepcopy(repo_map_payload)
     elif root is not None:
         explain["repo_map"] = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+    if isinstance(payload.get("graph_application"), dict):
+        explain["graph_application"] = copy.deepcopy(payload["graph_application"])
+    if isinstance(payload.get("adaptive_k_application"), dict):
+        explain["adaptive_k_application"] = copy.deepcopy(
+            payload["adaptive_k_application"]
+        )
     return explain
 
 
@@ -3923,8 +4114,33 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         validate_output_path_under_root(root, args.pack_out, "--pack-out")
     suggest_args = copy.copy(args)
     suggest_args.manifest_out = None
+    apply_adaptive_k = bool(getattr(args, "apply_adaptive_k", False))
+    if apply_adaptive_k:
+        suggest_args.adaptive_k = True
     suggest_payload, rc = suggest_pack(root, suggest_args, root_arg=root_arg)
     manifest = suggest_payload["manifest"]
+    adaptive_k_application: dict[str, Any] | None = None
+    if apply_adaptive_k and isinstance(suggest_payload.get("adaptive_k"), dict):
+        manifest, adaptive_k_application = apply_adaptive_k_manifest(
+            manifest,
+            suggest_payload["adaptive_k"],
+        )
+        suggest_payload["manifest"] = manifest
+        retained_identities = {
+            (str(item.get("path", "")), line_range_identity(item.get("lines")))
+            for item in manifest.get("sources", [])
+            if isinstance(item, dict)
+        }
+        suggest_payload["sources"] = [
+            item
+            for item in suggest_payload.get("sources", [])
+            if isinstance(item, dict)
+            and (
+                str(item.get("path", "")),
+                line_range_identity(item.get("lines")),
+            )
+            in retained_identities
+        ]
     specs = manifest_to_source_specs(manifest)
     budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
     build_payload = build_pack(
@@ -3936,6 +4152,50 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         delta_from_pack_id=args.delta_from_pack_id,
         sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
     )
+    if apply_adaptive_k:
+        suggest_payload["estimated_pack_bytes"] = build_payload.get("pack_bytes", 0)
+        suggest_payload["token_proxy"] = copy.deepcopy(
+            build_payload.get("token_proxy", {})
+        )
+    repo_map_payload: dict[str, Any] | None = None
+    graph_application: dict[str, Any] | None = None
+    apply_symbol_memory = bool(getattr(args, "apply_symbol_memory", False))
+    complete_secret_paths: set[str] | None = set() if apply_symbol_memory else None
+    if getattr(args, "symbol_memory", False) or apply_symbol_memory or args.explain:
+        repo_map_payload = build_repo_map_payload(
+            root,
+            args,
+            suggest_payload,
+            build_payload,
+            root_arg=root_arg,
+            complete_secret_paths_out=complete_secret_paths,
+        )
+    if apply_symbol_memory and isinstance(repo_map_payload, dict):
+        repo_map_payload["safety"]["explain_only"] = False
+        repo_map_payload["safety"]["caveats"] = [
+            "Repo-map bytes are local sampled UTF-8 bytes and estimated chars_div_4 token proxies, not provider-token or savings claims.",
+            "Graph ranking is applied only to the bounded direct-neighbor expansion recorded in graph_application; exact source retrieval remains available.",
+        ]
+        manifest, graph_application = apply_symbol_memory_graph(
+            manifest,
+            repo_map_payload,
+            complete_secret_paths=complete_secret_paths,
+        )
+        suggest_payload["manifest"] = manifest
+        specs = manifest_to_source_specs(manifest)
+        build_payload = build_pack(
+            root,
+            specs,
+            budget_bytes=budget,
+            root_arg=root_arg,
+            store_artifact=False,
+            delta_from_pack_id=args.delta_from_pack_id,
+            sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
+        )
+        suggest_payload["estimated_pack_bytes"] = build_payload.get("pack_bytes", 0)
+        suggest_payload["token_proxy"] = copy.deepcopy(
+            build_payload.get("token_proxy", {})
+        )
     if not args.no_artifact:
         receipt_rel = Path(PACK_DIR) / f"{build_payload['pack_id']}.json"
         if manifest_rel is not None:
@@ -3982,7 +4242,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         "suggest": suggest_payload,
         "build": build_payload,
         "sources": {
-            "suggested": len(suggest_payload.get("sources", [])),
+            "suggested": len(manifest.get("sources", [])),
             "included": build_payload.get("sources", {}).get("included", 0),
             "partial": build_payload.get("sources", {}).get("partial", 0),
             "omitted": build_payload.get("sources", {}).get("omitted", 0),
@@ -3996,13 +4256,18 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     }
     if build_hint_omitted_reason:
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
-    if getattr(args, "adaptive_k", False) and isinstance(suggest_payload.get("adaptive_k"), dict):
+    if (getattr(args, "adaptive_k", False) or apply_adaptive_k) and isinstance(
+        suggest_payload.get("adaptive_k"), dict
+    ):
         payload["adaptive_k"] = copy.deepcopy(suggest_payload["adaptive_k"])
-    repo_map_payload: dict[str, Any] | None = None
-    if getattr(args, "symbol_memory", False) or args.explain:
-        repo_map_payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
-    if getattr(args, "symbol_memory", False) and isinstance(repo_map_payload, dict):
-        payload["symbol_memory"] = build_symbol_memory_payload(repo_map_payload)
+    if adaptive_k_application is not None:
+        payload["adaptive_k_application"] = adaptive_k_application
+    if graph_application is not None:
+        payload["graph_application"] = graph_application
+    if (getattr(args, "symbol_memory", False) or apply_symbol_memory) and isinstance(repo_map_payload, dict):
+        payload["symbol_memory"] = build_symbol_memory_payload(
+            repo_map_payload, applied=apply_symbol_memory
+        )
     if args.explain:
         payload["explain"] = build_auto_explain_payload(
             args,
@@ -4038,6 +4303,8 @@ def print_adaptive_k_text(payload: dict[str, Any]) -> None:
         reason_text = ",".join(str(item) for item in reason_codes[:5])
     else:
         reason_text = str(reason_codes)
+    application = payload.get("adaptive_k_application")
+    applied = isinstance(application, dict) and application.get("status") == "applied"
     print(
         "adaptive-k: "
         f"recommended={adaptive.get('recommended_k', 0)}/{adaptive.get('requested_top', 0)} "
@@ -4045,7 +4312,7 @@ def print_adaptive_k_text(payload: dict[str, Any]) -> None:
         f"gates={regression_gates.get('status', 'pass')} "
         f"candidates={score_distribution.get('candidate_count', 0)} "
         f"budget_limited={budget_fit.get('budget_limited', False)} "
-        f"apply=false reasons={reason_text or 'none'}"
+        f"apply={str(applied).lower()} reasons={reason_text or 'none'}"
     )
 
 
@@ -4224,10 +4491,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
+    auto.add_argument(
+        "--apply-adaptive-k",
+        action="store_true",
+        help=(
+            "explicitly prune heuristic-selected sources to the locally recommended top-k "
+            "after regression gates pass while always retaining explicit file/output/diff sources; "
+            "implies --adaptive-k"
+        ),
+    )
     auto.add_argument("--adaptive-k-policy", choices=ADAPTIVE_K_POLICIES, default="balanced", help="local adaptive-k recommendation policy used when --adaptive-k is set")
     auto.add_argument("--adaptive-k-min-recall-proxy", type=adaptive_k_threshold, default=0.0, help="metadata-only minimum recall proxy gate for --adaptive-k")
     auto.add_argument("--adaptive-k-min-precision-proxy", type=adaptive_k_threshold, default=0.0, help="metadata-only minimum precision proxy gate for --adaptive-k")
     auto.add_argument("--symbol-memory", action="store_true", help="include repo-map derived symbol/graph advisory metadata with exact source verification hints")
+    auto.add_argument(
+        "--apply-symbol-memory",
+        action="store_true",
+        help=(
+            "explicitly add up to four direct import-neighbor slices from the local "
+            "repo map to the manifest and pack; implies --symbol-memory"
+        ),
+    )
     return parser
 
 

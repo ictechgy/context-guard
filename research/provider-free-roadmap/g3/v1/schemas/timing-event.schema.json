@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "arm": {"enum": ["ordinary", "adaptive_only", "symbol_only", "combined"], "type": "string"},
+    "pack_invocation_ns": {"minimum": 0, "type": "integer"},
+    "schema_version": {"const": "contextguard.g3-timing-event/v1", "type": "string"},
+    "task_id": {"pattern": "^(train|calibration|evaluation)_(closed|graph)$", "type": "string"}
+  },
+  "required": ["arm", "pack_invocation_ns", "schema_version", "task_id"],
+  "type": "object"
+}

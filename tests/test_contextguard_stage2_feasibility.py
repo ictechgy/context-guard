@@ -14,6 +14,9 @@ from tests.test_contextguard_stage2_protected_surfaces import portable_regular_m
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECORD_PATH = REPO_ROOT / "research/contextguard-stage2/host-observability.json"
+PROGRESSIVE_BENCHMARK_SUMMARY_PATH = (
+    REPO_ROOT / "research/progressive-context-benchmark-2026-08-12.json"
+)
 BROKER_ROOT = REPO_ROOT / "research/contextguard-broker"
 BROKER_RESEARCH_PATHS = {
     path.relative_to(REPO_ROOT).as_posix()
@@ -62,11 +65,14 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "CHANGELOG.md",
         "README.ko.md",
         "README.md",
+        "apps/contextguard-mac/Tests/ContextGuardMacCoreTests/AuditCLIAdapterTests.swift",
         "bench/token-savings-12task/README.md",
         "bench/token-savings-12task/study-plan-v2.json",
         "context-guard-kit/bash_reference_policy.py",
         "context-guard-kit/benchmark_runner.py",
         "context-guard-kit/context_guard_commands.py",
+        "context-guard-kit/context_pack.py",
+        "context-guard-kit/README.md",
         "context-guard-kit/phase_evaluation.py",
         "context-guard-kit/rewrite_bash_for_token_budget.py",
         "context-guard-kit/setup_wizard.py",
@@ -79,23 +85,117 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/README.md",
         "plugins/context-guard/bin/bash_reference_policy.py",
         "plugins/context-guard/bin/context-guard-bench",
+        "plugins/context-guard/bin/context-guard-pack",
         "plugins/context-guard/bin/context-guard-rewrite-bash",
         "plugins/context-guard/bin/context-guard-setup",
         "plugins/context-guard/bin/context-guard-trim-output",
         "plugins/context-guard/lib/context_guard_commands.py",
         "research/benchmark-plan.md",
+        "research/comparator-mechanism-acceptance-matrix.md",
         "research/p2-p6-provider-free-implementation.md",
         "research/p1-live-authorization-packet.md",
+        "research/progressive-context-benchmark-2026-08-12.json",
+        "research/progressive-context-benchmark-2026-08-12.md",
+        "research/provider-free-roadmap/README.md",
+        "research/provider-free-roadmap/boundary-contract.json",
+        "research/provider-free-roadmap/g2/freeze-lock.json",
+        "research/provider-free-roadmap/g2/v1/README.md",
+        "research/provider-free-roadmap/g2/v1/arms.json",
+        "research/provider-free-roadmap/g2/v1/contract.json",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/dispatch.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/ledger.csv",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/radio-notes.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/tides.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/colors.json",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/operator-handbook.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/src/calibration/amber-calibrator.ts",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/src/controllers/entry.ts",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/src/telemetry/probe.ts",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/thermometer.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/window-guide.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/crates.tsv",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/matrix.json",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/pruning.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/question.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/dye-catalog.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/app/runner.js",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/auditors/check.js",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/operator-handbook.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/queue.toml",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/release-notes.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/validators/index.js",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/brief.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/distractor.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/evidence.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/history.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/cobalt_notes.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/app/entry.py",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/app/routing/checksum.py",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/app/routing/constants.py",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/obsolete_map.txt",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/operator-handbook.md",
+        "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/supply.yaml",
+        "research/provider-free-roadmap/g2/v1/result.example.json",
+        "research/provider-free-roadmap/g2/v1/run.json",
+        "research/provider-free-roadmap/g2/v1/schemas/arms.schema.json",
+        "research/provider-free-roadmap/g2/v1/schemas/contract.schema.json",
+        "research/provider-free-roadmap/g2/v1/schemas/graph.schema.json",
+        "research/provider-free-roadmap/g2/v1/schemas/oracle.schema.json",
+        "research/provider-free-roadmap/g2/v1/schemas/result.schema.json",
+        "research/provider-free-roadmap/g2/v1/schemas/run.schema.json",
+        "research/provider-free-roadmap/g2/v1/schemas/tasks.schema.json",
+        "research/provider-free-roadmap/g2/v1/scorer-only/graph.json",
+        "research/provider-free-roadmap/g2/v1/scorer-only/oracle.json",
+        "research/provider-free-roadmap/g2/v1/tasks.json",
+        "research/provider-free-roadmap/g2/v1/verify.py",
+        "research/provider-free-roadmap/g3/freeze-lock.json",
+        "research/provider-free-roadmap/g3/v1/README.md",
+        "research/provider-free-roadmap/g3/v1/cost-model.json",
+        "research/provider-free-roadmap/g3/v1/manifest.json",
+        "research/provider-free-roadmap/g3/v1/rehearse.py",
+        "research/provider-free-roadmap/g3/v1/schemas/aggregate-results.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/artifact-inventory.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/event.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/manifest.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/reproducibility.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/task-arm-results.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/timing-event.schema.json",
+        "research/provider-free-roadmap/g3/v1/schemas/timing-summary.schema.json",
+        "research/provider-free-roadmap/g4/freeze-lock.json",
+        "research/provider-free-roadmap/g4/v1/README.md",
+        "research/provider-free-roadmap/g4/v1/claim-policy.json",
+        "research/provider-free-roadmap/g4/v1/schemas/claim-policy.schema.json",
+        "research/provider-free-roadmap/g4/v1/schemas/claim-report.schema.json",
+        "research/provider-free-roadmap/g4/v1/schemas/source-records.schema.json",
+        "research/provider-free-roadmap/g4/v1/verify.py",
+        "research/provider-free-roadmap/g5/freeze-lock.json",
+        "research/provider-free-roadmap/g5/v1/README.md",
+        "research/provider-free-roadmap/g5/v1/preregistration.json",
+        "research/provider-free-roadmap/g5/v1/schedule.json",
+        "research/provider-free-roadmap/g5/v1/schemas/authoritative-observation.schema.json",
+        "research/provider-free-roadmap/g5/v1/schemas/preregistration.schema.json",
+        "research/provider-free-roadmap/g5/v1/schemas/schedule.schema.json",
+        "research/provider-free-roadmap/g5/v1/verify.py",
+        "research/provider-free-roadmap/g6/freeze-lock.json",
+        "research/provider-free-roadmap/g6/v1/README.md",
+        "research/provider-free-roadmap/g6/v1/STATUS.md",
+        "research/provider-free-roadmap/g6/v1/preparation-packet.json",
+        "research/provider-free-roadmap/g6/v1/schemas/preparation-packet.schema.json",
+        "research/provider-free-roadmap/g6/v1/verify.py",
+        "research/provider-free-roadmap/p1-v8-evidence-manifest.json",
         "research/token-savings-roadmap.md",
         "scripts/build_npm_candidates.py",
         "scripts/prepublish_check.py",
         "scripts/rehearse_measurement_study.py",
         "scripts/release_smoke.py",
         "scripts/verify_gate_b_rollback.py",
+        "scripts/verify_provider_free_roadmap.py",
+        "scripts/verify_g4_provider_free.py",
         "tests/test_bash_reference_v1.py",
         "tests/test_benchmark_study_v2.py",
         "tests/test_context_guard_kit.py",
         "tests/test_context_guard_kit_benchmark_surfaces.py",
+        "tests/test_context_guard_progressive_context.py",
         "tests/test_context_guard_receipt_suite.py",
         "tests/test_gate_b_rollback_proof.py",
         "tests/test_contextguard_stage2_completion.py",
@@ -103,6 +203,12 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_contextguard_stage2_protected_surfaces.py",
         "tests/test_npm_candidates.py",
         "tests/test_phase_evaluation.py",
+        "tests/test_provider_free_roadmap_boundary.py",
+        "tests/provider-free-roadmap/test_g2_ablation_contract.py",
+        "tests/provider-free-roadmap/test_g3_rehearsal.py",
+        "tests/provider-free-roadmap/test_g4_claim_gates.py",
+        "tests/provider-free-roadmap/test_g5_p2_preregistration.py",
+        "tests/provider-free-roadmap/test_g6_approval_packet.py",
         "tests/test_release_candidate_smoke.py",
         "tests/test_workflows.py",
     }
@@ -111,20 +217,20 @@ EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 121
 RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/LICENSE', 'sha256': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/NOTICE', 'sha256': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/README.md', 'sha256': 'e8e43ac7c76bb032080eed9ccb4be00f2c5c840fb44bba93f4e1c93f666d4a89'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/README.md', 'sha256': 'a6ac083940c6b04be08169927f570cab1eef0e9e10ca4c51422b2054930ba0a3'},
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt-mcp.cjs', 'sha256': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd'},
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt.cjs', 'sha256': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': '79da1e6a43d0cf4c57f682aaa7ba55f7dd53edffe7743032b66bd55b9ea2c16b'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': '0695f900f1451953cb4ad1aeff2a1322046e9462b1c5b5a0b58657970bcaf857'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/package_check.py', 'sha256': '10036c058031a9de14a310bbd385f78c8b1d50a2919b83949befa40642ab8424'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/packaged_acceptance.py', 'sha256': '0c30434371b16e88176185e47a3f890d85ecf475c77db63f2f73b23b8f264ca1'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': '8cda063773c77ca337af519001e3b43b8f4519d757d1a4d22ea46e9474bfcace'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': 'ea806af5bfdb3474e0264f150b3d6bbb830fd080a33c4de79c45eeb93e3ba8da'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package.json', 'sha256': 'daf789323e9b194943b7222bd0bf112432460afe0174d0a3363cbadbbd37c475'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/__init__.py', 'sha256': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/assembly.py', 'sha256': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/blueprint.py', 'sha256': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/bootstrap.py', 'sha256': 'fa846a8968c5199618ab68a86424c0cb88c32250291faf3ac37f26d14d4b018e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/canonical.py', 'sha256': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli.py', 'sha256': '8d475b0afba46d2e0eb1b54ec721186ce3d10d2e75f3e07112dc27fbedd3a769'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli.py', 'sha256': '036a1ac0f50b327f39eb7746b3415f6895e8f27aad18624ba432dceaf1b0a1d9'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli_io.py', 'sha256': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/contracts.py', 'sha256': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/diagnostic_ledger.py', 'sha256': '3cc7865709c273b72136c48b1026ed5cd2830ea1bf76da4e424da08ccc13499d'},
@@ -133,7 +239,7 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/execution_twin.py', 'sha256': '510239b13c37ef15dcc838222b07ada49877e5540c351a51a121983b1fe031af'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/expansion.py', 'sha256': '9b848e555f05a621665c6b167a49e5d8085ffc9c6906f040f43fd2a87e981f2b'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/identity.py', 'sha256': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/mcp.py', 'sha256': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/mcp.py', 'sha256': '9f12345bd68ffb9b6b6fdf31699670d4fba590c7e3dba9bba65e07e216420cd4'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/merged_capture.py', 'sha256': 'a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/phase_evaluation.py', 'sha256': '2ee911bb898e28d5ba23e7bd3599a41125a0e7d13c9e4c9359a84e7ff721dc46'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/protection.py', 'sha256': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347'},
@@ -189,13 +295,13 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/twin-result.schema.json', 'sha256': '14b7cec1a2818d1fa0fac61b05dd77ffc683a01812372b64a8c5f24660b73735'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/twin-snapshot.schema.json', 'sha256': 'c80da58c9c3ef2d49fdf0527d3310b611c87fde6c9fc6e9ee889d2cb127b65ff'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/typed-blueprint.schema.json', 'sha256': 'd784099a65a700d9e9e72ea6993b8480c9bf7c7efa2f222a7f341a271526b97c'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': 'a663e7da0f2e68a574699b8717651dcb183f27feae609bf6b47c7a2a451ce53c'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': '68529c88980a60efd46cd20443706059ac836b3c3fa18785fc791620b5f9f626'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/__init__.py', 'sha256': 'cc7bab82ee31fa4e8bd55746442746877fee99a76cf1c9376ec95d5f3f8a11ba'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/test_g012_mcp_capabilities.py', 'sha256': '668635b035bf72078c65ca8695eafe7869073caf8004915ae8ec73ca48506adf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/test_g012_mcp_limits.py', 'sha256': 'f08aa835ab1ed03c24df35caa3c8bf97640886ddde467f2532ff722a9bf1aa82'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/__init__.py', 'sha256': '5075760cded34ab259a764674a6620d857ab3eb623e037bf5066abe132de88bd'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': '26bb95de371fc5d9d2b701ed0a538cf78a0803acdd72e9d57cbb15e419e172aa'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': '3a67f55ca86170c1a9d63918c33a141336fcf056cb534abcb72d886e358818a5'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': 'bb68597ff37341299c0c20adcbb086005d4680d55c87e334b49382d8c332c333'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': 'df334c9648a2b8c68c6e8badb9844d99c672195068e6aabcf47fcb38ab0babee'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_canonical.py', 'sha256': '574a66140918d02765e5de7a1fa2e243843e32d464e438fe637c42aae41d7fe5'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_protection.py', 'sha256': 'b05064c39f88962a7b561532cfa2ef00b8a90605375cd06d9052ced8d0ef352e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g003_identity.py', 'sha256': '0c6c7f18bed584fe707b8203d1534f78e21f192226f2dc5d961696eac4fa9bd9'},
@@ -212,7 +318,7 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g007_sanitizer.py', 'sha256': '933397c2b0d1dc2f4944dadab5ce83af97eb5a79a42670d9e5ba26d6cd504200'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_cli.py', 'sha256': '541d9f1a3218b0225bee6015cd26b9d027d59663d1974b91dc51ba5c5f98e0ae'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_expansion.py', 'sha256': '4a3d1bbd3b5ee6fffde6eb4c523e55d749894807d991af083fc0cdae263605da'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_runner.py', 'sha256': '489252498bce09bfb57b5237a60ac7df587a8cc52df1e598327f75e863bf772b'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_runner.py', 'sha256': '2db61d6ae4dce10138930cc6b2918f8a3d498db7407da9085d6d0a9e3b6b0b6f'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g009_cli.py', 'sha256': '9c967aff4e2961890953865e7c4598d031b14761eee3e3ce3a76a194383b165a'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g009_diagnostics.py', 'sha256': '454031b9b2bf48d17b8108f616d34484dc9c0366d03deb5b8252b76365c497c8'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g009_ledger.py', 'sha256': 'b5bfc17842d505cf1c3deaa497bf286578ca8843b9b41ee9f1995467f19b9de4'},
@@ -222,14 +328,14 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g011_cli.py', 'sha256': 'c8425596db359b0c0fb32f1051d216addb3d558a8bfc1fcde5e923d682a0bff9'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g011_reference_expiry.py', 'sha256': 'f8091435e1407b7480980e44b2d06e0f571f2e25a65421128af87186ac1ea22a'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g011_schemas.py', 'sha256': '83028fec21ca7dfd31f91e9afe98751b9bd67241d7aad4f0c7c73d4da3cf6439'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g012_mcp.py', 'sha256': '8599153ce43b6f6cfce4972b550b3cffdad867557f8b566e0832f85b7c6e4a7e'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g012_mcp_cli.py', 'sha256': '539014f2009a78832467115d6b671c5807d2c4e16e7519ccde6ed70e629ec70a'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g012_mcp.py', 'sha256': '70e56450ff836cb6ddc54c88a51890f76e106c401ab6c6eeeb9dd6aa81d4da9d'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g012_mcp_cli.py', 'sha256': '7e4777e753c5c0b2a3a994e19d9b4dd0a7e647b1987ecd6af780e3d18822c6ea'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g013_package_audit.py', 'sha256': '948e8c6ff27851ef60a43570c7b5a0f30185d15b06e9504780943a3bd3067158'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g014_merged_capture.py', 'sha256': 'dacc04f7ac0b09b210ce9cbb2081d049707fff92cb9effad7c1e03a95669c600'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g015_phase_evaluation_cli.py', 'sha256': '56f6c2c33a5b39bdb93dd76ddb41bc625362b2538ea05dfaec6700dc2015b55b'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/__init__.py', 'sha256': '48a5ccfc49a840928c6de0ea2c978a12a0abd78e2f361ec96f6e9a0f15bddca0'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g001_offline_distribution.py', 'sha256': '01d856590d17f5a457c1664b49c92f6b52378314a9b272df802a759113413b7d'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g012_mcp_stdio.py', 'sha256': '96ac49c60d27d2558bbfaec9805135605c15ab25bd5de682dc63620ade52a8fc'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g001_offline_distribution.py', 'sha256': 'dd42bd5ce60834d3c87a7af0a7abae62f03e908feb91249be205e5deda45f818'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g012_mcp_stdio.py', 'sha256': '8308299c2d8d7def0a7840627f7d0dd8b93bff5cbfd6c391f57d470dc05d6a41'},
 ]
 FORBIDDEN_TOP_LEVEL_FIELDS = {
     "host_id",
@@ -686,6 +792,158 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
         ):
             with self.subTest(runtime_path=runtime_path), self.assertRaises(AssertionError):
                 validate_provider_free_changed_paths(changed | {runtime_path})
+
+    def test_progressive_benchmark_summary_preserves_inconclusive_claim(self) -> None:
+        def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise AssertionError(f"duplicate benchmark summary key: {key}")
+                result[key] = value
+            return result
+
+        summary = json.loads(
+            PROGRESSIVE_BENCHMARK_SUMMARY_PATH.read_bytes(),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        self.assertEqual(
+            set(summary),
+            {
+                "artifact_format",
+                "candidate_hash",
+                "claim_allowed",
+                "evidence",
+                "inference",
+                "limitations",
+                "local_pack",
+                "local_pack_timing",
+                "operational_spend",
+                "protocol",
+                "provider",
+                "schema_version",
+                "source_commit",
+                "status",
+            },
+        )
+        self.assertEqual(
+            summary["source_commit"],
+            "334f806c6a3270894cadd4149250533cf95c2639",
+        )
+        self.assertEqual(
+            summary["candidate_hash"],
+            "cc89e4c050e0760ae7f58d61ca963b00b84cfaf8f5dd60379d405e4cbc633a8f",
+        )
+        self.assertEqual(
+            summary["status"], "synthetic_combined_workflow_smoke_inconclusive"
+        )
+        self.assertIs(summary["claim_allowed"], False)
+
+        inference = summary["inference"]
+        self.assertEqual(inference["verdict"], "inconclusive")
+        self.assertIs(inference["token_savings_gate"], False)
+        self.assertEqual(inference["primary_token_delta_point"], -197.83333333333326)
+        self.assertEqual(inference["primary_token_delta_q025"], -9693.423611111108)
+        self.assertEqual(inference["primary_token_delta_q975"], 9375.02291666666)
+
+        baseline = summary["provider"]["baseline"]
+        treatment = summary["provider"]["treatment"]
+        delta = summary["provider"]["delta"]
+        self.assertEqual(baseline["successful_runs"], 36)
+        self.assertEqual(treatment["successful_runs"], 36)
+        self.assertEqual(baseline["primary_tokens"], 4254273)
+        self.assertEqual(treatment["primary_tokens"], 4247151)
+        self.assertEqual(
+            delta["primary_tokens"],
+            treatment["primary_tokens"] - baseline["primary_tokens"],
+        )
+
+        local_pack = summary["local_pack"]
+        self.assertEqual(local_pack["baseline_bytes"], 81200)
+        self.assertEqual(local_pack["treatment_bytes"], 11594)
+        self.assertEqual(local_pack["baseline_prompt_bytes"], 87458)
+        self.assertEqual(local_pack["treatment_prompt_bytes"], 17852)
+        self.assertEqual(local_pack["critical_source_recall_baseline"], 1.0)
+        self.assertEqual(local_pack["critical_source_recall_treatment"], 1.0)
+
+        spend = summary["operational_spend"]
+        accepted_cost = (
+            baseline["claude_cli_reported_cost_usd"]
+            + treatment["claude_cli_reported_cost_usd"]
+        )
+        self.assertAlmostEqual(
+            spend["accepted_run_claude_cli_reported_cost_usd"], accepted_cost
+        )
+        self.assertAlmostEqual(
+            spend["total_claude_cli_reported_cost_usd"],
+            accepted_cost
+            + spend["discarded_prepublication_run_claude_cli_reported_cost_usd"],
+        )
+
+        expected_evidence = {
+            "aggregate_analysis_sha256": "be4886e967eee9560a84428725faf10000f9e4321f1b14a0d2db78ddf49f3874",
+            "attempt_index_sha256": "77cd8b26b8d48be1f69542b84368e2358552e49178b7a60dc22114518a439028",
+            "manifest_sha256": "9174ec9ae20393df1cc3e3a0348e268557e9f25cc5e9061febd303cbd6b08fc7",
+            "pack_generation_sha256": "fa09a20eb5d3e6737f76e7f919eadfe40b516e71b0ca0357a1c6827bd96c02ce",
+            "pack_timing_sha256": "efbb8e21edce08292c5be769581a8ebe1537f0b0bb9a8e02a2ed33bca4ccf1eb",
+            "study_report_sha256": "cdc88a76174a2f303eb9fbf3c107c0ab070c5e9a364961eccc79c009ab1256f1",
+        }
+        self.assertEqual(summary["evidence"], expected_evidence)
+
+        artifact_format = summary["artifact_format"]
+        self.assertIs(
+            artifact_format["pack_generation_fixture_tree_sha256"][
+                "canonical_manifest_match"
+            ],
+            False,
+        )
+        self.assertIs(
+            artifact_format["study_manifest_bytes"][
+                "canonical_under_repository_contract"
+            ],
+            True,
+        )
+        self.assertIs(
+            artifact_format["study_manifest_bytes"]["raw_sha256_bindings_consistent"],
+            True,
+        )
+
+        strings: list[str] = []
+
+        def collect_strings(value: object) -> None:
+            if isinstance(value, str):
+                strings.append(value)
+            elif isinstance(value, list):
+                for item in value:
+                    collect_strings(item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    strings.append(key)
+                    collect_strings(item)
+
+        collect_strings(summary)
+        joined_strings = "\n".join(strings).lower()
+        for forbidden_text in (
+            "/users/",
+            "/tmp/",
+            "auth.json",
+            "api_key",
+            "api-key",
+            "bearer ",
+            "password",
+            "cookie",
+        ):
+            self.assertNotIn(forbidden_text, joined_strings)
+
+        report_text = PROGRESSIVE_BENCHMARK_SUMMARY_PATH.with_suffix(".md").read_text()
+        self.assertIn(summary["source_commit"], report_text)
+        self.assertIn(summary["candidate_hash"], report_text)
+        for evidence_digest in expected_evidence.values():
+            self.assertIn(evidence_digest, report_text)
+        self.assertIn("81,200", report_text)
+        self.assertIn("11,594", report_text)
+        self.assertIn("claim_allowed=false", report_text)
+        self.assertNotIn("/Users/", report_text)
+        self.assertNotIn("/tmp/", report_text)
 
 
 if __name__ == "__main__":

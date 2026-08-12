@@ -1,0 +1,327 @@
+{
+  "packer_bindings": {
+    "canonical": {
+      "bytes": 188969,
+      "mode": "0755",
+      "path": "context-guard-kit/context_pack.py",
+      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+    },
+    "plugin": {
+      "bytes": 188969,
+      "mode": "0755",
+      "path": "plugins/context-guard/bin/context-guard-pack",
+      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+    },
+    "require_byte_equality": true
+  },
+  "public_inventory": [
+    {
+      "bytes": 2752,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/README.md",
+      "sha256": "326e6197472b95c511b1cc0234dc223077734050ad2fe3cd711e46e7affce49b"
+    },
+    {
+      "bytes": 713,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/arms.json",
+      "sha256": "eafdbfde127fe6f8fd077df7f459c9b32a92fc50454eb6a97b133eac914c0376"
+    },
+    {
+      "bytes": 2458,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/contract.json",
+      "sha256": "fa7ac3036f55b9f5bef818aade35c349ad9e392c5f1ad312b05768e41fe93795"
+    },
+    {
+      "bytes": 135,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/dispatch.md",
+      "sha256": "cc3b7a1eca4dfd9a86e0ac3816944e79bbcb225951766c05a41f67c3167010be"
+    },
+    {
+      "bytes": 259,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/ledger.csv",
+      "sha256": "961694e1a218e234639161e8b7a7faf1a845433f394a1e1c1a1032e509288b4d"
+    },
+    {
+      "bytes": 156,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/radio-notes.txt",
+      "sha256": "5d07d00bb09237d67ec1be2446e75c9bb95194e40a338521c0ea332fb9bb38c3"
+    },
+    {
+      "bytes": 118,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/closed_pack/tides.txt",
+      "sha256": "eb87469b1efd29e1ebfaa22be3fffe7838160272440ab04fe5c0cc389cb1b768"
+    },
+    {
+      "bytes": 79,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/colors.json",
+      "sha256": "1b2eb5b61c02253fe936c8aa9572274351bd9f5fad079e9c558f6013507fde18"
+    },
+    {
+      "bytes": 478,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/operator-handbook.md",
+      "sha256": "800c70745d03ef2090dbe15683df0ff7eb57e23caa2448254cde94cd9c06bc23"
+    },
+    {
+      "bytes": 159,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/src/calibration/amber-calibrator.ts",
+      "sha256": "9a28e871874743227e2ca80583de919b9e03af00b2063b94ee21aece1188d23b"
+    },
+    {
+      "bytes": 236,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/src/controllers/entry.ts",
+      "sha256": "3707892984bfbb83d3f1493901e71472c0c349d7aaaba4d53048d6b9ec203253"
+    },
+    {
+      "bytes": 82,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/src/telemetry/probe.ts",
+      "sha256": "a9d4d1ee633a272f51f1183d805e8d883f8e0c04ef6a9f05539b39464e2f554a"
+    },
+    {
+      "bytes": 203,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/thermometer.txt",
+      "sha256": "32b5545f373be35af49122453c17cfa46bb9cf25b7fdfd5176d1816232c93cf0"
+    },
+    {
+      "bytes": 130,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/calibration/realistic_fallback/window-guide.md",
+      "sha256": "776d43206e54eeb4e99885f9d41f0cd31fecd9dd8880f4a56511b1d7c920f407"
+    },
+    {
+      "bytes": 66,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/crates.tsv",
+      "sha256": "f438dab414b9a19136cb27fa6d76296d8550f8bceb78d49f31df0da7727a7e0d"
+    },
+    {
+      "bytes": 420,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/matrix.json",
+      "sha256": "52413241748a16844f934fcabceaf7d4def74805c7b3390c0a76007a0f67ef80"
+    },
+    {
+      "bytes": 144,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/pruning.md",
+      "sha256": "e6dbc8a5bdf00220296f5cf65c220f434bc256350a45bdd465ede630ea740f5c"
+    },
+    {
+      "bytes": 140,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/closed_pack/question.txt",
+      "sha256": "d04f63f431486d20315fe1982b6a2774505d7c4005f0856dde0b4fe8e9b88e63"
+    },
+    {
+      "bytes": 78,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/app/runner.js",
+      "sha256": "4d13d2f92aa02b67d10dd168c0161e286d6fa36454c985dee55db6dab2822c27"
+    },
+    {
+      "bytes": 122,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/auditors/check.js",
+      "sha256": "b3a762715bfb2c4425c9e68179641ea3965ada9700c6ce3806dae22756f0b555"
+    },
+    {
+      "bytes": 125,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/dye-catalog.txt",
+      "sha256": "755b8de6bd393573fc03af189bf051df12a2b9517c442ebc324a79adcbd199b7"
+    },
+    {
+      "bytes": 431,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/operator-handbook.md",
+      "sha256": "6821c26d129fa5e044d1f067fd0d9a12025b4e3576b3726fef1166796433efb7"
+    },
+    {
+      "bytes": 108,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/queue.toml",
+      "sha256": "348e012afb8739101ef167e5d8b08c73d070ccf973799122b61fcea2c2ef9dc2"
+    },
+    {
+      "bytes": 151,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/release-notes.md",
+      "sha256": "50143d969901ad7bb1d1a0a41bda787868142e32e0d2c0f9e0b8d48d2ec70a85"
+    },
+    {
+      "bytes": 202,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/evaluation/realistic_fallback/validators/index.js",
+      "sha256": "44ee31c20b0e3df91238b05410dde116b44a792c6441fd0e4cb82251bbe35093"
+    },
+    {
+      "bytes": 160,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/brief.txt",
+      "sha256": "0791196a851ae19b80761294341340ae6fd8009b5236f7627ee5893573490bfc"
+    },
+    {
+      "bytes": 137,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/distractor.txt",
+      "sha256": "690f2d2ee4e92ac1e18ace44226130253e5561879a8d4ce239578f3e42905e24"
+    },
+    {
+      "bytes": 371,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/evidence.txt",
+      "sha256": "5da27cb4dd990b2321d9e9d17440e7aae45e75fb61b7c9067094bfbf8e14fed5"
+    },
+    {
+      "bytes": 143,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/closed_pack/history.md",
+      "sha256": "799dfaa06146a467c0077b6ab93311b36718b1ec430fa88de5ceed5979fa8ffd"
+    },
+    {
+      "bytes": 187,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/app/entry.py",
+      "sha256": "6ed0f99e1de9904852f9fb39e72c6be32ae2cdba03e127d0b9bd3ba9f5a95859"
+    },
+    {
+      "bytes": 254,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/app/routing/checksum.py",
+      "sha256": "89fd93481ae597e98a14bbf64da0d3f3c37969df58c98eabb0a9a54a79c8bd15"
+    },
+    {
+      "bytes": 18,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/app/routing/constants.py",
+      "sha256": "9f052a767b45a1151fc70f9d14870579cb9fc8718fdac7fdbcd222b685fc8279"
+    },
+    {
+      "bytes": 157,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/cobalt_notes.md",
+      "sha256": "9230845737ef06e5b82887015848f815a75a41d9e31a7c2061e56f17659e54dd"
+    },
+    {
+      "bytes": 139,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/obsolete_map.txt",
+      "sha256": "ee2b219a5232f7a32e4299d2f2b61ae7c150e8fab97e2df026b824eeb490bbb6"
+    },
+    {
+      "bytes": 473,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/operator-handbook.md",
+      "sha256": "e9a7134acad56ae3d0937ca776674f037f4ab1227292b6e9ec03cf5b7d35853f"
+    },
+    {
+      "bytes": 113,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/fixtures/train/realistic_fallback/supply.yaml",
+      "sha256": "aeee859dd49a31ae15d67c9a1bd43721ba6d07e32e8de6f4381ebb6dde2890f1"
+    },
+    {
+      "bytes": 620,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/result.example.json",
+      "sha256": "4f9cd4894c5c7c656dd27076f8c788b69256d8bc48ebde78bf40372ccd024546"
+    },
+    {
+      "bytes": 531,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/run.json",
+      "sha256": "d6573e66d7ef14385e5ca2cee044e3923bd76c22b7005d75c83bfc173cd50119"
+    },
+    {
+      "bytes": 2276,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/arms.schema.json",
+      "sha256": "538428d6880df6c97fd4265d46dc2f9053e785d4b60de6aa038f98cf5e456aa5"
+    },
+    {
+      "bytes": 6576,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/contract.schema.json",
+      "sha256": "f80dd0f16b702b5d5b75edb4b1e5bbb287a8a0b49daff16ebf5daed505f0d45e"
+    },
+    {
+      "bytes": 2918,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/graph.schema.json",
+      "sha256": "f55a592e7ab8a0d5eddce848e589d2a1021fe404e18eb1122c39dee7b47e8f9c"
+    },
+    {
+      "bytes": 2503,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/oracle.schema.json",
+      "sha256": "29eb7f45925bb9ef1a2574a6cf8bf3907f878cedace190cbd349262000734bae"
+    },
+    {
+      "bytes": 1905,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/result.schema.json",
+      "sha256": "533c7b3038f7b133eeffccfe866e48c3bf69ef5543448bbfe689c5da40700268"
+    },
+    {
+      "bytes": 1602,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/run.schema.json",
+      "sha256": "828ca7d29e658ff8fa37f69db7ab3277f1019d599a9e2918995a47e0efa499d7"
+    },
+    {
+      "bytes": 5237,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/schemas/tasks.schema.json",
+      "sha256": "3cab0b4dbf0348e1d6c63c5f0342af5354d0fc2bf810b9eb43c357654fde23ad"
+    },
+    {
+      "bytes": 7170,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/tasks.json",
+      "sha256": "0c1a15ee455365a21ffd7a7c6ccef28a5ec2e395d8398e4717c8221a2c67301d"
+    },
+    {
+      "bytes": 81813,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/verify.py",
+      "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+    }
+  ],
+  "public_tree_root_sha256": "53de64f5b56211e74898ce997af74230d4d861bfad51fffa7bf1fcb3c32c32a1",
+  "python_binding": {
+    "bytes": 52448,
+    "implementation": "cpython",
+    "path": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+    "sha256": "b502cb4c5b46b8d4192ec6bcb600ce8922f1afc396fcf646e8765c6eba74a0bf",
+    "version": "3.14.6"
+  },
+  "schema_version": "contextguard.g2-freeze-lock/v2",
+  "scorer_inventory": [
+    {
+      "bytes": 1502,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/scorer-only/graph.json",
+      "sha256": "1db89768fb960d24c18e12309322942b8770cb74b6f54bb8110595cedc51920a"
+    },
+    {
+      "bytes": 4760,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g2/v1/scorer-only/oracle.json",
+      "sha256": "d529378c0dcd1372505b9d1f45948eba002d6d7555b7959f2bf6f65d2adcae1c"
+    }
+  ],
+  "scorer_tree_root_sha256": "6e349c75476fd18facd6770c51aae151449e79ae2bb20a2c149b6f736b328921",
+  "tree_algorithm": "sha256-domain-separated-length-prefixed-v2",
+  "tree_root_sha256": "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc"
+}

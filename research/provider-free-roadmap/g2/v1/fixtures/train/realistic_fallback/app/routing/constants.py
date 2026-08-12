@@ -1,0 +1,1 @@
+COBALT_BASE = 400

@@ -1,0 +1,145 @@
+{
+  "arms": [
+    "ordinary",
+    "adaptive_only",
+    "symbol_only",
+    "combined"
+  ],
+  "cost_model": {
+    "attempt_overhead_bytes": 32,
+    "component_formulas": {
+      "correction": "sum(attempt_overhead_bytes + newly_added_slice_bytes for correction events)",
+      "fallback": "sum(attempt_overhead_bytes + newly_added_slice_bytes for fallback events)",
+      "fixed_overhead": "fixed_overhead_per_task_arm exactly once",
+      "initial_packing": "exact rendered pack UTF-8 bytes",
+      "retrieval": "sum(attempt_overhead_bytes + newly_added_slice_bytes for retrieval events)"
+    },
+    "currency": "unavailable",
+    "fixed_overhead_per_task_arm": 256,
+    "formula": "total = initial_packing + retrieval + fallback + correction + fixed_overhead",
+    "nonoverlap_rule": "each rendered or returned byte and each attempt overhead belongs to exactly one named component",
+    "schema_version": "contextguard.g3-cost-model/v1",
+    "units": "byte_equivalent_units"
+  },
+  "g2_source": {
+    "lock_sha256": "8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283",
+    "tree_root_sha256": "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc",
+    "verifier_sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+  },
+  "receipt_bindings": {
+    "captured_inputs": {
+      "g2_lock": {"bytes": 12671, "sha256": "8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283"},
+      "g2_packer": {"bytes": 188969, "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"},
+      "g2_public_snapshot": {"bytes": 125248, "sha256": "df5205bd21c66b29df63b0ee18584e685753f98819eec3fb286977a875103889"},
+      "g3_cost_model": {"bytes": 843, "sha256": "f9869c1d685bcd4cc8be13bc120871909ea071a1a241305456aeb0b8eacc3bda"},
+      "g3_schema_set": {"bytes": 25254, "sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c"}
+    },
+    "packer_receipts": [
+      {"arm": "ordinary", "packer_receipt_sha256": "e9726afff0af4c81c4230a612d25df01a3f9c9be0aa99319dc56f1b038c7fd6c", "task_id": "train_closed"},
+      {"arm": "adaptive_only", "packer_receipt_sha256": "574533855ae48b3c456ff3a0cce1dab3396947e4c79f119a5064f8e62378d17e", "task_id": "train_closed"},
+      {"arm": "symbol_only", "packer_receipt_sha256": "b5371f877efaf34ff4e29008dc225244ef52e4f94615f8e2580b531942ad801b", "task_id": "train_closed"},
+      {"arm": "combined", "packer_receipt_sha256": "83622e064b5e8a1c86c0317b3cfbe210f8417e8593e922708f8ab00fcf45f38b", "task_id": "train_closed"},
+      {"arm": "ordinary", "packer_receipt_sha256": "617e6b3db0eaaee2d98e48b806dd8a0b7f855a51dabbf27dceff498b6abb529e", "task_id": "train_graph"},
+      {"arm": "adaptive_only", "packer_receipt_sha256": "be76b55567388b6c2276b6380cc38ca0391e076560000af9c9372b8b910a9dc0", "task_id": "train_graph"},
+      {"arm": "symbol_only", "packer_receipt_sha256": "2ea27e49da2760d221cf2988a786a5e3419fccb8948ba18d0d9087bb327d6964", "task_id": "train_graph"},
+      {"arm": "combined", "packer_receipt_sha256": "f01d972616d756797d2da5d28e48d912a76a3208d113eec8090e4bfa59fa777f", "task_id": "train_graph"},
+      {"arm": "ordinary", "packer_receipt_sha256": "c9f10c001912d443fbbdb242453186d792f6c4431d7e1c31c316f92f3f16481c", "task_id": "calibration_closed"},
+      {"arm": "adaptive_only", "packer_receipt_sha256": "fa210e6bbd40919fb0d2e16b80e29dac093ddc6be45eb5d3c745e58a9819a6e2", "task_id": "calibration_closed"},
+      {"arm": "symbol_only", "packer_receipt_sha256": "babc57abe4e147c1a0e969bd7c924a10226505122d9fc3ce06bc3fd902030f94", "task_id": "calibration_closed"},
+      {"arm": "combined", "packer_receipt_sha256": "2ab549ed26d5d1a3c4a596822addd6d012298cbdbc06a5d8478a9ae222ec20e6", "task_id": "calibration_closed"},
+      {"arm": "ordinary", "packer_receipt_sha256": "951654554a1fefd708ad63004535ba8bb983c377c2e6847ecbc3679838593bc8", "task_id": "calibration_graph"},
+      {"arm": "adaptive_only", "packer_receipt_sha256": "dfdc6771a2ab4694a2ced17f9880e8f69aa82dfbbdab83ba3e7df1609bbdc6fb", "task_id": "calibration_graph"},
+      {"arm": "symbol_only", "packer_receipt_sha256": "faddefd3d40c419c2b91a5eadc50e38f8e3452b42a0a646620a6fdf47eca2969", "task_id": "calibration_graph"},
+      {"arm": "combined", "packer_receipt_sha256": "1647c1a959370b81add13cc1ecc1be5ad654c8035d4afe17e0b28b15c1238abc", "task_id": "calibration_graph"},
+      {"arm": "ordinary", "packer_receipt_sha256": "fe15921ff06180ef90780346debf6c724f56fd6d5f24e43fa7dd5ab3de9c26b2", "task_id": "evaluation_closed"},
+      {"arm": "adaptive_only", "packer_receipt_sha256": "1a3a480eda014560f6d6f49f30d01ab0cb8a52ba2075d89da1212ef06a9e6f2c", "task_id": "evaluation_closed"},
+      {"arm": "symbol_only", "packer_receipt_sha256": "99ed43415b5cef941647199de9f720222bc83fcab96a39702a096060425107f7", "task_id": "evaluation_closed"},
+      {"arm": "combined", "packer_receipt_sha256": "10d68a60e1fb3474720576708db9862ccb7b7b0b9f02609e607274a58cf92926", "task_id": "evaluation_closed"},
+      {"arm": "ordinary", "packer_receipt_sha256": "1af26625e6aa5631512136fa02973c6685ed032fd1d58ed98647138c6cdc2199", "task_id": "evaluation_graph"},
+      {"arm": "adaptive_only", "packer_receipt_sha256": "7aa2a9aaeab96b152bcf978fed3b4de7d2d1b17f7b7b9b351e195a53a06c824b", "task_id": "evaluation_graph"},
+      {"arm": "symbol_only", "packer_receipt_sha256": "cd4cf35933bb3b964bb9fb44ccd79c871aceffa325699e452e7a8355c14d7f12", "task_id": "evaluation_graph"},
+      {"arm": "combined", "packer_receipt_sha256": "b2ca0321273378f21d8881d3ef37cc87361b3e99b9b2e992114550e5a8189669", "task_id": "evaluation_graph"}
+    ],
+    "tasks": [
+      {"fixture_inputs_sha256": "2b62a1448e430660c6baac8a72f33df24691ab1a2827c4bf9c61e265d1275fbb", "public_task": {"bytes": 783, "sha256": "f3ede023e52ca977be704c48ba93441c3d3861bb9451f260c5d0c3f627e6792a"}, "task_id": "train_closed"},
+      {"fixture_inputs_sha256": "09d63aea911b043afadebb538fe9f37c8775d022620adadd894a018bc6488260", "public_task": {"bytes": 883, "sha256": "bc404744abbc2585170d14287d720dba75471c4545d80d0069c3cc865934a905"}, "task_id": "train_graph"},
+      {"fixture_inputs_sha256": "4e4f2cb21803682890fdcf2980e0315c58d63f16a2eca9a616bddeb21ca3eddb", "public_task": {"bytes": 805, "sha256": "f3364a4e4aee55b025710c28cc45bd4513691f08639da7074873bff4cb096dfe"}, "task_id": "calibration_closed"},
+      {"fixture_inputs_sha256": "6ac1d86d3e06992f256d119757908aa67270dbe46845d0ff5b67bed3d5cceeb1", "public_task": {"bytes": 936, "sha256": "0269e69b1c971e5ef3a475007637b4f63b6e8665de37e4945910eccd6c746902"}, "task_id": "calibration_graph"},
+      {"fixture_inputs_sha256": "b2979d995bc3ed6fda22a7cc1d5eba222d6e2db335b6cc8bb452870a74695b95", "public_task": {"bytes": 799, "sha256": "9b0cf1eb4d35132303c16c913e23d3ae95a33da932f8c9fd846a63d9f662dd0a"}, "task_id": "evaluation_closed"},
+      {"fixture_inputs_sha256": "ba6b6a538e80f7c39c64992ec0046561f36391bc79a41239dacff1206e604290", "public_task": {"bytes": 916, "sha256": "6a8d454a8f92607dc74c69b5697e39fee053b6b8f60ebf65f42add81addcd43e"}, "task_id": "evaluation_graph"}
+    ]
+  },
+  "retrieval_plans": [
+    {
+      "closed_world": true,
+      "fixture_tree_sha256": "99307f56d8fd316a0c560cc2d23750947180d9f76cd9e125a7645c242fc5e19b",
+      "steps": [],
+      "task_id": "train_closed"
+    },
+    {
+      "closed_world": true,
+      "fixture_tree_sha256": "3f756ba905403cd2d26c07ff83bcefa97cf9e7bd8688d3d197176d7e9fd9522d",
+      "steps": [
+        {
+          "kind": "retrieval",
+          "path": "app/routing/checksum.py",
+          "range": {"end": 8, "start": 1},
+          "slice": {"bytes": 254, "sha256": "89fd93481ae597e98a14bbf64da0d3f3c37969df58c98eabb0a9a54a79c8bd15"},
+          "source": {"bytes": 254, "sha256": "89fd93481ae597e98a14bbf64da0d3f3c37969df58c98eabb0a9a54a79c8bd15"}
+        }
+      ],
+      "task_id": "train_graph"
+    },
+    {
+      "closed_world": true,
+      "fixture_tree_sha256": "4fa37b90537ff4ae5b2029a543e934b6c9e83d6972e454ef2761ca3d025c2adc",
+      "steps": [],
+      "task_id": "calibration_closed"
+    },
+    {
+      "closed_world": true,
+      "fixture_tree_sha256": "707dc3289757229731eedf0d5961980697b6931f5b78ab61f22e9742fac1c533",
+      "steps": [
+        {
+          "kind": "fallback",
+          "path": "src/calibration/amber-calibrator.ts",
+          "range": {"end": 7, "start": 1},
+          "slice": {"bytes": 159, "sha256": "9a28e871874743227e2ca80583de919b9e03af00b2063b94ee21aece1188d23b"},
+          "source": {"bytes": 159, "sha256": "9a28e871874743227e2ca80583de919b9e03af00b2063b94ee21aece1188d23b"}
+        }
+      ],
+      "task_id": "calibration_graph"
+    },
+    {
+      "closed_world": true,
+      "fixture_tree_sha256": "2eaa9107e87c0036c51c3e22c1f7b6d338b7eef2eeb2ae40b9df50b79121768a",
+      "steps": [],
+      "task_id": "evaluation_closed"
+    },
+    {
+      "closed_world": true,
+      "fixture_tree_sha256": "a869c39314b9ee09f8f588a18a946286a2a5cc84ad516a8ef8e9acdb00ea0b5c",
+      "steps": [
+        {
+          "kind": "correction",
+          "path": "validators/index.js",
+          "range": {"end": 6, "start": 1},
+          "slice": {"bytes": 202, "sha256": "44ee31c20b0e3df91238b05410dde116b44a792c6441fd0e4cb82251bbe35093"},
+          "source": {"bytes": 202, "sha256": "44ee31c20b0e3df91238b05410dde116b44a792c6441fd0e4cb82251bbe35093"}
+        }
+      ],
+      "task_id": "evaluation_graph"
+    }
+  ],
+  "schema_version": "contextguard.g3-rehearsal-manifest/v2",
+  "schemas": {
+    "aggregate_results": "aggregate-results.schema.json",
+    "artifact_inventory": "artifact-inventory.schema.json",
+    "event": "event.schema.json",
+    "manifest": "manifest.schema.json",
+    "reproducibility": "reproducibility.schema.json",
+    "task_arm_results": "task-arm-results.schema.json",
+    "timing_event": "timing-event.schema.json",
+    "timing_summary": "timing-summary.schema.json"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {"artifact": {"additionalProperties": false, "properties": {"bytes": {"minimum": 0, "type": "integer"}, "path": {"minLength": 1, "type": "string"}, "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}}, "required": ["bytes", "path", "sha256"], "type": "object"}},
+  "additionalProperties": false,
+  "properties": {"artifacts": {"items": {"$ref": "#/$defs/artifact"}, "minItems": 1, "type": "array", "uniqueItems": true}, "schema_version": {"const": "contextguard.g3-artifact-inventory/v1", "type": "string"}, "self_inventory_policy": {"const": "excluded_self_referential_file", "type": "string"}, "timing_normalization": {"additionalProperties": false, "properties": {"excluded_from_deterministic_digest": {"const": ["timing-summary.json:pack_invocation.*_ns", "timing.jsonl:*.pack_invocation_ns"], "type": "array"}}, "required": ["excluded_from_deterministic_digest"], "type": "object"}},
+  "required": ["artifacts", "schema_version", "self_inventory_policy", "timing_normalization"],
+  "type": "object"
+}

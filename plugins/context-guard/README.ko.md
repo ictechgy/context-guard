@@ -87,6 +87,8 @@ context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
 context-guard-sanitize-output -- git diff
 context-guard-pack auto --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json --explain --adaptive-k --adaptive-k-policy recall
+context-guard-pack auto --root . --files src/app.py --query "entrypoint 검토" --top 1 --budget-bytes 12000 --json --no-artifact --apply-symbol-memory
+context-guard-pack auto --root . --query "실패 테스트 검토" --top 8 --budget-bytes 12000 --json --no-artifact --apply-adaptive-k
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json --no-artifact --delta-from-pack-id 0123456789abcdef0123
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
@@ -108,8 +110,9 @@ context-guard-statusline-merged
 - **컨텍스트 관리 스캐너**는 누락된 `permissions.deny` 가드레일, Bash 출력 축약 훅, 상태표시줄 설정, 넓은 읽기 허용, 비용이 큰 기본 모델/추론 강도, 많은 MCP 서버, 크거나 민감해 보이는 에이전트 규칙 파일, 부피가 크거나 민감해 보이는 로컬 경로에 대한 자문형 context-exclusion 추천을 확인합니다.
 - **대용량 읽기 가드와 심볼 리더**는 파일 전체 읽기 전에 검색, 심볼 구간, 작은 줄 범위 읽기 순서로 에이전트를 안내합니다. Python, JavaScript/TypeScript, Go, Rust 소스 구간 읽기를 지원합니다.
 - **로컬 로그 보관소**는 큰 명령 출력을 기본적으로 `.context-guard/artifacts`에 가림 처리해 저장하고, 줄 번호가 있는 top error, 중복 라인 그룹, 가림 처리된 bounded suggested query, 안정적인 `contextguard-artifact:<id>` 핸들이 담긴 `output_sandbox` 요약 기록이나 요청한 정확한 줄 범위만 반환합니다. `receipt <artifact_id> --json`은 본문 없이 핸들과 재조회 명령만 다시 출력합니다. `get`과 `list`는 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 요약 기록도 읽을 수 있습니다.
-- **예산 기반 컨텍스트 패커**는 우선순위가 있는 로컬 파일 근거를 렌더링된 바이트 예산 안의 Markdown pack으로 조립하고, 포함·부분 포함·누락 source 메타데이터, bounded `.context-guard/packs` 요약 기록, 안전할 때만 정확한 가림 처리 `slice` 명령, 안전하지 않을 때의 `retrieval_omitted_reason`을 남깁니다. 추가된 `auto` 하위 명령은 추천과 pack build를 한 번에 실행하고, `auto --explain`은 manifest, pack 본문, receipt, byte budget을 바꾸지 않으면서 결정적 로컬 선택/build 이유를 짧게 추가합니다. JSON explain의 bounded repo-map은 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트를 제공하지만 pack 선택이나 provider savings claim은 아닙니다. `suggest`는 로컬 query, diff, 명시 파일, 가림 처리된 output/test-output 신호를 `build`와 호환되는 manifest로 순위화하며 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. `suggest/auto --adaptive-k`는 `--adaptive-k-policy balanced|recall|precision` 및 선택적 recall/precision proxy gate, capped selected/omitted evidence, 구조화된 source-verification hint를 제공하지만 추천값을 자동 적용하거나 manifest/pack/receipt를 바꾸지 않습니다. 토큰 수는 측정된 provider token 절감이 아니라 추정 `chars_div_4` proxy입니다.
+- **예산 기반 컨텍스트 패커**는 우선순위가 있는 로컬 파일 근거를 렌더링된 바이트 예산 안의 Markdown pack으로 조립하고, 포함·부분 포함·누락 source 메타데이터, bounded `.context-guard/packs` 요약 기록, 안전할 때만 정확한 가림 처리 `slice` 명령, 안전하지 않을 때의 `retrieval_omitted_reason`을 남깁니다. 추가된 `auto` 하위 명령은 추천과 pack build를 한 번에 실행하고, `auto --explain`은 manifest, pack 본문, receipt, byte budget을 바꾸지 않으면서 결정적 로컬 선택/build 이유를 짧게 추가합니다. JSON explain의 bounded repo-map은 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트를 제공하지만 pack 선택이나 provider savings claim은 아닙니다. `suggest`는 로컬 query, diff, 명시 파일, 가림 처리된 output/test-output 신호를 `build`와 호환되는 manifest로 순위화하며 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. `suggest/auto --adaptive-k`는 `--adaptive-k-policy balanced|recall|precision` 및 선택적 recall/precision proxy gate, capped selected/omitted evidence, 구조화된 source-verification hint를 제공하지만 추천값을 자동 적용하거나 manifest/pack/receipt를 바꾸지 않습니다. 명시적 `auto --apply-symbol-memory`는 안전한 direct import neighbor slice를 최대 4개 manifest에 추가하고 동일 byte budget으로 다시 build합니다. explicit/query seed의 우선순위를 보존하고 secret-risk neighbor를 제외하며 exact fallback과 닫힌 `graph_application` 근거를 남깁니다. 토큰 수는 측정된 provider token 절감이 아니라 추정 `chars_div_4` proxy입니다.
 - **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact 요약 기록과 payload integrity check로 전체 가림 처리된 schema 재조회를 보존합니다. `defer-report`는 core inline tool과 deferred stub/namespace 요약을 나누고 gross deferred-schema 및 net initial-report `chars_div_4` proxy 회계를 보여주지만, deferred tool을 쓰기 전에는 전체 schema를 다시 조회해야 합니다.
+- **적용형 adaptive breadth**는 명시적 `auto --apply-adaptive-k`에서만 동작합니다. 로컬 회귀 gate 통과 뒤 heuristic source를 줄이고 caller가 지정한 file/output/test-output 및 diff source는 항상 보존하며, 같은 byte budget으로 다시 build하고 `adaptive_k_application`을 기록합니다. 로컬 proxy는 provider token/cost 절감 주장을 허용하지 않습니다.
 - **보수적 압축기**는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
 - **정적 cache-score lint와 Anthropic 비용 가드/route advisor**는 `context-guard-cache-score`로 로컬 prompt/request cache layout과 사용자 제공 cache write/read multiplier 기반 amortization 위험을 안내하고, `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard route-advisor`는 caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽는 local-only passive advisor이며 queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오거나 provider feature 지식을 authoritative하게 취급하지 않고 total-cost accounting, batchability blocker, route 후보를 출력합니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
 - **출력 축약기**는 감싼 명령의 종료 코드를 보존하면서 긴 로그를 줄이고, `--digest markdown` 또는 `--digest json`으로 실행기 실패 정보, 가림 처리된 failure signature, 중복 라인 그룹, 다음 조회 제안이 담긴 요약을 만들 수 있습니다. `--artifact-receipt`를 digest mode와 함께 쓰면 sanitized 전체 출력을 로컬 artifact receipt로 저장하고 `contextguard-artifact:<id>` 핸들과 `context-guard-artifact receipt/get/search ...` 재조회 명령으로 누락된 slice를 다시 확장할 수 있습니다.
@@ -168,6 +171,18 @@ context-guard experiments verify proof-carrying-context --artifact-dir ./artifac
 ## 로컬 MCP 어댑터
 
 `context-guard mcp`와 `context-guard-mcp`는 의존성 없는 로컬 stdio MCP 자식 프로세스를 실행합니다. 프로세스는 root와 namespace 하나로 격리되고 sanitization된 compression, 정확한 sanitization artifact fallback, 로컬 통계만 제공합니다. HTTP, 네트워크, provider, model, proxy 통합이나 client 설정 변경은 없습니다. artifact는 namespace 사이에서 접근할 수 없고 hosted token/cost 절감도 주장하지 않습니다.
+
+설치된 Receipt companion도
+`context-guard-receipt-mcp --root /absolute/repository`로 명시적으로 실행할 수
+있습니다. `receipt_context` 도구는 사용자가 `eligible`이라고 명시한 상대
+파일·로그를 보수적 byte router가 유리하다고 판단할 때 compact process-local
+exact reference로 저장하고, 같은 live reference를 재사용하며, 한 번에 최대
+65,536바이트의 exact slice를 조회합니다. 선택적 task scope와 명시적 release는
+process-local context GC를 제공하고, content-free history에는 keyed digest와
+결정만 남습니다. `receipt_diagnose`는 비적용 firewall/router와 prefix 재사용
+scout/surgeon 안내를 제공하며, 명시적 private `--state-dir`는 authenticated
+advisory `receipt_twin`만 활성화합니다. 자동 등록, prompt 가로채기, capability의
+재시작 후 지속 저장, provider 호출, hosted 절감 주장은 하지 않습니다.
 
 ## 로컬 배포 테스트
 

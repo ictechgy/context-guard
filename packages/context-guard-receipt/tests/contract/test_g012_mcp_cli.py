@@ -25,19 +25,28 @@ from context_guard_receipt import cli  # noqa: E402
 
 
 class MCPCLIContractTests(unittest.TestCase):
-    def test_cli_requires_one_absolute_root_and_delegates_to_stdio_server(self) -> None:
+    def test_cli_accepts_only_server_owned_absolute_root_and_optional_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = str(Path(temporary_directory).resolve())
+            state = str((Path(temporary_directory) / "state").resolve())
             with mock.patch(
                 "context_guard_receipt.mcp.serve_stdio", return_value=17
             ) as serve_stdio:
                 self.assertEqual(cli.mcp_main(("--root", root)), 17)
             serve_stdio.assert_called_once_with(root)
+            with mock.patch(
+                "context_guard_receipt.mcp.serve_stdio", return_value=19
+            ) as serve_stdio:
+                self.assertEqual(
+                    cli.mcp_main(("--root", root, "--state-dir", state)), 19
+                )
+            serve_stdio.assert_called_once_with(root, state_dir=state)
 
         for arguments in (
             (),
             ("--root", "."),
-            ("--root", "/tmp", "--state-dir", "/tmp/state"),
+            ("--state-dir", "/tmp/state", "--root", "/tmp"),
+            ("--root", "/tmp", "--state-dir", "relative"),
             ("--namespace", "caller-chosen"),
         ):
             with self.subTest(arguments=arguments):

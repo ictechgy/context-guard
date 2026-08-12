@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "identity": {"additionalProperties": false, "properties": {"bytes": {"minimum": 0, "type": "integer"}, "sha256": {"$ref": "#/$defs/hash"}}, "required": ["bytes", "sha256"], "type": "object"},
+    "range": {"additionalProperties": false, "properties": {"end": {"minimum": 1, "type": "integer"}, "start": {"minimum": 1, "type": "integer"}}, "required": ["end", "start"], "type": "object"},
+    "source": {"additionalProperties": false, "properties": {"label": {"type": "string"}, "path": {"minLength": 1, "type": "string"}, "priority": {"minimum": 0, "type": "integer"}, "range": {"$ref": "#/$defs/range"}, "slice": {"$ref": "#/$defs/identity"}, "source": {"$ref": "#/$defs/identity"}}, "required": ["label", "path", "priority", "range", "slice", "source"], "type": "object"}
+  },
+  "additionalProperties": false,
+  "properties": {"arm": {"enum": ["ordinary", "adaptive_only", "symbol_only", "combined"], "type": "string"}, "context_sha256": {"$ref": "#/$defs/hash"}, "event": {"enum": ["pack_captured", "final_context_sealed"], "type": "string"}, "event_id": {"$ref": "#/$defs/hash"}, "kind": {"enum": ["retrieval", "fallback", "correction"], "type": "string"}, "manifest_sources": {"items": {"$ref": "#/$defs/source"}, "type": "array"}, "ordinal": {"minimum": 1, "type": "integer"}, "origin_event_ids": {"items": {"$ref": "#/$defs/hash"}, "type": "array", "uniqueItems": true}, "path": {"minLength": 1, "type": "string"}, "plan_sha256": {"$ref": "#/$defs/hash"}, "range": {"$ref": "#/$defs/range"}, "rendered_pack_sha256": {"$ref": "#/$defs/hash"}, "returned_bytes": {"minimum": 0, "type": "integer"}, "round_id": {"$ref": "#/$defs/hash"}, "slice": {"$ref": "#/$defs/identity"}, "source": {"$ref": "#/$defs/identity"}, "status": {"enum": ["added", "already_present"], "type": "string"}, "task_id": {"pattern": "^(train|calibration|evaluation)_(closed|graph)$", "type": "string"}},
+  "required": ["arm", "event_id", "task_id"],
+  "type": "object"
+}

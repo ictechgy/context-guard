@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "derived_evidence": {
+            "additionalProperties": false,
+            "properties": {
+              "graph_ranks": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "minLength": 3,
+                      "type": "string"
+                    },
+                    "rank": {
+                      "maximum": 30,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "rank"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "import_edges": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "from": {
+                      "minLength": 3,
+                      "type": "string"
+                    },
+                    "source_line": {
+                      "maximum": 1000,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "source_text": {
+                      "minLength": 8,
+                      "type": "string"
+                    },
+                    "to": {
+                      "minLength": 3,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "source_line",
+                    "source_text",
+                    "to"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "graph_ranks",
+              "import_edges"
+            ],
+            "type": "object"
+          },
+          "task_id": {
+            "enum": [
+              "train_graph",
+              "calibration_graph",
+              "evaluation_graph"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "derived_evidence",
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "contextguard.g2-graph/v1",
+      "type": "string"
+    }
+  },
+  "required": [
+    "cases",
+    "schema_version"
+  ],
+  "type": "object"
+}

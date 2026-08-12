@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -18,6 +19,7 @@ from typing import BinaryIO, Final, TextIO
 
 from .assembly import (
     DESCRIPTOR_LIMITS as ASSEMBLY_DESCRIPTOR_LIMITS,
+    MAX_ASSEMBLY_PAYLOAD_BYTES,
     AssemblyDisposition,
     AssemblyError,
     assemble_blueprint,
@@ -31,6 +33,12 @@ from .canonical import (
     parse_canonical_json_bytes,
 )
 from .contracts import evidence_boundary
+from .diagnostics import DiagnosticsError, analyze_diagnostics
+from .execution_twin import (
+    ExecutionTwin,
+    ExecutionTwinError,
+    parse_twin_request,
+)
 from .expansion import ExpansionDisposition, expand_capability
 from .identity import IdentityError, snapshot_repository
 from .receipts import ReceiptError, validate_source_recipe
@@ -78,6 +86,8 @@ MAX_DIRECTORY_ENTRIES: Final = 4096
 MAX_ROOT_INVENTORY_ENTRIES: Final = 65_536
 MAX_ROOT_INVENTORY_DEPTH: Final = 64
 MAX_ROOT_INVENTORY_PATH_BYTES: Final = 4096
+MAX_CONTEXT_SLICE_BYTES: Final = 64 * 1024
+MAX_CONTEXT_DIAGNOSTIC_INPUT_BYTES: Final = 700_000
 
 _RESPONSE_JSON_LIMITS: Final = JSONLimits(
     max_document_bytes=MAX_RESPONSE_BYTES,
@@ -94,9 +104,12 @@ _CAPABILITY_ALPHABET: Final = frozenset(
 )
 _TOOL_NAMES: Final = (
     "receipt_assemble",
+    "receipt_context",
+    "receipt_diagnose",
     "receipt_expand",
     "receipt_inspect",
     "receipt_tool_select",
+    "receipt_twin",
 )
 _FROZEN_UNICODE_DATABASE: Final = unicodedata.ucd_3_2_0
 _SOURCE_ARTIFACT_TYPES: Final = frozenset(
@@ -122,6 +135,22 @@ class _MemoryRecord:
     internal_handle: str
     artifact: StoredArtifact
     expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextCacheEntry:
+    external_handle: str
+    result: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextLease:
+    scope_hmac_sha256: str | None
+
+
+MAX_CONTEXT_HISTORY_EVENTS: Final = 256
+MAX_CONTEXT_HISTORY_RESULTS: Final = 64
+MAX_TASK_SCOPE_BYTES: Final = 128
 
 
 def _hash_field(digest: object, value: bytes) -> None:
@@ -499,6 +528,20 @@ class InMemoryCapabilityStore:
         record = self._get(value)
         return record.internal_handle
 
+    def revoke_external(self, value: object) -> None:
+        if not _valid_handle(value, _EXTERNAL_PREFIX):
+            _reject_capability()
+        with self._lock:
+            now = self._now()
+            self._drop_expired(now)
+            record = self._records.get(value)  # type: ignore[arg-type]
+            if record is None:
+                _reject_capability()
+            self._records.pop(record.external_handle, None)
+            self._records.pop(record.internal_handle, None)
+            self._internal_to_external.pop(record.internal_handle, None)
+            self._total_bytes -= record.artifact.byte_length
+
     def inspect_counts(self) -> tuple[int, int]:
         with self._lock:
             self._drop_expired(self._now())
@@ -622,6 +665,146 @@ def _tool_definitions() -> list[dict[str, object]]:
             "name": "receipt_assemble",
         },
         {
+            "annotations": annotations,
+            "description": (
+                "Store one explicit local file without resending its bytes, "
+                "or read one bounded exact slice."
+            ),
+            "inputSchema": {
+                "oneOf": [
+                    {
+                        **closed,
+                        "properties": {
+                            "action": {"const": "store", "type": "string"},
+                            "caller_classification": {
+                                "const": "eligible",
+                                "type": "string",
+                            },
+                            "detector_signals": {
+                                "items": {
+                                    "enum": [
+                                        "ambiguous",
+                                        "exact_required",
+                                        "protected",
+                                        "secret",
+                                        "security_sensitive",
+                                        "unknown",
+                                    ],
+                                    "type": "string",
+                                },
+                                "maxItems": 0,
+                                "type": "array",
+                                "uniqueItems": True,
+                            },
+                            "relative_path": {"maxLength": 4096, "type": "string"},
+                            "task_scope": {
+                                "maxLength": MAX_TASK_SCOPE_BYTES,
+                                "minLength": 1,
+                                "type": "string",
+                            },
+                        },
+                        "required": [
+                            "action",
+                            "caller_classification",
+                            "detector_signals",
+                            "relative_path",
+                        ],
+                    },
+                    {
+                        **closed,
+                        "properties": {
+                            "action": {"const": "read", "type": "string"},
+                            "capability": {
+                                "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
+                                "type": "string",
+                            },
+                            "max_bytes": {
+                                "maximum": MAX_CONTEXT_SLICE_BYTES,
+                                "minimum": 1,
+                                "type": "integer",
+                            },
+                            "offset": {
+                                "maximum": MAX_ASSEMBLY_PAYLOAD_BYTES,
+                                "minimum": 0,
+                                "type": "integer",
+                            },
+                            "task_scope": {
+                                "maxLength": MAX_TASK_SCOPE_BYTES,
+                                "minLength": 1,
+                                "type": "string",
+                            },
+                        },
+                        "required": ["action", "capability", "max_bytes", "offset"],
+                    },
+                    {
+                        **closed,
+                        "properties": {
+                            "action": {"const": "release", "type": "string"},
+                            "capability": {
+                                "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
+                                "type": "string",
+                            },
+                            "task_scope": {
+                                "maxLength": MAX_TASK_SCOPE_BYTES,
+                                "minLength": 1,
+                                "type": "string",
+                            },
+                        },
+                        "required": ["action", "capability"],
+                    },
+                    {
+                        **closed,
+                        "properties": {
+                            "action": {"const": "history", "type": "string"},
+                            "limit": {
+                                "maximum": MAX_CONTEXT_HISTORY_RESULTS,
+                                "minimum": 1,
+                                "type": "integer",
+                            },
+                        },
+                        "required": ["action", "limit"],
+                    },
+                ],
+                "type": "object",
+            },
+            "name": "receipt_context",
+        },
+        {
+            "annotations": {**annotations, "readOnlyHint": True},
+            "description": (
+                "Return content-free shadow firewall, router, and scout/surgeon "
+                "advice for one explicit local file."
+            ),
+            "inputSchema": {
+                **closed,
+                "properties": {
+                    "caller_classification": {"const": "eligible", "type": "string"},
+                    "detector_signals": {
+                        "items": {"type": "string"},
+                        "maxItems": 0,
+                        "type": "array",
+                        "uniqueItems": True,
+                    },
+                    "previous_capability": {
+                        "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
+                        "type": "string",
+                    },
+                    "relative_path": {"maxLength": 4096, "type": "string"},
+                    "task_scope": {
+                        "maxLength": MAX_TASK_SCOPE_BYTES,
+                        "minLength": 1,
+                        "type": "string",
+                    },
+                },
+                "required": [
+                    "caller_classification",
+                    "detector_signals",
+                    "relative_path",
+                ],
+            },
+            "name": "receipt_diagnose",
+        },
+        {
             "annotations": {**annotations, "readOnlyHint": True},
             "description": "Expand one process-local exact capability.",
             "inputSchema": {
@@ -652,6 +835,39 @@ def _tool_definitions() -> list[dict[str, object]]:
             },
             "name": "receipt_tool_select",
         },
+        {
+            "annotations": annotations,
+            "description": (
+                "Append or inspect server-owned advisory execution-twin evidence."
+            ),
+            "inputSchema": {
+                "oneOf": [
+                    {
+                        **closed,
+                        "properties": {
+                            "action": {"const": "append", "type": "string"},
+                            "observed_at_unix_ms": {
+                                "maximum": 4_102_444_800_000,
+                                "minimum": 0,
+                                "type": "integer",
+                            },
+                            "request": {"type": "object"},
+                        },
+                        "required": ["action", "observed_at_unix_ms", "request"],
+                    },
+                    {
+                        **closed,
+                        "properties": {
+                            "action": {"const": "inspect", "type": "string"},
+                            "limit": {"maximum": 256, "minimum": 1, "type": "integer"},
+                        },
+                        "required": ["action", "limit"],
+                    },
+                ],
+                "type": "object",
+            },
+            "name": "receipt_twin",
+        },
     ]
 
 
@@ -659,7 +875,11 @@ class MCPServer:
     """One-root, one-process MCP state machine."""
 
     def __init__(
-        self, root: str, *, clock: Callable[[], float] = time.monotonic
+        self,
+        root: str,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        state_dir: str | None = None,
     ) -> None:
         if (
             type(root) is not str
@@ -669,6 +889,16 @@ class MCPServer:
             or os.path.normpath(root) != root
             or os.path.realpath(root) != root
             or not callable(clock)
+            or (
+                state_dir is not None
+                and (
+                    type(state_dir) is not str
+                    or not state_dir
+                    or "\0" in state_dir
+                    or not os.path.isabs(state_dir)
+                    or os.path.normpath(state_dir) != state_dir
+                )
+            )
         ):
             raise ValueError("invalid MCP root")
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -695,6 +925,8 @@ class MCPServer:
         self._root_inventory = inventory
         self._repository_kind = repository_kind
         self._clock = clock
+        self._state_dir = state_dir
+        self._context_hash_key = os.urandom(32)
         self._store = InMemoryCapabilityStore(
             clock=clock,
             expected_source_root_identity_sha256=identity,
@@ -708,6 +940,13 @@ class MCPServer:
         self._seen_ids: set[tuple[type, object]] = set()
         self._call_lock = threading.Lock()
         self._tool_references: dict[str, tuple[dict[str, object], dict[str, object] | None]] = {}
+        self._context_cache: dict[
+            tuple[str, str, tuple[str, ...], str | None], _ContextCacheEntry
+        ] = {}
+        self._context_handles: dict[str, _ContextLease] = {}
+        self._context_cache_hits = 0
+        self._context_history: list[dict[str, object]] = []
+        self._context_history_sequence = 0
 
     def _poison_root(self) -> None:
         self._root_failed = True
@@ -882,6 +1121,48 @@ class MCPServer:
                 raise _InvalidInput from None
             self._validate_relative_path(checked["relative_path"])
 
+    def _read_context_file(self, relative_path: object) -> bytes:
+        """Read one bounded regular file through no-follow directory descriptors."""
+
+        self._validate_relative_path(relative_path)
+        components = relative_path.split("/")  # type: ignore[union-attr]
+        descriptor = os.dup(self._root_fd)
+        try:
+            for index, component in enumerate(components):
+                flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+                if index < len(components) - 1:
+                    flags |= os.O_DIRECTORY
+                else:
+                    flags |= getattr(os, "O_NONBLOCK", 0)
+                child = os.open(component, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise _InvalidInput
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(
+                    descriptor,
+                    min(64 * 1024, MAX_ASSEMBLY_PAYLOAD_BYTES - total + 1),
+                )
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_ASSEMBLY_PAYLOAD_BYTES:
+                    raise _InvalidInput
+                chunks.append(chunk)
+            if _status_fingerprint(os.fstat(descriptor)) != _status_fingerprint(
+                before
+            ):
+                raise _InvalidInput
+            return b"".join(chunks)
+        except (OSError, OverflowError, UnicodeError):
+            raise _InvalidInput from None
+        finally:
+            os.close(descriptor)
+
     def _externalize_capability_field(self, value: object) -> None:
         if type(value) is not dict or set(value).isdisjoint({"capability"}):
             raise _InvalidInput
@@ -983,6 +1264,518 @@ class MCPServer:
                 is_error=result.disposition is AssemblyDisposition.REFUSED,
             )
         except (AssemblyError, CanonicalJSONError, _InvalidInput, OSError, ValueError):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        except Exception:
+            return _call_result(_tool_error("operation_failed"), is_error=True)
+
+    def _context_artifact_bytes(
+        self, capability: object, task_scope: object
+    ) -> bytes:
+        if not self._lease_matches(capability, task_scope):
+            raise _InvalidInput
+        internal = self._store.internalize_handle(capability)  # type: ignore[arg-type]
+        expanded = expand_capability(internal, root=self._root, store=self._store)
+        if expanded.disposition is not ExpansionDisposition.EXACT:
+            raise _InvalidInput
+        return expanded.output_bytes
+
+    def _diagnose(self, arguments: object) -> dict[str, object]:
+        required = {
+            "caller_classification",
+            "detector_signals",
+            "relative_path",
+        }
+        optional = {"previous_capability", "task_scope"}
+        if (
+            type(arguments) is not dict
+            or not required.issubset(arguments)
+            or set(arguments) - required - optional
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        classification = arguments.get("caller_classification")
+        signals = arguments.get("detector_signals")
+        relative_path = arguments.get("relative_path")
+        if (
+            classification != "eligible"
+            or type(signals) is not list
+            or signals
+            or type(relative_path) is not str
+        ):
+            return _call_result(_tool_error("context_not_eligible"), is_error=True)
+        try:
+            self._revalidate_root()
+            task_scope_hmac = self._task_scope_hmac(arguments.get("task_scope"))
+            payload = self._read_context_file(relative_path)
+            if len(payload) > MAX_CONTEXT_DIAGNOSTIC_INPUT_BYTES:
+                return _call_result(
+                    _tool_error("diagnostic_input_too_large"), is_error=True
+                )
+            previous_capability = arguments.get("previous_capability")
+            previous_prefix: bytes | None = None
+            if previous_capability is not None:
+                previous = self._context_artifact_bytes(
+                    previous_capability, arguments.get("task_scope")
+                )
+                previous_prefix = previous[:65_536]
+            diagnostic_request = {
+                "blueprint_b64u": "",
+                "caller_classification": classification,
+                "current_prefix_b64u": _b64u(payload[:65_536]),
+                "detector_signals": signals,
+                "handle_b64u": _b64u(b"cgr1m_" + b"0" * 43),
+                "input_b64u": _b64u(payload),
+                "mandatory_expansion_b64u": "",
+                "previous_prefix_b64u": (
+                    None if previous_prefix is None else _b64u(previous_prefix)
+                ),
+                "retained_wire_b64u": _b64u(b"cgr1m_" + b"0" * 43),
+                "schema_version": "contextguard-receipt-diagnostics-request/v1",
+                "subject_kind": "evidence",
+                "wrapper_b64u": _b64u(
+                    b"contextguard-receipt-mcp-context-reference/v1"
+                ),
+            }
+            raw = canonical_json_bytes(diagnostic_request, _RESPONSE_JSON_LIMITS)
+            report = analyze_diagnostics(
+                raw, fingerprint_key=self._context_hash_key
+            ).report()
+            advisory = report.get("advisory")
+            lane = advisory.get("lane") if type(advisory) is dict else "none"
+            reason = advisory.get("reason") if type(advisory) is dict else "invalid"
+            self._record_context_history(
+                action="diagnose",
+                disposition=lane if type(lane) is str else "none",
+                reason=reason if type(reason) is str else "invalid",
+                relative_path=relative_path,
+                task_scope_hmac_sha256=task_scope_hmac,
+                capability=(
+                    previous_capability
+                    if type(previous_capability) is str
+                    else None
+                ),
+                byte_length=len(payload),
+            )
+            self._revalidate_root()
+            return _call_result(report, is_error=False)
+        except (
+            CanonicalJSONError,
+            DiagnosticsError,
+            StoreError,
+            _InvalidInput,
+            OSError,
+            UnicodeError,
+            ValueError,
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        except Exception:
+            return _call_result(_tool_error("operation_failed"), is_error=True)
+
+    def _twin(self, arguments: object) -> dict[str, object]:
+        if self._state_dir is None:
+            return _call_result(_tool_error("twin_unavailable"), is_error=True)
+        if type(arguments) is not dict:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        action = arguments.get("action")
+        try:
+            self._revalidate_root()
+            if action == "append" and set(arguments) == {
+                "action",
+                "observed_at_unix_ms",
+                "request",
+            }:
+                observed_at = arguments.get("observed_at_unix_ms")
+                request = arguments.get("request")
+                if type(observed_at) is not int or type(request) is not dict:
+                    raise _InvalidInput
+                _walk_json(request)
+                parsed = parse_twin_request(
+                    canonical_json_bytes(request, _RESPONSE_JSON_LIMITS)
+                )
+                with ExecutionTwin.open(
+                    self._state_dir, self._root, create=True
+                ) as twin:
+                    result = twin.append(parsed, observed_at)
+            elif action == "inspect" and set(arguments) == {"action", "limit"}:
+                limit = arguments.get("limit")
+                if type(limit) is not int or not 1 <= limit <= 256:
+                    raise _InvalidInput
+                with ExecutionTwin.open(
+                    self._state_dir, self._root, create=False
+                ) as twin:
+                    result = twin.inspect(limit)
+            else:
+                raise _InvalidInput
+            self._revalidate_root()
+            return _call_result(result, is_error=False)
+        except ExecutionTwinError as error:
+            return _call_result(_tool_error(error.code.value), is_error=True)
+        except (
+            CanonicalJSONError,
+            _InvalidInput,
+            OSError,
+            UnicodeError,
+            ValueError,
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        except Exception:
+            return _call_result(_tool_error("operation_failed"), is_error=True)
+
+    def _context_hmac(self, domain: bytes, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if type(value) is not str:
+            raise _InvalidInput
+        encoded = value.encode("utf-8", errors="strict")
+        mac = hmac.new(self._context_hash_key, digestmod=hashlib.sha256)
+        mac.update(domain)
+        mac.update(len(encoded).to_bytes(8, "big"))
+        mac.update(encoded)
+        return mac.hexdigest()
+
+    def _task_scope_hmac(self, value: object) -> str | None:
+        if value is None:
+            return None
+        if (
+            type(value) is not str
+            or not value
+            or "\0" in value
+            or _FROZEN_UNICODE_DATABASE.normalize("NFC", value) != value
+            or len(value.encode("utf-8", errors="strict")) > MAX_TASK_SCOPE_BYTES
+        ):
+            raise _InvalidInput
+        return self._context_hmac(b"contextguard-receipt/mcp-task-scope/v1", value)
+
+    def _record_context_history(
+        self,
+        *,
+        action: str,
+        disposition: str,
+        reason: str,
+        relative_path: str | None = None,
+        task_scope_hmac_sha256: str | None = None,
+        capability: str | None = None,
+        byte_length: int | None = None,
+    ) -> None:
+        self._context_history_sequence += 1
+        event: dict[str, object] = {
+            "action": action,
+            "byte_length": byte_length,
+            "capability_hmac_sha256": self._context_hmac(
+                b"contextguard-receipt/mcp-capability/v1", capability
+            ),
+            "disposition": disposition,
+            "path_hmac_sha256": self._context_hmac(
+                b"contextguard-receipt/mcp-relative-path/v1", relative_path
+            ),
+            "reason": reason,
+            "sequence": self._context_history_sequence,
+            "task_scope_hmac_sha256": task_scope_hmac_sha256,
+        }
+        self._context_history.append(event)
+        if len(self._context_history) > MAX_CONTEXT_HISTORY_EVENTS:
+            del self._context_history[: len(self._context_history) - MAX_CONTEXT_HISTORY_EVENTS]
+
+    def _lease_matches(self, capability: object, task_scope: object) -> bool:
+        if not _valid_handle(capability, _EXTERNAL_PREFIX):
+            return False
+        lease = self._context_handles.get(capability)  # type: ignore[arg-type]
+        if lease is None:
+            return False
+        try:
+            supplied = self._task_scope_hmac(task_scope)
+        except (_InvalidInput, UnicodeError):
+            return False
+        expected = lease.scope_hmac_sha256
+        if expected is None or supplied is None:
+            return expected is supplied
+        return hmac.compare_digest(expected, supplied)
+
+    def _context_history_result(self, arguments: dict[str, object]) -> dict[str, object]:
+        if set(arguments) != {"action", "limit"}:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        limit = arguments.get("limit")
+        if type(limit) is not int or not 1 <= limit <= MAX_CONTEXT_HISTORY_RESULTS:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        return _call_result(
+            {
+                "advisory_only": True,
+                "applied": False,
+                "events": [dict(event) for event in self._context_history[-limit:]],
+                "evidence_boundary": evidence_boundary(),
+                "provider_claim_authority": False,
+                "schema_version": "contextguard-receipt-mcp-context-history/v1",
+            },
+            is_error=False,
+        )
+
+    def _context_release(self, arguments: dict[str, object]) -> dict[str, object]:
+        if set(arguments) not in (
+            {"action", "capability"},
+            {"action", "capability", "task_scope"},
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        capability = arguments.get("capability")
+        task_scope = arguments.get("task_scope")
+        if not self._lease_matches(capability, task_scope):
+            return _call_result(_tool_error("capability_rejected"), is_error=True)
+        lease = self._context_handles[capability]  # type: ignore[index]
+        try:
+            self._store.revoke_external(capability)
+        except StoreError:
+            return _call_result(_tool_error("capability_rejected"), is_error=True)
+        self._context_handles.pop(capability, None)  # type: ignore[arg-type]
+        for key, entry in tuple(self._context_cache.items()):
+            if entry.external_handle == capability:
+                self._context_cache.pop(key, None)
+        self._record_context_history(
+            action="release",
+            disposition="released",
+            reason="explicit_release",
+            task_scope_hmac_sha256=lease.scope_hmac_sha256,
+            capability=capability,  # type: ignore[arg-type]
+        )
+        return _call_result(
+            {
+                "advisory_only": False,
+                "evidence_boundary": evidence_boundary(),
+                "provider_claim_authority": False,
+                "released": True,
+                "schema_version": "contextguard-receipt-mcp-context-release/v1",
+            },
+            is_error=False,
+        )
+
+    def _context(self, arguments: object) -> dict[str, object]:
+        if type(arguments) is dict and arguments.get("action") == "history":
+            return self._context_history_result(arguments)
+        if type(arguments) is dict and arguments.get("action") == "release":
+            return self._context_release(arguments)
+        if type(arguments) is dict and arguments.get("action") == "read":
+            if set(arguments) not in (
+                {"action", "capability", "max_bytes", "offset"},
+                {"action", "capability", "max_bytes", "offset", "task_scope"},
+            ):
+                return _call_result(_tool_error("invalid_arguments"), is_error=True)
+            capability = arguments.get("capability")
+            offset = arguments.get("offset")
+            max_bytes = arguments.get("max_bytes")
+            if (
+                not _valid_handle(capability, _EXTERNAL_PREFIX)
+                or type(offset) is not int
+                or offset < 0
+                or offset > MAX_ASSEMBLY_PAYLOAD_BYTES
+                or type(max_bytes) is not int
+                or max_bytes < 1
+                or max_bytes > MAX_CONTEXT_SLICE_BYTES
+            ):
+                return _call_result(_tool_error("invalid_arguments"), is_error=True)
+            task_scope = arguments.get("task_scope")
+            try:
+                supplied_scope_hmac = self._task_scope_hmac(task_scope)
+            except (_InvalidInput, UnicodeError):
+                return _call_result(_tool_error("invalid_arguments"), is_error=True)
+            if not self._lease_matches(capability, task_scope):
+                self._record_context_history(
+                    action="read",
+                    disposition="refused",
+                    reason="capability_rejected",
+                    capability=capability if type(capability) is str else None,
+                    task_scope_hmac_sha256=supplied_scope_hmac,
+                )
+                return _call_result(
+                    _tool_error("capability_rejected"), is_error=True
+                )
+            try:
+                self._revalidate_root()
+                internal = self._store.internalize_handle(capability)
+                expanded = expand_capability(
+                    internal, root=self._root, store=self._store
+                )
+                if expanded.disposition is not ExpansionDisposition.EXACT:
+                    return _call_result(
+                        _tool_error("capability_rejected"), is_error=True
+                    )
+                total = len(expanded.output_bytes)
+                if offset > total:
+                    return _call_result(
+                        _tool_error("invalid_arguments"), is_error=True
+                    )
+                end = min(total, offset + max_bytes)
+                output = expanded.output_bytes[offset:end]
+                lease = self._context_handles[capability]  # type: ignore[index]
+                self._record_context_history(
+                    action="read",
+                    disposition="exact",
+                    reason="bounded_slice",
+                    task_scope_hmac_sha256=lease.scope_hmac_sha256,
+                    capability=capability,  # type: ignore[arg-type]
+                    byte_length=len(output),
+                )
+                self._revalidate_root()
+                return _call_result(
+                    _payload_bytes(
+                        kind="mcp_context_slice",
+                        disposition="exact",
+                        output=output,
+                        receipt={
+                            "complete": end == total,
+                            "end_byte": end,
+                            "start_byte": offset,
+                            "total_bytes": total,
+                        },
+                    ),
+                    is_error=False,
+                )
+            except (StoreError, _InvalidInput, OSError, ValueError):
+                return _call_result(
+                    _tool_error("capability_rejected"), is_error=True
+                )
+            except Exception:
+                return _call_result(_tool_error("operation_failed"), is_error=True)
+
+        expected = {
+            "action",
+            "caller_classification",
+            "detector_signals",
+            "relative_path",
+        }
+        expected_with_scope = expected | {"task_scope"}
+        if type(arguments) is not dict or set(arguments) not in (
+            expected,
+            expected_with_scope,
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        if arguments.get("action") != "store":
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        signals = arguments.get("detector_signals")
+        if (
+            type(signals) is not list
+            or len(signals) > 64
+            or any(type(signal) is not str for signal in signals)
+            or len(set(signals)) != len(signals)
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        try:
+            self._revalidate_root()
+            relative_path = arguments.get("relative_path")
+            classification = arguments.get("caller_classification")
+            task_scope_hmac = self._task_scope_hmac(arguments.get("task_scope"))
+            if type(relative_path) is not str or type(classification) is not str:
+                raise _InvalidInput
+            if classification != "eligible" or signals:
+                self._record_context_history(
+                    action="store",
+                    disposition="refused",
+                    reason="context_not_eligible",
+                    relative_path=relative_path,
+                    task_scope_hmac_sha256=task_scope_hmac,
+                )
+                return _call_result(
+                    _tool_error("context_not_eligible"), is_error=True
+                )
+            cache_key = (
+                relative_path,
+                classification,
+                tuple(signals),
+                task_scope_hmac,
+            )
+            cached = self._context_cache.get(cache_key)
+            if cached is not None:
+                try:
+                    self._store.internalize_handle(cached.external_handle)
+                except StoreError:
+                    self._context_cache.pop(cache_key, None)
+                    self._context_handles.pop(cached.external_handle, None)
+                else:
+                    self._context_cache_hits += 1
+                    self._record_context_history(
+                        action="store",
+                        disposition="deferred",
+                        reason="cache_hit",
+                        relative_path=relative_path,
+                        task_scope_hmac_sha256=task_scope_hmac,
+                        capability=cached.external_handle,
+                    )
+                    return cached.result
+            payload = self._read_context_file(arguments.get("relative_path"))
+            descriptor = {
+                "caller_classification": classification,
+                "detector_signals": signals,
+                "payload_b64u": _b64u(payload),
+                "schema_version": "contextguard-receipt-evidence-descriptor/v1",
+                "source": {
+                    "relative_path": relative_path,
+                    "selection": {"kind": "file"},
+                },
+            }
+            result = self._assemble({"descriptor": descriptor, "kind": "evidence"})
+            structured = result.get("structuredContent")
+            if (
+                type(structured) is dict
+                and structured.get("disposition") == "deferred"
+                and type(structured.get("output_b64u")) is str
+            ):
+                encoded = structured["output_b64u"].encode("ascii")
+                raw = base64.urlsafe_b64decode(
+                    encoded + b"=" * ((4 - len(encoded) % 4) % 4)
+                )
+                reference = parse_canonical_json_bytes(raw, limits=_RESPONSE_JSON_LIMITS)
+                external = (
+                    reference.get("capability")
+                    if type(reference) is dict
+                    else None
+                )
+                if not _valid_handle(external, _EXTERNAL_PREFIX):
+                    raise _InvalidInput
+                result = _call_result(
+                    {
+                        "artifact_kind": "mcp_context_reference",
+                        "disposition": "deferred",
+                        "evidence_boundary": evidence_boundary(),
+                        "provider_claim_authority": False,
+                        "receipt": structured.get("receipt"),
+                        "reference": reference,
+                        "schema_version": (
+                            "contextguard-receipt-mcp-context-reference/v1"
+                        ),
+                    },
+                    is_error=False,
+                )
+                self._context_cache[cache_key] = _ContextCacheEntry(
+                    external_handle=external,
+                    result=result,
+                )
+                self._context_handles[external] = _ContextLease(
+                    scope_hmac_sha256=task_scope_hmac
+                )
+                self._record_context_history(
+                    action="store",
+                    disposition="deferred",
+                    reason="beneficial",
+                    relative_path=relative_path,
+                    task_scope_hmac_sha256=task_scope_hmac,
+                    capability=external,
+                    byte_length=len(payload),
+                )
+            else:
+                structured = result.get("structuredContent")
+                disposition = (
+                    structured.get("disposition")
+                    if type(structured) is dict
+                    else "refused"
+                )
+                self._record_context_history(
+                    action="store",
+                    disposition=(
+                        disposition if type(disposition) is str else "refused"
+                    ),
+                    reason="unchanged_fallback",
+                    relative_path=relative_path,
+                    task_scope_hmac_sha256=task_scope_hmac,
+                    byte_length=len(payload),
+                )
+            return result
+        except (_InvalidInput, OSError, ValueError):
             return _call_result(_tool_error("invalid_arguments"), is_error=True)
         except Exception:
             return _call_result(_tool_error("operation_failed"), is_error=True)
@@ -1103,6 +1896,7 @@ class MCPServer:
         payload = {
             "artifact_count": count,
             "artifact_limit": MAX_ARTIFACTS,
+            "context_cache_hits": self._context_cache_hits,
             "evidence_boundary": evidence_boundary(),
             "network_authority": False,
             "provider_claim_authority": False,
@@ -1195,7 +1989,7 @@ class MCPServer:
                     "protocolVersion": version,
                     "serverInfo": {
                         "name": "context-guard-receipt",
-                        "version": "1.0.0",
+                        "version": "1.2.0",
                     },
                 },
             )
@@ -1254,10 +2048,16 @@ class MCPServer:
                 arguments = params.get("arguments", {})
                 if params["name"] == "receipt_assemble":
                     result = self._assemble(arguments)
+                elif params["name"] == "receipt_context":
+                    result = self._context(arguments)
+                elif params["name"] == "receipt_diagnose":
+                    result = self._diagnose(arguments)
                 elif params["name"] == "receipt_expand":
                     result = self._expand(arguments)
                 elif params["name"] == "receipt_tool_select":
                     result = self._tool_select(arguments)
+                elif params["name"] == "receipt_twin":
+                    result = self._twin(arguments)
                 else:
                     result = self._inspect(arguments)
                 self._revalidate_root()
@@ -1336,6 +2136,12 @@ class MCPServer:
         if self._closed:
             return
         self._closed = True
+        self._context_cache.clear()
+        self._context_handles.clear()
+        self._context_history.clear()
+        self._context_hash_key = b""
+        self._state_dir = None
+        self._tool_references.clear()
         self._store.close()
         os.close(self._root_fd)
 
@@ -1356,9 +2162,9 @@ def serve(
     return server.serve(input_stream, output_stream)
 
 
-def serve_stdio(root: str) -> int:
+def serve_stdio(root: str, *, state_dir: str | None = None) -> int:
     try:
-        server = MCPServer(root)
+        server = MCPServer(root, state_dir=state_dir)
     except Exception:
         return 70
     try:

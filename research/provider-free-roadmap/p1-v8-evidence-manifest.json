@@ -1,0 +1,257 @@
+{
+  "algorithm": "sha256",
+  "artifacts": [
+    {
+      "bytes": 19774,
+      "path": "bench/token-savings-12task/README.md",
+      "sha256": "df5180c237fc30f340ceb0507866e796d67491163c72da88198183f463978295"
+    },
+    {
+      "bytes": 5836,
+      "path": "bench/token-savings-12task/checkers/01-small-fix.py",
+      "sha256": "ed6cefef31c49874471335b44e64031b0203b0a0f8282a5f4df5d5a5e7b746b2"
+    },
+    {
+      "bytes": 6293,
+      "path": "bench/token-savings-12task/checkers/02-bugfix.py",
+      "sha256": "536f0ff6961e07e78b869fb57aa80b4a2dc75ce752fb76e7aaa84db9bcc16097"
+    },
+    {
+      "bytes": 3185,
+      "path": "bench/token-savings-12task/checkers/03-exploration.py",
+      "sha256": "736240b5128a3eafe2dafdf6876343a6bd463831ed412e2368872965a3ae8979"
+    },
+    {
+      "bytes": 3360,
+      "path": "bench/token-savings-12task/checkers/04-review.py",
+      "sha256": "2f76a8ea6d647af9b09b7283c98e88d0fd095a89bd7aab91ceb58dc7fe329eae"
+    },
+    {
+      "bytes": 3220,
+      "path": "bench/token-savings-12task/checkers/05-long-log.py",
+      "sha256": "12f0eb116669324d9bd1cfb6762c7b2c9e31892e816668bdfae0066be2e3ecce"
+    },
+    {
+      "bytes": 6854,
+      "path": "bench/token-savings-12task/checkers/06-migration.py",
+      "sha256": "2b736b7e4e730903678dec2f48a0d01eefc7ae86befe4153aabdb79d6eb39027"
+    },
+    {
+      "bytes": 3544,
+      "path": "bench/token-savings-12task/checkers/07-docs.py",
+      "sha256": "3efed145b252b804e57b6480946a42b533e29f7779ace8820cf5adde325735fe"
+    },
+    {
+      "bytes": 6447,
+      "path": "bench/token-savings-12task/checkers/08-refactor.py",
+      "sha256": "5913d93c5ec51a7a022dcf72a5cc669299138abdabbfdacadd85218f26e73006"
+    },
+    {
+      "bytes": 7019,
+      "path": "bench/token-savings-12task/checkers/09-performance.py",
+      "sha256": "fbca2d142945571997edaad2d2c285936e7d051139721fe383cea00223d07a8b"
+    },
+    {
+      "bytes": 6366,
+      "path": "bench/token-savings-12task/checkers/10-telemetry.py",
+      "sha256": "dc55bf187dd84e94a70e9948aac7e96fcab8fd86de4a24d302dfcf220ef4d5b5"
+    },
+    {
+      "bytes": 3974,
+      "path": "bench/token-savings-12task/checkers/11-cache-layout.py",
+      "sha256": "c82f46a0098f608f1e0e759091b8c7388b8db7ce0ade91f639415ee6f2a0bf81"
+    },
+    {
+      "bytes": 4182,
+      "path": "bench/token-savings-12task/checkers/12-artifact-receipt.py",
+      "sha256": "6c0d971931cd1a601603aecd54389e1cc15d064ba0749c70c39f3d5dd06eee08"
+    },
+    {
+      "bytes": 1734,
+      "path": "bench/token-savings-12task/hook-event-evidence.json",
+      "sha256": "53fb3d59177fbb19a7d76295c924e06c357ee11a185be74134ac4e008b3bca68"
+    },
+    {
+      "bytes": 3941,
+      "path": "bench/token-savings-12task/rehearsal/solutions.json",
+      "sha256": "111698294390cfbdea57203696d7f6edf2df0a0e43baa26432d7a26fc297a6c3"
+    },
+    {
+      "bytes": 828,
+      "path": "bench/token-savings-12task/results/r9-dashboard.md",
+      "sha256": "b0089b0e20529b5d8d9352fae0f189e177a748300cb4b56f90399a245c8e1c78"
+    },
+    {
+      "bytes": 3080,
+      "path": "bench/token-savings-12task/results/r9-summary.json",
+      "sha256": "acd8eaa1585dea15cd2f9bb7730fbeec454c4a3d3c788fffb2abd28eae7259ee"
+    },
+    {
+      "bytes": 3667,
+      "path": "bench/token-savings-12task/results/r9-summary.md",
+      "sha256": "dd4320452eaccaa92d251c1abf40aa7f7d48c234c44d17abd7c9331703b90e07"
+    },
+    {
+      "bytes": 153,
+      "path": "bench/token-savings-12task/settings/baseline.settings.json",
+      "sha256": "e4a71e123ed9f97401f1a082c85311191eea0feae52b048ee581783ff12e1e94"
+    },
+    {
+      "bytes": 601,
+      "path": "bench/token-savings-12task/settings/treatment.settings.json",
+      "sha256": "a398c82ee6ae40c892e330b5ae256b0850b2422e8ca9419ac79de42962a5850b"
+    },
+    {
+      "bytes": 1193,
+      "path": "bench/token-savings-12task/study-plan-v2.json",
+      "sha256": "fca87d63d09d0d745da370b4439783f77e705d1b488671b5d60b7ed00517eab0"
+    },
+    {
+      "bytes": 305,
+      "path": "bench/token-savings-12task/study-plan.json",
+      "sha256": "9e61ba404b5826844712301a7544073ecdade82b2591f1cf091379c510f6cd57"
+    },
+    {
+      "bytes": 7302,
+      "path": "bench/token-savings-12task/tasks.json",
+      "sha256": "a34efcc27bc95e90c5ed39c8ae0d31cd5f75296b3cdffd3a20bedce24f7fb9d7"
+    },
+    {
+      "bytes": 105,
+      "path": "bench/token-savings-12task/trees/01-small-fix/docs/limits.md",
+      "sha256": "28cefe8e216d16d2c6714766e0666dde745e1d6d1082f3beca942cabcf92e13c"
+    },
+    {
+      "bytes": 51,
+      "path": "bench/token-savings-12task/trees/01-small-fix/src/limits.py",
+      "sha256": "95749a036f29c832ffaa81077ea6c6363f568c2a5a0c86348cc2ad1ef3bd16a0"
+    },
+    {
+      "bytes": 274,
+      "path": "bench/token-savings-12task/trees/02-bugfix/src/parser.py",
+      "sha256": "edf9daeabb5d85cbba027ca4722dc9401acf185748217b6562afe9aa3a97141c"
+    },
+    {
+      "bytes": 33,
+      "path": "bench/token-savings-12task/trees/02-bugfix/tests/sample-input.txt",
+      "sha256": "baaf6297aca8f3e454b10bbe6e0e3de0b59dde886405f9c2708fe993ba6b9a41"
+    },
+    {
+      "bytes": 95,
+      "path": "bench/token-savings-12task/trees/03-exploration/src/budget.py",
+      "sha256": "b7409b0533b6df5cf925fb9088d4c18580548f78346b7240431a6d4d60789883"
+    },
+    {
+      "bytes": 95,
+      "path": "bench/token-savings-12task/trees/03-exploration/src/report.py",
+      "sha256": "ca5ecfe2a7b5a6099206673159b1e4c821758b3309be45915df42690fa903b1b"
+    },
+    {
+      "bytes": 57,
+      "path": "bench/token-savings-12task/trees/03-exploration/src/session.py",
+      "sha256": "930e7d4b5abe34cca919fc76f286e7e94f61cd6df60b3a30ace9c58e57a3ab60"
+    },
+    {
+      "bytes": 196,
+      "path": "bench/token-savings-12task/trees/04-review/change.diff",
+      "sha256": "5d8981bf1798086e58eb30fb4b62185e19d9751933a0184f108ee4eebe370d6d"
+    },
+    {
+      "bytes": 9064,
+      "path": "bench/token-savings-12task/trees/05-long-log/build.log",
+      "sha256": "53d047ca66e46de61d453f86bd66826e42d7a4be930d685178948ffa2ebc4146"
+    },
+    {
+      "bytes": 366,
+      "path": "bench/token-savings-12task/trees/06-migration/src/cli.py",
+      "sha256": "e71b8227f8d737cdaa29ac33c687ad283bc109cbb91fd37fe6feb56ee83e740e"
+    },
+    {
+      "bytes": 135,
+      "path": "bench/token-savings-12task/trees/07-docs/docs/usage.md",
+      "sha256": "e7626a0e4f4f831eb3b0ec1d5d0991acbb2079a40a0a33461f9db264d6c8ce87"
+    },
+    {
+      "bytes": 167,
+      "path": "bench/token-savings-12task/trees/08-refactor/src/alpha.py",
+      "sha256": "c136a210197ec9ef482e06d8f71cdd84f33d8081a3f853342cccc5ebe448efee"
+    },
+    {
+      "bytes": 171,
+      "path": "bench/token-savings-12task/trees/08-refactor/src/beta.py",
+      "sha256": "de0cf8e5093dce9d7b973f298617c5c53f6ad06eaaab16a79cbdb80462178abf"
+    },
+    {
+      "bytes": 267,
+      "path": "bench/token-savings-12task/trees/09-performance/src/dedupe.py",
+      "sha256": "8255f48650bd455d357671a8e05144173a6f3b91dfa823a822f7a57b9050e399"
+    },
+    {
+      "bytes": 114,
+      "path": "bench/token-savings-12task/trees/10-telemetry/src/telemetry.py",
+      "sha256": "af3057b7a32efdd4f1d0fbccaaf54dd83843328f47c630fb490d1ba1f13c83a6"
+    },
+    {
+      "bytes": 363,
+      "path": "bench/token-savings-12task/trees/11-cache-layout/prompt-layout.json",
+      "sha256": "a1128d26de264a138832bf7f13326eb5a29fca12e6103a5c709f0446bf2b3acc"
+    },
+    {
+      "bytes": 28542,
+      "path": "bench/token-savings-12task/trees/12-artifact-receipt/logs/full.log",
+      "sha256": "0cf865cef72a4b80e8c9dfd97ec5eb0cf2ff645d96e0f18bd60f39b574373821"
+    },
+    {
+      "bytes": 189,
+      "path": "bench/token-savings-12task/trees/12-artifact-receipt/logs/receipt.json",
+      "sha256": "86cad69c84dc2a500f1c0f811998bb13d1344c6d3479a037a18262cac9a1e3ad"
+    },
+    {
+      "bytes": 28663,
+      "path": "bench/token-savings-12task/trees/12-artifact-receipt/report.md",
+      "sha256": "bce583dc3e0ea94b5492af021df0cfd1b1d7a4d87e33117f32f0552c86e8316b"
+    },
+    {
+      "bytes": 2415,
+      "path": "bench/token-savings-12task/variants.template.json",
+      "sha256": "ba8d1bd025cf936798da8d8ef3b6a62e211e1295212628f81635128b3877b23d"
+    },
+    {
+      "bytes": 18174,
+      "path": "research/p1-live-authorization-packet.md",
+      "sha256": "87c612b42128eb8c69637c16b6bdd1def895ce5f1d071404fb0b55b7e810da20"
+    },
+    {
+      "bytes": 28119,
+      "path": "research/token-savings-roadmap.md",
+      "sha256": "b3df872955dcde78b97b5cd44e0e15bc001bb6f3af08216eb7f32c2186dd801d"
+    }
+  ],
+  "frozen_roots": [
+    "bench/token-savings-12task",
+    "research/p1-live-authorization-packet.md",
+    "research/token-savings-roadmap.md"
+  ],
+  "evidence_scope": {
+    "current_or_later_roadmap": "out_of_scope",
+    "historical_repository_evidence": "P1-v8",
+    "private_study_files": "unavailable_claim_blocking"
+  },
+  "git_anchor_commit": "96cfd58f82c02166c2749389a22dd1249712c92d",
+  "roadmap_output_roots": [
+    "research/provider-free-roadmap",
+    "tests/provider-free-roadmap"
+  ],
+  "schema_version": "contextguard.p1-v8-evidence-manifest/v1",
+  "unavailable_claim_blocking": {
+    "analytic_records": 121,
+    "candidate_manifest_sha256": "39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4",
+    "candidate_run": 31464306133,
+    "receipt_artifact": 9091361298,
+    "report_sha256": "09eca0ff9953a7f45da2d373d568dff22e09abe19965bc58952d65822151a8a5",
+    "root_artifact": 9091361857,
+    "source": "fb2e177f3efb15e817f54f5742beacdbe5daf96a",
+    "status": "unavailable_claim_blocking",
+    "study_root": "/private/tmp/contextguard-p1-live-v8.rLM3P6/study"
+  }
+}

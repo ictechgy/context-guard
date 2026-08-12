@@ -1,6 +1,6 @@
 # ContextGuard token-savings roadmap
 
-_Status date: 2026-08-11 KST_
+_Status date: 2026-08-12 KST_
 
 This file is the canonical dependency, maturity, stop-gate, and claim contract
 for ContextGuard token-savings work. Draft run packets and implementation plans
@@ -16,8 +16,8 @@ Current position:
 
 | Dimension | Status |
 | --- | --- |
-| Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators are implemented but non-activating. |
-| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. The result remains descriptive-only. |
+| Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators exist, and the development branch connects their safe local components through an explicit non-activating MCP workflow plus an opt-in graph-applied context pack. |
+| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. A separate 72-call synthetic combined-workflow smoke completed on 2026-08-12; its token interval crossed zero, so it is also descriptive-only and inconclusive. |
 | Release readiness | Exact merge `fb2e177f3efb15e817f54f5742beacdbe5daf96a` and candidate run `31464306133` (artifacts `9091361857`, `9091361298`) passed CI, paired smoke, checksums, and attestations; manifest SHA-256 is `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`. npm publication has not occurred. |
 | Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
@@ -59,6 +59,37 @@ met.
 - Unsupported installs and preparation failures deterministically retain legacy
   behavior. The route is default-off.
 - This is a tool-output intervention, not a general request-boundary broker.
+
+### Explicit file/log context path: implemented, opt-in, not promoted
+
+- The Receipt MCP now exposes one high-level `receipt_context` tool. A caller
+  supplies only an explicitly eligible repository-relative file or log path;
+  the server reads and binds the exact local bytes without requiring those bytes
+  in the tool request.
+- The existing conservative byte-benefit router keeps small or uneconomic input
+  unchanged and emits a compact exact process-local reference only when deferral
+  clears the fixed thresholds. Repeated unchanged requests reuse that live
+  capability, and progressive reads return exact slices capped at 65,536 bytes.
+- Optional task scopes bind a live capability to one explicit task. Explicit
+  release revokes it immediately, while bounded context history keeps only
+  process-keyed HMACs, counts, and decisions. This is the task-scoped lease/GC
+  portion of the P6 plan; it is not a host context lease.
+- `receipt_diagnose` projects the existing shadow firewall, router economics,
+  prefix reuse, and cheap-scout/expensive-surgeon advisory lane directly from an
+  eligible local path without returning its bytes. It applies no route.
+- Starting MCP with an explicit private `--state-dir` enables only the existing
+  authenticated execution twin. Tool calls cannot choose the state path, and
+  twin append/inspect never execute a declared action. Evidence packs and typed
+  blueprints remain available through `receipt_assemble` for explicit failure
+  cones and edit obligations.
+- Non-eligible classifications are rejected before file content is read or
+  reflected. Repository drift, capability expiry, process exit, or restart
+  invalidates the route and requires an explicit new invocation.
+- This is the first usable wrapper/MCP product path around the shipped P3-P6
+  building blocks. It does not intercept whole host context, auto-register an
+  MCP server, persist capability cache across restart, execute twin actions, or
+  grant a hosted savings claim. P2 live observation remains unsupported; P3-P6
+  provider-measured promotion remains dependency- and authority-gated.
 
 ### Measurement and release substrate: complete locally
 
@@ -344,6 +375,26 @@ loaded cost immediately demotes the affected stratum to baseline.
 Implementation status: the packaged evaluator now compares advisory,
 always-pass-through, and always-on outcomes with separate cache creation, read,
 invalidation, latency, and provider-cost accounting. Its route is advisory only.
+The same deterministic byte-benefit policy is now exercised by the explicit
+`receipt_context` MCP path. `context-guard-pack auto --apply-symbol-memory`
+additionally applies up to four safe direct import-neighbor slices within the
+existing pack byte budget, while preserving higher-priority explicit/query
+seeds, excluding secret-risk neighbors, and retaining exact fallback.
+`auto --apply-adaptive-k` separately prunes only heuristic-selected sources to
+the local recommendation after its regression gates pass, always retaining
+caller-declared file/output/test-output and diff evidence. All applied paths are
+explicit and default-off; no host-wide route is enabled and local proxies do
+not establish provider-token savings.
+
+The 2026-08-12 [live synthetic smoke](progressive-context-benchmark-2026-08-12.md)
+ran 12 generated instances from two templates, three repetitions per arm, and
+72 accepted provider calls. Both arms passed 36/36 external checkers. The
+combined adaptive-k plus symbol-memory treatment reduced generated pack bytes
+85.72%, but primary-token inference was inconclusive: treatment minus baseline
+was -197.83 tokens at the paired point estimate with a 95% task-cluster interval
+of [-9,693.42, 9,375.02]. Corrections and fully loaded shifted-cost inference
+remain unavailable. This evidence does not promote P4, authorize automation, or
+support a savings/parity claim.
 
 Build the router first as shadow/advisory metadata over the three deterministic
 routes. It must expose confidence and bypass reasons and retain abstentions and
@@ -358,8 +409,10 @@ stratum.
 ## P5 — repeated-context and repair-loop adjuncts
 
 Implementation status: execution-twin, failure-cone, and typed-blueprint
-evidence now receive independent freshness, differentiation, fallback, quality,
-and cost decisions. The evaluator applies none of the adjuncts.
+evidence receive independent freshness, differentiation, fallback, quality,
+and cost decisions. The explicit MCP path can now append/inspect the advisory
+twin and can assemble caller-selected evidence packs and blueprints, but it
+does not execute an action or rewrite a transcript.
 
 Implement separately and promote incrementally:
 
@@ -376,10 +429,13 @@ authorized.
 
 ## P6 — specialized high-upside tracks
 
-Implementation status: the five named tracks now have independent closed
-evaluation records for scope, workload, baseline, privacy, quality,
-failure/correction guardrails, complete cost model, fallback, rollback, provider
-evidence, and authority. Plan-only tracks remain non-runtime, and no result may
+Implementation status: the five named tracks have independent closed evaluation
+records for scope, workload, baseline, privacy, quality, failure/correction
+guardrails, complete cost model, fallback, rollback, provider evidence, and
+authority. The explicit MCP path locally exercises task-scoped capability GC,
+content-free counterfactual history, shadow negative-context firewall advice,
+scout/surgeon prefix advice, and advisory execution-twin evidence. These are
+manual, provider-free components—not promoted tracks—and no result may
 generalize beyond its frozen scope.
 
 Each track gets its own frozen workload and can be promoted only independently:
@@ -399,24 +455,31 @@ cost accounting.
 
 ## Immediate ordered work
 
-Provider-free P2-P6 implementation is now closed behind the packaged local
-evaluator. The evaluator and its schemas are explicit evaluation surfaces only:
-P1-F and phase-specific external authority remain unmet, runtime activation and
-claim authority remain false, and exact fallback is unchanged. Delivery may
-proceed only to a GitHub PR or an npm candidate under separately recorded
-authority; npm `next` and `latest` remain untouched.
+Provider-free P2-P6 implementation and the explicit local MCP bridge are now
+implemented. The evaluator, its schemas, and the manual MCP tools remain
+non-activating surfaces: P1-F is complete, but every P2-P6 phase-specific
+observer/evidence/authority gate remains unmet, runtime activation and claim
+authority remain false, and exact fallback is unchanged. Delivery may proceed
+only to a GitHub PR or an npm candidate under separately recorded authority;
+npm `next` and `latest` remain untouched.
 
 1. Preserve the exact v8 root, retained source ref, immutable candidate, and
    P1-F report; never reinterpret missing observers or false gates as zero/pass.
-2. Freeze a P2 preregistration for only an authoritative supported observer
+2. Before another progressive-context provider run, freeze a four-arm
+   ordinary/adaptive-only/symbol-only/combined ablation with genuinely
+   independent task structures. Include graph cases where ordinary ranking
+   misses a required neighbor, hidden-oracle adaptive labels, closed-pack and
+   realistic-fallback strata, correction/retrieval accounting, and fully loaded
+   cost intervals.
+3. Freeze a P2 preregistration for only an authoritative supported observer
    stratum. General host request assembly remains unavailable; do not widen the
    proven Bash tool-output boundary by inference.
-3. Record a new phase-specific privacy/call/spend authority before any P2-P6
-   provider activity. Provider-free local construction and evaluator checks may
-   proceed, but grant no runtime, activation, or claim authority.
-4. Execute P2 through P6 sequentially. A failed dependency gate stops later
-   provider phases, keeps their already-shipped implementations evaluation-only,
-   and preserves the exact prior route.
+4. Record a new phase-specific privacy/call/spend authority before any further
+   P2-P6 provider activity. The 2026-08-12 authorization is consumed and grants
+   no runtime, activation, or claim authority.
+5. Execute later P2 through P6 gates sequentially. A failed dependency gate
+   stops later provider phases, keeps their already-shipped implementations
+   evaluation-only, and preserves the exact prior route.
 
 The external authorization packet records the user's bounded authority; the
 packet does not create or expand authority by itself. It must be frozen after

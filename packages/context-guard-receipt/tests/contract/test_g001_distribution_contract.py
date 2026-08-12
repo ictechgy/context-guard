@@ -81,9 +81,11 @@ EXPECTED_HELP = (
     "host-request, network, or token-saving claim. Remaining commands are inert.\n"
 )
 EXPECTED_MCP_HELP = (
-    "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
+    "usage: context-guard-receipt-mcp --root <absolute-directory> "
+    "[--state-dir <absolute-directory>]\n\n"
     "Run the bounded local stdio MCP surface for one fixed repository root. "
-    "Capabilities are process-local and expire when the process exits. No "
+    "Capabilities are process-local and expire when the process exits. An optional "
+    "server-owned state directory enables only the advisory execution-twin tool. No "
     "registration, provider, model, credential, or network access is performed.\n"
 )
 EXPECTED_PACKAGE = {

@@ -1,0 +1,52 @@
+{
+  "algorithm": "sha256",
+  "g5_source": {
+    "lock_sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307",
+    "preregistration_sha256": "9d306a6a1ab85a79d562fed611ab55471ec678630a590843eb4a19ca959498bf",
+    "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
+    "schema_set_bytes": 41710,
+    "schema_set_sha256": "c98921e1fc29345eafe22f58a3e5f14f0be357a3e086aeaaa0e2932cafc8ab98",
+    "tree_root_sha256": "2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8",
+    "verifier_sha256": "520ad6e66cb8116afcb128e49812511297844571103a39f11ea50262d437a686"
+  },
+  "inventory": [
+    {
+      "bytes": 2411,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g6/v1/README.md",
+      "sha256": "2feb75533a19a297f298cd0f76a84ce093e7c8a128dc1293306f441b745bfbc3"
+    },
+    {
+      "bytes": 3400,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g6/v1/STATUS.md",
+      "sha256": "c6e4e308029e82be2b42edc462dea1c1b3202186df29241b98ec0df03b255919"
+    },
+    {
+      "bytes": 4936,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g6/v1/preparation-packet.json",
+      "sha256": "4009d0f13b813ce3d768fff0f025ba2cf092eb9a2046c1a7925207226404768d"
+    },
+    {
+      "bytes": 14174,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g6/v1/schemas/preparation-packet.schema.json",
+      "sha256": "6fc50d0b1abff32b9ca3089a9e9df0eca3880bd47d877f55e231f1de63c6f887"
+    },
+    {
+      "bytes": 16045,
+      "mode": "0644",
+      "path": "research/provider-free-roadmap/g6/v1/verify.py",
+      "sha256": "a26365241de2fa1e5b80b8f984d46c3ea4df8763a06ae90d6eacc83a5995ada5"
+    },
+    {
+      "bytes": 15895,
+      "mode": "0644",
+      "path": "tests/provider-free-roadmap/test_g6_approval_packet.py",
+      "sha256": "980ccbafe1cc050ba452c0b36caa87a6660587bbcc77ec291d16a6c0c81c7fa5"
+    }
+  ],
+  "schema_version": "contextguard.g6-freeze-lock/v1",
+  "tree_root_sha256": "392639bf52d9a9b37c7a9b3edde2beb06b51cc4cec6003c716c36db0f3d05f43"
+}

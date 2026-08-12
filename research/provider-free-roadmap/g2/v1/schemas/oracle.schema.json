@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "adaptive_labels": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "decision": {
+                  "enum": [
+                    "retain",
+                    "drop"
+                  ],
+                  "type": "string"
+                },
+                "origin": {
+                  "enum": [
+                    "explicit",
+                    "heuristic"
+                  ],
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "decision",
+                "origin",
+                "path"
+              ],
+              "type": "object"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "answer_signature": {
+            "minLength": 8,
+            "type": "string"
+          },
+          "expected_output": {
+            "minLength": 6,
+            "type": "string"
+          },
+          "required_paths": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "required_symbols": {
+            "items": {
+              "minLength": 3,
+              "type": "string"
+            },
+            "maxItems": 1,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "task_id": {
+            "pattern": "^(train|calibration|evaluation)_(closed|graph)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "adaptive_labels",
+          "answer_signature",
+          "expected_output",
+          "required_paths",
+          "required_symbols",
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "maxItems": 6,
+      "minItems": 6,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "contextguard.g2-oracle/v1",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entries",
+    "schema_version"
+  ],
+  "type": "object"
+}

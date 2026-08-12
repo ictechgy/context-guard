@@ -1,0 +1,3 @@
+Lantern quorum packet
+The violet archive is the only record requested by the operator.
+Join its shelf number to the decision prefix found in the evidence note.

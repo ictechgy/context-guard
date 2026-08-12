@@ -1,0 +1,32 @@
+{
+  "arm": "combined",
+  "observers": {
+    "correction": {
+      "status": "unavailable",
+      "value": null
+    },
+    "cost": {
+      "status": "unavailable",
+      "value": null
+    },
+    "latency": {
+      "status": "unavailable",
+      "value": null
+    },
+    "provider": {
+      "status": "unavailable",
+      "value": null
+    },
+    "retrieval": {
+      "status": "unavailable",
+      "value": null
+    }
+  },
+  "schema_version": "contextguard.g2-result/v1",
+  "selected_paths": [
+    "runner.js",
+    "indigo-validator.js"
+  ],
+  "structural_status": "selection_recorded",
+  "task_id": "evaluation_graph"
+}

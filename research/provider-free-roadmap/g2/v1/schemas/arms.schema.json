@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "application_order": {
+      "const": [
+        "ordinary",
+        "adaptive_k",
+        "symbol_memory"
+      ],
+      "type": "array"
+    },
+    "arms": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "factors": {
+            "items": {
+              "enum": [
+                "adaptive_k",
+                "symbol_memory"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "name": {
+            "enum": [
+              "ordinary",
+              "adaptive_only",
+              "symbol_only",
+              "combined"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "factors",
+          "name"
+        ],
+        "type": "object"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": "array"
+    },
+    "common": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_bytes": {
+          "const": 6000,
+          "type": "integer"
+        },
+        "files": {
+          "const": "task.pack.files",
+          "type": "string"
+        },
+        "json": {
+          "const": true,
+          "type": "boolean"
+        },
+        "no_artifact": {
+          "const": true,
+          "type": "boolean"
+        },
+        "operation": {
+          "const": "auto",
+          "type": "string"
+        },
+        "query": {
+          "const": "task.pack.query",
+          "type": "string"
+        },
+        "root": {
+          "const": ".",
+          "type": "string"
+        },
+        "top": {
+          "const": 4,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "budget_bytes",
+        "files",
+        "json",
+        "no_artifact",
+        "operation",
+        "query",
+        "root",
+        "top"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "contextguard.g2-arms/v1",
+      "type": "string"
+    }
+  },
+  "required": [
+    "application_order",
+    "arms",
+    "common",
+    "schema_version"
+  ],
+  "type": "object"
+}

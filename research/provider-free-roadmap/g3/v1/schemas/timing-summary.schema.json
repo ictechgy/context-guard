@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {"summary": {"additionalProperties": false, "properties": {"max_ns": {"minimum": 0, "type": "integer"}, "median_ns": {"minimum": 0, "type": "integer"}, "min_ns": {"minimum": 0, "type": "integer"}, "p95_ns": {"minimum": 0, "type": "integer"}}, "required": ["max_ns", "median_ns", "min_ns", "p95_ns"], "type": "object"}},
+  "additionalProperties": false,
+  "properties": {"clock": {"const": "time.monotonic_ns", "type": "string"}, "observation_count": {"const": 24, "type": "integer"}, "pack_invocation": {"$ref": "#/$defs/summary"}, "schema_version": {"const": "contextguard.g3-timing-summary/v1", "type": "string"}, "scope": {"const": "exact_bound_packer_child_invocation", "type": "string"}, "task_execution": {"additionalProperties": false, "properties": {"availability": {"const": "unavailable", "type": "string"}, "observations": {"type": "null"}}, "required": ["availability", "observations"], "type": "object"}},
+  "required": ["clock", "observation_count", "pack_invocation", "schema_version", "scope", "task_execution"],
+  "type": "object"
+}
