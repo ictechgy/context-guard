@@ -1299,9 +1299,9 @@ class G008RunnerContractTests(unittest.TestCase):
 
         with Harness(self) as harness:
             result = harness.run(
-                parent_code(0.05), limits=module.RunnerLimits(timeout_seconds=3.0)
+                parent_code(0.05), limits=module.RunnerLimits()
             )
-            self.assertTrue(result.succeeded)
+            self.assertTrue(result.succeeded, result.to_receipt())
             self.assertEqual(harness.factory_calls, 1)
 
         spawned = []
