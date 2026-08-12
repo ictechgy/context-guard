@@ -222,7 +222,7 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt.cjs', 'sha256': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': 'f6922aef35b829ebd7d9c7758a55063d64f5f79308e966e5b292640d3c06f531'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/package_check.py', 'sha256': '10036c058031a9de14a310bbd385f78c8b1d50a2919b83949befa40642ab8424'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/packaged_acceptance.py', 'sha256': '0c30434371b16e88176185e47a3f890d85ecf475c77db63f2f73b23b8f264ca1'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/packaged_acceptance.py', 'sha256': 'b1ee7552fcd9fc800aeadf8635efaa6711c6496aded4610a7afbaa31c4f68eab'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': '6b43db7678400850880dac97fbb6ad9e2c3bbf551240de69cef8543b2b1dd88d'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package.json', 'sha256': 'daf789323e9b194943b7222bd0bf112432460afe0174d0a3363cbadbbd37c475'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/__init__.py', 'sha256': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6'},
