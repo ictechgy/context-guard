@@ -17,6 +17,12 @@
     "production_readiness": false,
     "provider_cost_savings": false
   },
+  "diagnosis": {
+    "corrected_parser_runner_sha256": "ec201cb9f8cb931131875218aa02c606899e75aa15ebc9eac6b07398eb597e28",
+    "recorded_transport_errors_are_confirmed_transport_failures": false,
+    "root_cause": "a dated first-party helper-model key was rejected when its canonical model omitted the date suffix",
+    "status": "confirmed"
+  },
   "models_observed_on_success": [
     "claude-sonnet-5"
   ],

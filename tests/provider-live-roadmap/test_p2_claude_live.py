@@ -204,6 +204,39 @@ class P2ClaudeLiveContractTests(unittest.TestCase):
             with self.assertRaises(self.runner.LiveRunError):
                 self.runner.validate_contract(mutated, repo_root=copied_root)
 
+    def test_parser_accepts_dated_first_party_helper_model_key(self) -> None:
+        raw = json.loads(fake_claude_result("claude-sonnet-5", "READY"))
+        raw["modelUsage"]["claude-haiku-4-5-20251001"] = {
+            "cacheCreationInputTokens": 5,
+            "cacheReadInputTokens": 7,
+            "canonicalModel": "claude-haiku-4-5",
+            "inputTokens": 2,
+            "outputTokens": 1,
+            "provider": "firstParty",
+        }
+        parsed = self.runner.parse_claude_result(
+            json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            expected_model="claude-sonnet-5",
+        )
+        self.assertEqual(parsed["model_ids"], [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+        ])
+        self.assertEqual(parsed["input_tokens"], 25)
+        self.assertEqual(parsed["output_tokens"], 4)
+
+        invalid = copy.deepcopy(raw)
+        invalid["modelUsage"]["claude-haiku-4-5-nightly"] = invalid[
+            "modelUsage"
+        ].pop("claude-haiku-4-5-20251001")
+        with self.assertRaises(self.runner.LiveRunError):
+            self.runner.parse_claude_result(
+                json.dumps(
+                    invalid, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+                expected_model="claude-sonnet-5",
+            )
+
     def test_result_is_descriptive_hash_bound_and_blocks_unsupported_promotion(self) -> None:
         result = json.loads(RESULT_PATH.read_bytes())
         self.assertEqual(
@@ -250,6 +283,15 @@ class P2ClaudeLiveContractTests(unittest.TestCase):
             "transport_errors": 228,
         })
         self.assertEqual(result["usage_measurement"]["comparison_status"], "unavailable")
+        self.assertEqual(result["diagnosis"], {
+            "corrected_parser_runner_sha256": sha256(RUNNER_PATH.read_bytes()),
+            "recorded_transport_errors_are_confirmed_transport_failures": False,
+            "root_cause": (
+                "a dated first-party helper-model key was rejected when its "
+                "canonical model omitted the date suffix"
+            ),
+            "status": "confirmed",
+        })
         self.assertEqual(
             result["usage_measurement"]["reason"],
             "no complete four-arm block remained after transport exclusions",

@@ -369,6 +369,13 @@ tokens, but this sparse diagnostic total cannot estimate arm-to-arm savings.
 The attempt is hash-bound in `usage-attempt-result.json`; a fresh complete
 fixed-schedule run is still required before P3 consideration.
 
+One-use follow-up probes identified an observer defect rather than a confirmed
+transport outage: a dated first-party Haiku helper key was rejected because its
+canonical model omits the date suffix. The parser now accepts only that bounded
+date-suffix form, retains the exact primary-model requirement, and passed a live
+two-model usage probe. The invalid attempt remains excluded; it is not repaired
+or reinterpreted after the fact.
+
 ## P3 — bounded progressive-disclosure canary
 
 Implementation status: the packaged evaluator now verifies exact matched pairs,

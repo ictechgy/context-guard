@@ -477,9 +477,19 @@ def parse_claude_result(raw: bytes, *, expected_model: str) -> dict[str, object]
     output_tokens = 0
     for name in models:
         entry = model_usage[name]
+        canonical_model = entry.get("canonicalModel") if type(entry) is dict else None
+        dated_suffix = (
+            name[len(canonical_model) + 1 :]
+            if isinstance(canonical_model, str)
+            and name.startswith(canonical_model + "-")
+            else ""
+        )
+        identity_matches = name == canonical_model or (
+            len(dated_suffix) == 8 and dated_suffix.isascii() and dated_suffix.isdigit()
+        )
         if (
             type(entry) is not dict
-            or entry.get("canonicalModel") != name
+            or not identity_matches
             or entry.get("provider") != "firstParty"
         ):
             refuse("model_usage_invalid")

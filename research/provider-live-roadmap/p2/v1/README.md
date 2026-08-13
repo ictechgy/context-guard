@@ -68,10 +68,18 @@ run, so it was descriptive only. Eleven calls returned complete first-party
 model-usage records; 228 ended as transport exclusions and one timed out. Every
 one of the 60 four-arm blocks was therefore excluded from paired analysis.
 
+Follow-up one-use probes confirmed that the 228 `transport_error` observations
+were not proven network failures. Claude Code returned successful records with
+the helper key `claude-haiku-4-5-20251001` and canonical model
+`claude-haiku-4-5`; the observer incorrectly required those two strings to be
+identical. The parser now permits only an exact eight-digit date suffix for a
+first-party helper key, continues to require the exact primary model, and
+aggregates both models. A live probe passed with both model identities.
+
 The 11 successful calls accounted for 61,295 input tokens (including reported
 cache creation and cache reads) and 252 output tokens. These sparse successes
 are retained only as a diagnostic total. They cannot support an arm-to-arm
 token-savings estimate. `usage-attempt-result.json` binds the owner-private
 evidence without publishing a private path, prompt, or response. A new complete
-fixed-schedule run after transport availability recovers is required before
-token savings can be measured. P3 remains blocked.
+fixed-schedule run with the corrected observer is required before token savings
+can be measured. P3 remains blocked.
