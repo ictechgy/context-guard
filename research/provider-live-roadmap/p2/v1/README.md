@@ -59,3 +59,19 @@ now aggregates all reported first-party model-usage fields for any future run.
 The recorded CLI cost estimate was USD 0.894320, but it is non-authoritative;
 P3 remains blocked on fully loaded authoritative provider cost and a separate
 P3 approval.
+
+## 2026-08-13 Max token-usage attempt
+
+The corrected observer was exercised once against the same fixed 240-call
+schedule using the signed-in Claude Max session. This was a post-outcome repair
+run, so it was descriptive only. Eleven calls returned complete first-party
+model-usage records; 228 ended as transport exclusions and one timed out. Every
+one of the 60 four-arm blocks was therefore excluded from paired analysis.
+
+The 11 successful calls accounted for 61,295 input tokens (including reported
+cache creation and cache reads) and 252 output tokens. These sparse successes
+are retained only as a diagnostic total. They cannot support an arm-to-arm
+token-savings estimate. `usage-attempt-result.json` binds the owner-private
+evidence without publishing a private path, prompt, or response. A new complete
+fixed-schedule run after transport availability recovers is required before
+token savings can be measured. P3 remains blocked.

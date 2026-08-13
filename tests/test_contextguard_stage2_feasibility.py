@@ -100,6 +100,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-live-roadmap/p2/v1/contract.json",
         "research/provider-live-roadmap/p2/v1/live_runner.py",
         "research/provider-live-roadmap/p2/v1/result.json",
+        "research/provider-live-roadmap/p2/v1/usage-attempt-result.json",
         "research/provider-free-roadmap/README.md",
         "research/provider-free-roadmap/boundary-contract.json",
         "research/provider-free-roadmap/g2/freeze-lock.json",

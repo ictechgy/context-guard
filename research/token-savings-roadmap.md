@@ -362,6 +362,13 @@ The recorded USD 0.894320 CLI cost is explicitly non-authoritative. Post-run
 review found that the executed observer omitted helper/cache model-usage fields,
 so provider token metrics are unavailable and no savings claim is permitted.
 
+A corrected Max-session usage attempt repeated the fixed 240-call schedule, but
+only 11 calls completed; 228 were transport exclusions and one timed out. No
+complete four-arm block remained. The successful calls reported 61,547 total
+tokens, but this sparse diagnostic total cannot estimate arm-to-arm savings.
+The attempt is hash-bound in `usage-attempt-result.json`; a fresh complete
+fixed-schedule run is still required before P3 consideration.
+
 ## P3 — bounded progressive-disclosure canary
 
 Implementation status: the packaged evaluator now verifies exact matched pairs,

@@ -15,6 +15,14 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = ROOT / "research" / "provider-live-roadmap" / "p2" / "v1" / "live_runner.py"
 CONTRACT_PATH = ROOT / "research" / "provider-live-roadmap" / "p2" / "v1" / "contract.json"
 RESULT_PATH = ROOT / "research" / "provider-live-roadmap" / "p2" / "v1" / "result.json"
+USAGE_ATTEMPT_RESULT_PATH = (
+    ROOT
+    / "research"
+    / "provider-live-roadmap"
+    / "p2"
+    / "v1"
+    / "usage-attempt-result.json"
+)
 G5_SCHEDULE = ROOT / "research" / "provider-free-roadmap" / "g5" / "v1" / "schedule.json"
 G5_OBSERVER_SCHEMA = (
     ROOT
@@ -222,6 +230,46 @@ class P2ClaudeLiveContractTests(unittest.TestCase):
         )
         self.assertFalse(result["p3_gate"]["eligible"])
         self.assertEqual(set(result["claims"].values()), {False})
+        self.assertNotIn("path", result["private_evidence"])
+
+    def test_max_usage_attempt_is_hash_bound_and_refuses_arm_comparison(self) -> None:
+        result = json.loads(USAGE_ATTEMPT_RESULT_PATH.read_bytes())
+        self.assertEqual(
+            result["schema_version"],
+            "contextguard.p2-claude-max-usage-attempt/v1",
+        )
+        self.assertEqual(result["source"]["contract_sha256"], sha256(self.contract_raw))
+        self.assertEqual(result["call_accounting"], {
+            "analyzed_blocks": 0,
+            "analyzed_units": 0,
+            "excluded_blocks": 60,
+            "excluded_units": 240,
+            "provider_successes": 11,
+            "scheduled_calls": 240,
+            "timeouts": 1,
+            "transport_errors": 228,
+        })
+        self.assertEqual(result["usage_measurement"]["comparison_status"], "unavailable")
+        self.assertEqual(
+            result["usage_measurement"]["reason"],
+            "no complete four-arm block remained after transport exclusions",
+        )
+        self.assertEqual(result["usage_measurement"]["successful_call_tokens"], {
+            "input": 61295,
+            "output": 252,
+            "total": 61547,
+        })
+        arm_usage_raw = json.dumps(
+            result["usage_measurement"]["by_stratum_and_arm"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(
+            sha256(arm_usage_raw),
+            "b6c366728466e0c390711732fead2a6a36517d2800ba032e998c8bc86612fa49",
+        )
+        self.assertEqual(set(result["claims"].values()), {False})
+        self.assertFalse(result["p3_gate"]["eligible"])
         self.assertNotIn("path", result["private_evidence"])
 
     def test_one_use_scope_binds_every_request_environment_runtime_and_output(self) -> None:
