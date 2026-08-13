@@ -455,13 +455,6 @@ def parse_claude_result(raw: bytes, *, expected_model: str) -> dict[str, object]
     usage = value.get("usage")
     if type(usage) is not dict:
         refuse("provider_usage_unavailable")
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-    if (
-        isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0
-        or isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens < 0
-    ):
-        refuse("provider_usage_unavailable")
     model_usage = value.get("modelUsage")
     selected = model_usage.get(expected_model) if type(model_usage) is dict else None
     if (
@@ -480,6 +473,34 @@ def parse_claude_result(raw: bytes, *, expected_model: str) -> dict[str, object]
     models = sorted(model_usage)
     if any(not isinstance(name, str) or len(name) > 128 for name in models):
         refuse("model_usage_invalid")
+    input_tokens = 0
+    output_tokens = 0
+    for name in models:
+        entry = model_usage[name]
+        if (
+            type(entry) is not dict
+            or entry.get("canonicalModel") != name
+            or entry.get("provider") != "firstParty"
+        ):
+            refuse("model_usage_invalid")
+        token_fields = {
+            field: entry.get(field)
+            for field in (
+                "cacheCreationInputTokens", "cacheReadInputTokens",
+                "inputTokens", "outputTokens",
+            )
+        }
+        if any(
+            isinstance(token, bool) or not isinstance(token, int) or token < 0
+            for token in token_fields.values()
+        ):
+            refuse("model_usage_invalid")
+        input_tokens += (
+            token_fields["cacheCreationInputTokens"]
+            + token_fields["cacheReadInputTokens"]
+            + token_fields["inputTokens"]
+        )
+        output_tokens += token_fields["outputTokens"]
     return {
         "answer": answer.strip(),
         "client_cost_micro_usd": int(parsed_cost * Decimal(1_000_000)),

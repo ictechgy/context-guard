@@ -99,6 +99,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-live-roadmap/p2/v1/README.md",
         "research/provider-live-roadmap/p2/v1/contract.json",
         "research/provider-live-roadmap/p2/v1/live_runner.py",
+        "research/provider-live-roadmap/p2/v1/result.json",
         "research/provider-free-roadmap/README.md",
         "research/provider-free-roadmap/boundary-contract.json",
         "research/provider-free-roadmap/g2/freeze-lock.json",
@@ -212,6 +213,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/provider-free-roadmap/test_g4_claim_gates.py",
         "tests/provider-free-roadmap/test_g5_p2_preregistration.py",
         "tests/provider-free-roadmap/test_g6_approval_packet.py",
+        "tests/provider-live-roadmap/test_p2_claude_live.py",
         "tests/test_release_candidate_smoke.py",
         "tests/test_workflows.py",
     }

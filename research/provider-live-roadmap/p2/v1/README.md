@@ -36,3 +36,26 @@ The resulting evidence remains descriptive. CLI `total_cost_usd` is retained as
 a non-authoritative client estimate and never fills G5 authoritative billing
 receipt fields. Consequently this P2 run cannot by itself satisfy P3's fully
 loaded authoritative provider-cost gate.
+
+## 2026-08-13 result
+
+The exact controller commit `abf84c9ffed96a9e51ca1de09679193ec53fe7cf`
+consumed one approval and completed the fixed 240-call Claude schedule. There
+were 237 provider successes and three transport exclusions, which caused three
+complete four-arm blocks (12 units) to be excluded from paired analysis. The
+owner-private evidence is retained for seven days and is bound by SHA-256 in
+`result.json`; prompt and response content is not committed.
+
+The closed-pack stratum passed P2 implementation readiness without granting
+activation. The realistic-fallback stratum stayed diagnostic because its
+omitted required sources are protected. Descriptively, combined and symbol-only
+each answered 10 of 30 realistic-fallback units correctly, while ordinary and
+adaptive-only answered none; this is not a deployment or savings claim.
+
+Post-run review found that the executed controller observed the top-level token
+fields but did not aggregate cache and helper-model token fields. Those token
+metrics are therefore marked unavailable rather than reconstructed. The runner
+now aggregates all reported first-party model-usage fields for any future run.
+The recorded CLI cost estimate was USD 0.894320, but it is non-authoritative;
+P3 remains blocked on fully loaded authoritative provider cost and a separate
+P3 approval.

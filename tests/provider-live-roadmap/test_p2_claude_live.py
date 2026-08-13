@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = ROOT / "research" / "provider-live-roadmap" / "p2" / "v1" / "live_runner.py"
 CONTRACT_PATH = ROOT / "research" / "provider-live-roadmap" / "p2" / "v1" / "contract.json"
+RESULT_PATH = ROOT / "research" / "provider-live-roadmap" / "p2" / "v1" / "result.json"
 G5_SCHEDULE = ROOT / "research" / "provider-free-roadmap" / "g5" / "v1" / "schedule.json"
 G5_OBSERVER_SCHEMA = (
     ROOT
@@ -89,7 +90,11 @@ def fake_claude_result(model: str, answer: str, *, cost_usd: float = 0.01) -> by
         },
         "modelUsage": {
             model: {
+                "cacheCreationInputTokens": 0,
+                "cacheReadInputTokens": 0,
                 "canonicalModel": model,
+                "inputTokens": 11,
+                "outputTokens": 3,
                 "provider": "firstParty",
             }
         },
@@ -190,6 +195,34 @@ class P2ClaudeLiveContractTests(unittest.TestCase):
             )
             with self.assertRaises(self.runner.LiveRunError):
                 self.runner.validate_contract(mutated, repo_root=copied_root)
+
+    def test_result_is_descriptive_hash_bound_and_blocks_unsupported_promotion(self) -> None:
+        result = json.loads(RESULT_PATH.read_bytes())
+        self.assertEqual(
+            result["schema_version"], "contextguard.p2-claude-live-result/v1"
+        )
+        self.assertEqual(result["source"]["contract_sha256"], sha256(self.contract_raw))
+        self.assertEqual(result["call_accounting"], {
+            "analyzed_blocks": 57,
+            "analyzed_units": 228,
+            "excluded_blocks": 3,
+            "excluded_units": 12,
+            "provider_successes": 237,
+            "scheduled_calls": 240,
+            "transport_errors": 3,
+        })
+        self.assertEqual(result["usage_metrics"]["status"], "unavailable")
+        self.assertTrue(result["p2_gate"]["closed_pack"]["implementation_readiness"])
+        self.assertFalse(
+            result["p2_gate"]["realistic_fallback"]["implementation_readiness"]
+        )
+        self.assertIn(
+            "protected_omission",
+            result["p2_gate"]["realistic_fallback"]["blockers"],
+        )
+        self.assertFalse(result["p3_gate"]["eligible"])
+        self.assertEqual(set(result["claims"].values()), {False})
+        self.assertNotIn("path", result["private_evidence"])
 
     def test_one_use_scope_binds_every_request_environment_runtime_and_output(self) -> None:
         tasks, packs = fake_public_inputs(self.schedule)
@@ -342,6 +375,25 @@ class P2ClaudeLiveContractTests(unittest.TestCase):
         self.assertEqual(parsed["answer"], "ANSWER")
         self.assertEqual(parsed["input_tokens"], 11)
         self.assertEqual(parsed["output_tokens"], 3)
+
+        multi_model = json.loads(fake_claude_result("claude-sonnet-5", "ANSWER"))
+        multi_model["modelUsage"]["claude-haiku-helper"] = {
+            "cacheCreationInputTokens": 1,
+            "cacheReadInputTokens": 4,
+            "canonicalModel": "claude-haiku-helper",
+            "inputTokens": 2,
+            "outputTokens": 1,
+            "provider": "firstParty",
+        }
+        parsed_multi = self.runner.parse_claude_result(
+            json.dumps(multi_model, sort_keys=True, separators=(",", ":")).encode(),
+            expected_model="claude-sonnet-5",
+        )
+        self.assertEqual(parsed_multi["input_tokens"], 18)
+        self.assertEqual(parsed_multi["output_tokens"], 4)
+        self.assertEqual(
+            parsed_multi["model_ids"], ["claude-haiku-helper", "claude-sonnet-5"]
+        )
 
         cases = [
             fake_claude_result("claude-sonnet-4", "MODEL_DRIFT_MARKER"),

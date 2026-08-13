@@ -11,6 +11,13 @@ merge, npm publication, dist-tag mutation, or token/cost savings claim. Exact
 unchanged fallback remains required, and every external approval and claim
 surface stays fail-closed.
 
+A separate one-use live boundary under `../provider-live-roadmap/p2/v1`
+completed the narrow Claude print-JSON P2 shadow on 2026-08-13. That event does
+not alter these provider-free artifacts or locks: closed-pack passed
+implementation readiness without activation, realistic-fallback remained
+diagnostic, provider token metrics were marked unavailable after model-usage
+review, and P3-P6 remain blocked.
+
 `g6/v1/STATUS.md` is the immutable historical status of the G6
 `prepared_unapproved` artifact and remains covered by `g6/freeze-lock.json`.
 It is not rewritten to describe the later PR #302 merge and grants no current

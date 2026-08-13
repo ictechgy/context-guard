@@ -1,0 +1,118 @@
+{
+  "call_accounting": {
+    "analyzed_blocks": 57,
+    "analyzed_units": 228,
+    "excluded_blocks": 3,
+    "excluded_units": 12,
+    "provider_successes": 237,
+    "scheduled_calls": 240,
+    "transport_errors": 3
+  },
+  "claims": {
+    "activation": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "correctness": {
+    "closed_pack": {
+      "adaptive_only": {
+        "correct": 30,
+        "provider_successes": 30,
+        "scheduled": 30
+      },
+      "combined": {
+        "correct": 30,
+        "provider_successes": 30,
+        "scheduled": 30
+      },
+      "ordinary": {
+        "correct": 30,
+        "provider_successes": 30,
+        "scheduled": 30
+      },
+      "symbol_only": {
+        "correct": 30,
+        "provider_successes": 30,
+        "scheduled": 30
+      }
+    },
+    "realistic_fallback": {
+      "adaptive_only": {
+        "correct": 0,
+        "provider_successes": 28,
+        "scheduled": 30
+      },
+      "combined": {
+        "correct": 10,
+        "provider_successes": 30,
+        "scheduled": 30
+      },
+      "ordinary": {
+        "correct": 0,
+        "provider_successes": 29,
+        "scheduled": 30
+      },
+      "symbol_only": {
+        "correct": 10,
+        "provider_successes": 30,
+        "scheduled": 30
+      }
+    }
+  },
+  "models_observed": [
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-5"
+  ],
+  "non_authoritative_cli_cost": {
+    "amount_micro_usd": 894320,
+    "currency": "USD"
+  },
+  "p2_gate": {
+    "closed_pack": {
+      "activation_authority": false,
+      "blockers": [
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": true
+    },
+    "realistic_fallback": {
+      "activation_authority": false,
+      "blockers": [
+        "protected_omission",
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": false
+    }
+  },
+  "p3_gate": {
+    "blockers": [
+      "authoritative_provider_cost_unavailable",
+      "provider_token_usage_unavailable",
+      "separate_p3_external_approval_absent"
+    ],
+    "eligible": false
+  },
+  "private_evidence": {
+    "bytes": 697594,
+    "committed": false,
+    "retained_until": 1787194908,
+    "sha256": "011a09b75d2aaea1f153f7ff050b85a8f143a16018d32220f2b705b3462c47d7"
+  },
+  "schema_version": "contextguard.p2-claude-live-result/v1",
+  "source": {
+    "candidate_commit": "540c6e02222f25346ca9c797197882cebbe5331d",
+    "contract_sha256": "8c38cc3d61fd79003b56fc3357334fd22b0aea72739f3b66e41ad07b6d16a9c0",
+    "controller_commit": "abf84c9ffed96a9e51ca1de09679193ec53fe7cf",
+    "controller_runner_sha256": "8f8ca512d25bac80d43631681d14587a5d626cc6901c1b649d3062a731d0a26b"
+  },
+  "status": "completed_descriptive_p2_shadow",
+  "usage_metrics": {
+    "reason": "the executed controller did not aggregate per-model cache and helper-model token fields; provider token metrics are excluded rather than reconstructed",
+    "status": "unavailable"
+  }
+}

@@ -17,8 +17,8 @@ Current position:
 | Dimension | Status |
 | --- | --- |
 | Shipped-code readiness | PR #302 merged normally as `1211a58c92e30b9a70b1b47cf86909fcf39a91f7`. G1-G6 provider-free implementation is complete, including the closed P2-P6 evaluators, explicit non-activating MCP workflow, and opt-in graph-applied context pack. Implementation does not imply provider execution or runtime activation. |
-| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. A separate 72-call synthetic combined-workflow smoke completed on 2026-08-12; its token interval crossed zero, so it is also descriptive-only and inconclusive. |
-| Release readiness | Current merged source is PR #302 merge `1211a58c92e30b9a70b1b47cf86909fcf39a91f7`; no immutable npm candidate has been built from that merge. The earlier PR #300 candidate remains historical evidence bound only to `fb2e177f3efb15e817f54f5742beacdbe5daf96a`. npm publication and `next`/`latest` dist-tag mutation have not occurred. |
+| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. On 2026-08-13 the narrow Claude print-JSON P2 shadow completed its fixed 240-call schedule: closed-pack passed implementation readiness without activation, while realistic-fallback stayed diagnostic because of protected omissions. Provider token fields were invalidated after post-run model-usage review, so P3 is blocked rather than inferred. |
+| Release readiness | Immutable candidate run `31652575332` is bound to source `540c6e02222f25346ca9c797197882cebbe5331d`; its root and Receipt artifacts are `9163551917` and `9163551685`. npm publication and `next`/`latest` dist-tag mutation have not occurred. |
 | Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
 The roadmap is dependency-gated:
@@ -306,9 +306,11 @@ is diagnostic-only and cannot replace workflow attestation.
   cost are explicitly unavailable; quality/failure/correction/retrieval/cost
   gates remain false; `claim_allowed=false` and `descriptive_only=true`.
 
-The P1 dependency gate has passed. P2-P6 active promotion remains stopped until
-P2 records a supported boundary, preregistration, and phase-specific authority;
-the existing general host request-assembly observer is still unsupported.
+The P1 dependency gate has passed. P2 now has one narrow, supported Claude
+print-JSON measurement boundary; the existing general host request-assembly
+observer remains unsupported. Closed-pack may enter a future P3 only after a
+separate approval and authoritative fully loaded provider cost become
+available. Realistic-fallback remains stopped at P2.
 
 ### Exit gate
 
@@ -329,9 +331,11 @@ over-limit study. Every decision remains descriptive-only with claims disabled.
 
 ## P2 — observe-only request-boundary broker
 
-Implementation status: the packaged local evaluator now computes per-stratum
+Implementation status: the packaged local evaluator computes per-stratum
 recall, exact rehydration, freshness, construction cost, and protected-zone
-violations from a closed P2 record. It cannot observe or mutate a live request.
+violations from a closed P2 record. The separately approved
+`research/provider-live-roadmap/p2/v1` runner completed the exact 240-call
+Claude print-JSON shadow on 2026-08-13 without mutating live requests.
 
 P2 may start only after `P1-F`, authoritative host evidence identifies a
 supported interception/attribution boundary, a P2 preregistration is approved,
@@ -349,6 +353,14 @@ Exit requires a predeclared recall threshold for every supported task stratum,
 complete construction-cost accounting, and zero protected-zone eligibility
 violations. If the host boundary remains unsupported, P2 remains diagnostic and
 the Bash route stays the only active narrow mechanism.
+
+Result: closed-pack passed implementation readiness but received no activation
+authority. Realistic-fallback failed readiness on `protected_omission` and
+remains diagnostic. The run completed 237 provider calls successfully; three
+transport exclusions removed three whole four-arm blocks from paired analysis.
+The recorded USD 0.894320 CLI cost is explicitly non-authoritative. Post-run
+review found that the executed observer omitted helper/cache model-usage fields,
+so provider token metrics are unavailable and no savings claim is permitted.
 
 ## P3 — bounded progressive-disclosure canary
 
@@ -455,34 +467,24 @@ cost accounting.
 
 ## Immediate ordered work
 
-Provider-free G1-G6 implementation and the explicit local MCP bridge are now
-merged through PR #302 at exact source
-`1211a58c92e30b9a70b1b47cf86909fcf39a91f7`. The evaluator, its schemas, and
-the manual MCP tools remain non-activating surfaces: P1-F is complete, but
-every P2-P6 phase-specific observer/evidence/authority gate remains unmet,
-runtime activation and claim authority remain false, and exact fallback is
-unchanged. Delivery may proceed only to construction of a new immutable
-candidate for this exact merged source under separately recorded authority; no
-prior candidate represents PR #302. npm publication and `next`/`latest` remain
-unauthorized and untouched.
+Provider-free G1-G6 implementation and the explicit local MCP bridge are merged
+through PR #302. P1-F is complete and the 2026-08-13 narrow P2 shadow is now
+recorded. Closed-pack passed P2 implementation readiness; realistic-fallback
+did not. Runtime activation and claim authority remain false, exact fallback is
+unchanged, P3 is blocked on authoritative fully loaded provider cost and a
+separate phase approval, and P4-P6 are dependency-blocked. npm `next`/`latest`
+remain unauthorized and untouched.
 
-1. Preserve the exact v8 root, retained source ref, immutable candidate, and
-   P1-F report; never reinterpret missing observers or false gates as zero/pass.
-2. Before another progressive-context provider run, freeze a four-arm
-   ordinary/adaptive-only/symbol-only/combined ablation with genuinely
-   independent task structures. Include graph cases where ordinary ranking
-   misses a required neighbor, hidden-oracle adaptive labels, closed-pack and
-   realistic-fallback strata, correction/retrieval accounting, and fully loaded
-   cost intervals.
-3. Freeze a P2 preregistration for only an authoritative supported observer
-   stratum. General host request assembly remains unavailable; do not widen the
-   proven Bash tool-output boundary by inference.
-4. Record a new phase-specific privacy/call/spend authority before any further
-   P2-P6 provider activity. The 2026-08-12 authorization is consumed and grants
-   no runtime, activation, or claim authority.
-5. Execute later P2 through P6 gates sequentially. A failed dependency gate
-   stops later provider phases, keeps their already-shipped implementations
-   evaluation-only, and preserves the exact prior route.
+1. Preserve the P1-F and P2 private evidence identities; never reinterpret
+   unavailable provider token/cost fields or false gates as zero/pass.
+2. Keep realistic-fallback diagnostic until every protected omission is removed
+   or explicitly proven eligible without weakening the protected-zone policy.
+3. Before a closed-pack P3 canary, obtain authoritative fully loaded provider
+   billing evidence and a new P3-specific privacy/call/spend approval.
+4. Keep P4-P6 evaluation-only while P3 is blocked. A failed dependency gate
+   stops later provider phases and preserves the exact prior route.
+5. Treat candidate, npm `next`, npm `latest`, and cleanup as separate authority
+   tiers; none is implied by the P2 result.
 
 The prepared-unapproved packet records prerequisites only; it does not create,
 record, or expand external authority. A separate approval system must bind the
