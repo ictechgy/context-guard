@@ -23,6 +23,14 @@ USAGE_ATTEMPT_RESULT_PATH = (
     / "v1"
     / "usage-attempt-result.json"
 )
+USAGE_MEASUREMENT_RESULT_PATH = (
+    ROOT
+    / "research"
+    / "provider-live-roadmap"
+    / "p2"
+    / "v1"
+    / "usage-measurement-result.json"
+)
 G5_SCHEDULE = ROOT / "research" / "provider-free-roadmap" / "g5" / "v1" / "schedule.json"
 G5_OBSERVER_SCHEMA = (
     ROOT
@@ -310,6 +318,62 @@ class P2ClaudeLiveContractTests(unittest.TestCase):
             sha256(arm_usage_raw),
             "b6c366728466e0c390711732fead2a6a36517d2800ba032e998c8bc86612fa49",
         )
+        self.assertEqual(set(result["claims"].values()), {False})
+        self.assertFalse(result["p3_gate"]["eligible"])
+        self.assertNotIn("path", result["private_evidence"])
+
+    def test_max_usage_measurement_binds_complete_blocks_and_descriptive_deltas(self) -> None:
+        result = json.loads(USAGE_MEASUREMENT_RESULT_PATH.read_bytes())
+        self.assertEqual(
+            result["schema_version"],
+            "contextguard.p2-claude-max-usage-measurement/v1",
+        )
+        self.assertEqual(result["source"], {
+            "attempt_kind": "post_outcome_observer_repair_descriptive_only",
+            "candidate_commit": "540c6e02222f25346ca9c797197882cebbe5331d",
+            "contract_sha256": sha256(self.contract_raw),
+            "controller_commit": "64e1b5595aa3377ec551f74150792784b3d5e041",
+            "controller_runner_sha256": sha256(RUNNER_PATH.read_bytes()),
+        })
+        self.assertEqual(result["call_accounting"], {
+            "analyzed_blocks": 55,
+            "analyzed_units": 220,
+            "excluded_blocks": 5,
+            "excluded_units": 20,
+            "provider_successes": 234,
+            "scheduled_calls": 240,
+            "transport_errors": 6,
+        })
+        closed = result["usage_measurement"]["closed_pack"]
+        self.assertEqual(closed["complete_blocks"], 30)
+        self.assertEqual(closed["arms"]["ordinary"]["total_tokens"], 196552)
+        self.assertEqual(closed["arms"]["combined"]["total_tokens"], 182603)
+        self.assertEqual(closed["arms"]["ordinary"]["correct"], 30)
+        self.assertEqual(closed["arms"]["combined"]["correct"], 30)
+        self.assertEqual(closed["contrasts"]["combined_minus_ordinary"], {
+            "delta_tokens": -13949,
+            "savings_basis_points": 710,
+            "savings_percent_decimal": "7.096850",
+        })
+        self.assertFalse(closed["paired_sensitivity"]["inference_claim_allowed"])
+        self.assertLess(
+            closed["paired_sensitivity"]["signed_cluster_minimum"]["numerator"],
+            0,
+        )
+        self.assertGreater(
+            closed["paired_sensitivity"]["signed_cluster_maximum"]["numerator"],
+            0,
+        )
+        realistic = result["usage_measurement"]["realistic_fallback"]
+        self.assertEqual(realistic["complete_blocks"], 25)
+        self.assertEqual(realistic["arms"]["ordinary"]["correct"], 0)
+        self.assertEqual(realistic["arms"]["combined"]["correct"], 10)
+        self.assertEqual(realistic["contrasts"]["combined_minus_ordinary"], {
+            "delta_tokens": 1072,
+            "savings_basis_points": -64,
+            "savings_percent_decimal": "-0.637534",
+        })
+        self.assertFalse(realistic["paired_sensitivity"]["inference_claim_allowed"])
         self.assertEqual(set(result["claims"].values()), {False})
         self.assertFalse(result["p3_gate"]["eligible"])
         self.assertNotIn("path", result["private_evidence"])

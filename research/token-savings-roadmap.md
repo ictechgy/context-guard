@@ -376,6 +376,17 @@ date-suffix form, retains the exact primary-model requirement, and passed a live
 two-model usage probe. The invalid attempt remains excluded; it is not repaired
 or reinterpreted after the fact.
 
+The corrected observer subsequently completed a new fixed 240-call Max run:
+234 calls succeeded and 55 complete four-arm blocks were analyzed. On 30
+closed-pack blocks, combined used 7.096850% fewer total tokens than ordinary
+(182,603 versus 196,552) with both arms correct on 30/30. Adaptive-only used
+6.677622% fewer with the same correctness. On 25 complete realistic-fallback
+blocks, combined used 0.637534% more tokens but improved exact correctness from
+0/25 to 10/25; adaptive-only used 7.099103% fewer but stayed 0/25 correct.
+These are descriptive frozen-corpus measurements, not generalized savings or
+activation evidence. P3 remains blocked on authoritative fully loaded provider
+cost and a separate exact P3 approval.
+
 ## P3 — bounded progressive-disclosure canary
 
 Implementation status: the packaged evaluator now verifies exact matched pairs,

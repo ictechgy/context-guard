@@ -83,3 +83,28 @@ token-savings estimate. `usage-attempt-result.json` binds the owner-private
 evidence without publishing a private path, prompt, or response. A new complete
 fixed-schedule run with the corrected observer is required before token savings
 can be measured. P3 remains blocked.
+
+## 2026-08-13 corrected Max measurement
+
+The corrected observer then ran the entire fixed schedule from controller
+commit `64e1b5595aa3377ec551f74150792784b3d5e041`. Of 240 scheduled calls, 234
+completed. Five incomplete four-arm blocks were excluded, leaving 55 complete
+blocks and 220 analyzed units. Both the selected Sonnet model and the dated
+first-party Haiku helper were included in every reported token total.
+
+On the 30 closed-pack blocks, combined used 182,603 tokens versus ordinary's
+196,552: 13,949 fewer tokens, or 7.096850%, with both arms correct on 30/30.
+Adaptive-only used 6.677622% fewer tokens with the same correctness;
+symbol-only used 0.608999% more.
+
+On the 25 complete realistic-fallback blocks, combined used 0.637534% more
+tokens than ordinary while improving exact correctness from 0/25 to 10/25.
+Symbol-only achieved the same correctness improvement at 6.901658% more
+tokens. Adaptive-only used 7.099103% fewer tokens but remained 0/25 correct.
+
+These are descriptive results for the frozen synthetic corpus, not generalized
+or production savings claims. The CLI cost estimate remains non-authoritative,
+and realistic fallback remains ineligible because of protected omission. P3 is
+still blocked on authoritative fully loaded provider cost and a separate exact
+P3 approval. `usage-measurement-result.json` binds the minimized private
+evidence without publishing prompts, responses, credentials, or private paths.
