@@ -1,0 +1,146 @@
+{
+  "analysis": {
+    "closed_pack": {
+      "adaptive_only": {
+        "analyzed": 30,
+        "cached_input_tokens": 87040,
+        "correct": 28,
+        "input_tokens": 201930,
+        "output_tokens": 609,
+        "reasoning_output_tokens": 309,
+        "total_tokens": 202539
+      },
+      "combined": {
+        "analyzed": 30,
+        "cached_input_tokens": 68608,
+        "correct": 29,
+        "input_tokens": 201930,
+        "output_tokens": 713,
+        "reasoning_output_tokens": 410,
+        "total_tokens": 202643
+      },
+      "combined_vs_ordinary_correct": 0,
+      "combined_vs_ordinary_total_tokens": {
+        "denominator": 208384,
+        "numerator": -5741
+      },
+      "ordinary": {
+        "analyzed": 30,
+        "cached_input_tokens": 76288,
+        "correct": 29,
+        "input_tokens": 207820,
+        "output_tokens": 564,
+        "reasoning_output_tokens": 271,
+        "total_tokens": 208384
+      },
+      "symbol_only": {
+        "analyzed": 30,
+        "cached_input_tokens": 52992,
+        "correct": 28,
+        "input_tokens": 207820,
+        "output_tokens": 492,
+        "reasoning_output_tokens": 204,
+        "total_tokens": 208312
+      }
+    },
+    "excluded_terminal_reasons": {
+      "malformed_required_field": 14
+    },
+    "g5_summary_sha256": "93f50fff1dfcc9a43838ab9655df4a068f53380125dbc718b58b46b376fdf0c1",
+    "realistic_fallback": {
+      "adaptive_only": {
+        "analyzed": 20,
+        "cached_input_tokens": 290560,
+        "correct": 0,
+        "input_tokens": 457296,
+        "output_tokens": 5957,
+        "reasoning_output_tokens": 4039,
+        "total_tokens": 463253
+      },
+      "combined": {
+        "analyzed": 20,
+        "cached_input_tokens": 75520,
+        "correct": 9,
+        "input_tokens": 175977,
+        "output_tokens": 2355,
+        "reasoning_output_tokens": 1878,
+        "total_tokens": 178332
+      },
+      "combined_vs_ordinary_correct": 9,
+      "combined_vs_ordinary_total_tokens": {
+        "denominator": 401695,
+        "numerator": -223363
+      },
+      "ordinary": {
+        "analyzed": 20,
+        "cached_input_tokens": 244992,
+        "correct": 0,
+        "input_tokens": 395950,
+        "output_tokens": 5745,
+        "reasoning_output_tokens": 4278,
+        "total_tokens": 401695
+      },
+      "symbol_only": {
+        "analyzed": 20,
+        "cached_input_tokens": 80640,
+        "correct": 9,
+        "input_tokens": 172258,
+        "output_tokens": 2304,
+        "reasoning_output_tokens": 1947,
+        "total_tokens": 174562
+      }
+    }
+  },
+  "call_accounting": {
+    "analyzed_blocks": 50,
+    "analyzed_units": 200,
+    "completed_calls": 226,
+    "excluded_blocks": 10,
+    "excluded_calls": 14,
+    "scheduled_calls": 240
+  },
+  "claims": {
+    "activation": false,
+    "cross_provider_equivalence": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "provider_specific_descriptive_measurement": true,
+    "subscription_quota_savings": false,
+    "token_savings": false
+  },
+  "private_evidence": {
+    "bytes": 730470,
+    "retention_seconds": 604800,
+    "sha256": "795d587e760da893b2d61e9a01e73d653f908bf47911de979cf9e55ec0008da8"
+  },
+  "provider": {
+    "auth_method": "chatgpt",
+    "billing_receipt": {
+      "availability": "unavailable",
+      "reason": "chatgpt_subscription_has_no_per_request_billing_receipt"
+    },
+    "cli_version": "0.146.0",
+    "model_id": "gpt-5.6-luna",
+    "reasoning_effort": "low"
+  },
+  "schema_version": "contextguard.p2-codex-subscription-live-result/v1",
+  "source": {
+    "base_commit": "582ff80e8321e3651d26873b6f968cb263489c47",
+    "contract_sha256": "9f2e2023a34b9f7b8e0cba586cc2a4762d907a3c67f012ff55e8ffbe9e7b98c9",
+    "native_executable_sha256": "ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02",
+    "executed_runner_sha256": "6d5de52529294893d763f41f057cdf9365cd40724cd24921dcbe094a6e75d2d1",
+    "source_candidate_commit": "540c6e02222f25346ca9c797197882cebbe5331d"
+  },
+  "status": "completed_descriptive_subscription_measurement",
+  "token_usage": {
+    "cache_write_input_tokens": 0,
+    "cached_input_tokens": 1607936,
+    "completed_calls": 226,
+    "input_tokens": 2930904,
+    "output_tokens": 35454,
+    "provider_total_tokens": 2966358,
+    "reasoning_output_tokens": 26558,
+    "uncached_nonwrite_input_tokens": 1322968
+  }
+}

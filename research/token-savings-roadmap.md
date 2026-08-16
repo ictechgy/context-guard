@@ -387,6 +387,18 @@ These are descriptive frozen-corpus measurements, not generalized savings or
 activation evidence. P3 remains blocked on authoritative fully loaded provider
 cost and a separate exact P3 approval.
 
+A separate Codex subscription replication completed the same frozen 240-unit
+schedule with Codex CLI `0.146.0` and `gpt-5.6-luna` at low reasoning effort.
+It produced 226 complete receipts and 14 closed-schema exclusions, leaving 50
+complete four-arm blocks and 200 analyzed units. On all 30 closed-pack blocks,
+combined used 5,741 fewer tokens than ordinary (2.755010%) with both correct on
+29/30 units. On 20 analyzable realistic-fallback blocks, combined used 223,363
+fewer tokens (55.605123%) and was correct on 9/20 versus ordinary's 0/20.
+These are descriptive provider-specific results. Cached input and reasoning
+output remain subset counters and were not double-counted. The ChatGPT route
+provides no authoritative dollar receipt or stable subscription-quota
+conversion, so it does not support a cost- or quota-savings claim.
+
 ## P3 — bounded progressive-disclosure canary
 
 Implementation status: the packaged evaluator now verifies exact matched pairs,
@@ -506,9 +518,12 @@ remain unauthorized and untouched.
    or explicitly proven eligible without weakening the protected-zone policy.
 3. Before a closed-pack P3 canary, obtain authoritative fully loaded provider
    billing evidence and a new P3-specific privacy/call/spend approval.
-4. Keep P4-P6 evaluation-only while P3 is blocked. A failed dependency gate
+4. Keep the completed Codex subscription replication provider-specific and
+   descriptive; do not reinterpret it as dollar, quota, or cross-provider
+   evidence.
+5. Keep P4-P6 evaluation-only while P3 is blocked. A failed dependency gate
    stops later provider phases and preserves the exact prior route.
-5. Treat candidate, npm `next`, npm `latest`, and cleanup as separate authority
+6. Treat candidate, npm `next`, npm `latest`, and cleanup as separate authority
    tiers; none is implied by the P2 result.
 
 The prepared-unapproved packet records prerequisites only; it does not create,
