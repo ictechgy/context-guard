@@ -21,6 +21,14 @@ All 240 Anthropic Messages API calls completed on exact `claude-sonnet-5`, with
 estimate for this run is USD 0.516100; it remains an estimate, not an
 authoritative billing receipt.
 
+A manual Anthropic Console/CSV observation for 2026-08-17 UTC reported USD
+1.03 for the day that contained both v2 runs. Its separately rounded CSV cost
+rows were USD 0.69 for uncached input and USD 0.33 for output; both cost rows
+equaled their list-price rows. Only these minimized aggregates are published:
+no API-key identifier or raw export content is retained here. Because the
+provider value is daily and cannot be attributed to either run alone, it does
+not make the final run's USD 0.516100 calculation or savings authoritative.
+
 On realistic fallback, combined was correct on 20/30 versus ordinary on 0/30,
 and used 19.572096% fewer total tokens. Its list-price estimate was 56.656492%
 lower. Train and calibration were each 10/10 for both graph-enabled arms. The

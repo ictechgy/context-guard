@@ -201,7 +201,7 @@
   "pricing": {
     "authoritative_provider_cost": {
       "availability": "unavailable",
-      "reason": "admin_usage_cost_receipt_unavailable"
+      "reason": "daily_aggregate_not_attributable_to_run"
     },
     "effective_end": "2026-08-31",
     "effective_start": "2026-07-01",
@@ -209,6 +209,31 @@
       "amount_micro_usd": 516100,
       "currency": "USD",
       "source": "anthropic_sonnet_5_introductory_pricing"
+    },
+    "provider_reported_daily_billing": {
+      "authority": "provider_reported_daily_aggregate",
+      "daily_total_display": {
+        "amount": "1.03",
+        "currency": "USD"
+      },
+      "known_v2_runs_on_date": 2,
+      "model": "Claude Sonnet 5",
+      "per_run_attribution": false,
+      "raw_export_included": false,
+      "rounded_csv_cost_rows": [
+        {
+          "cost_usd": "0.69",
+          "list_price_usd": "0.69",
+          "token_type": "input_no_cache"
+        },
+        {
+          "cost_usd": "0.33",
+          "list_price_usd": "0.33",
+          "token_type": "output"
+        }
+      ],
+      "source": "anthropic_console_csv_manual_observation",
+      "usage_date_utc": "2026-08-17"
     }
   },
   "private_evidence": {

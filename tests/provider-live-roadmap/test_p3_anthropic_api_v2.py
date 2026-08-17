@@ -28,6 +28,33 @@ def load_runner():
 
 
 class P3AnthropicAPIV2Tests(unittest.TestCase):
+    def assert_minimized_manual_billing(self, value: object) -> None:
+        self.assertEqual(
+            value,
+            {
+                "authority": "provider_reported_daily_aggregate",
+                "daily_total_display": {"amount": "1.03", "currency": "USD"},
+                "known_v2_runs_on_date": 2,
+                "model": "Claude Sonnet 5",
+                "per_run_attribution": False,
+                "raw_export_included": False,
+                "rounded_csv_cost_rows": [
+                    {
+                        "cost_usd": "0.69",
+                        "list_price_usd": "0.69",
+                        "token_type": "input_no_cache",
+                    },
+                    {
+                        "cost_usd": "0.33",
+                        "list_price_usd": "0.33",
+                        "token_type": "output",
+                    },
+                ],
+                "source": "anthropic_console_csv_manual_observation",
+                "usage_date_utc": "2026-08-17",
+            },
+        )
+
     def test_v2_runner_and_contract_exist(self) -> None:
         self.assertTrue(RUNNER.is_file(), "v2 runner missing")
         self.assertTrue(CONTRACT.is_file(), "v2 contract missing")
@@ -257,6 +284,25 @@ class P3AnthropicAPIV2Tests(unittest.TestCase):
         self.assertFalse(result["p3_gate"]["eligible"])
         self.assertTrue(all(value is False for value in result["claims"].values()))
         self.assertNotIn(b"/private/tmp", RESULT.read_bytes())
+
+    def test_published_manual_billing_is_minimized_daily_provenance_not_per_run_cost(self) -> None:
+        result = json.loads(RESULT.read_bytes())
+        billing = result["pricing"]["provider_reported_daily_billing"]
+        self.assert_minimized_manual_billing(billing)
+        self.assertFalse(result["claims"]["authoritative_provider_cost"])
+        self.assertFalse(result["claims"]["provider_cost_savings"])
+
+        for mutation in (
+            lambda value: value.pop("source"),
+            lambda value: value.update(authority="authoritative_provider_receipt"),
+            lambda value: value.update(per_run_attribution=True),
+            lambda value: value.update(raw_export_included=True),
+        ):
+            overstated = copy.deepcopy(billing)
+            mutation(overstated)
+            with self.subTest(overstated=overstated):
+                with self.assertRaises(AssertionError):
+                    self.assert_minimized_manual_billing(overstated)
 
 
 if __name__ == "__main__":
