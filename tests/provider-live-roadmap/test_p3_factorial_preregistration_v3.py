@@ -128,11 +128,18 @@ class P3FactorialPreregistrationV3Tests(unittest.TestCase):
             if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
         ]
         self.assertEqual(runtime_residue, [])
-        required = sorted(
-            path
-            for path in V3.rglob("*")
-            if path.is_file() and "__pycache__" not in path.parts
-        ) + [Path(__file__)]
+        # This is the G3 preregistration freeze, not an assertion that every
+        # artifact added by later goals was already tracked in the G3 commit.
+        required = [
+            V3 / "README.md",
+            GENERATOR,
+            CORPUS,
+            PREREGISTRATION,
+            PROMPT_TEMPLATE,
+            SCHEDULE,
+            CHECKERS,
+            Path(__file__),
+        ]
         for path in required:
             with self.subTest(path=str(path.relative_to(ROOT))):
                 result = subprocess.run(
@@ -205,6 +212,9 @@ class P3FactorialPreregistrationV3Tests(unittest.TestCase):
         self.assertIn(b"{allowed_patch_paths_json}", PROMPT_TEMPLATE.read_bytes())
         gate = self.plan["design"]["provider_input_rehearsal_gate"]
         self.assertEqual(gate["required_units"], 288)
+        self.assertEqual(gate["required_task_arm_cells"], 96)
+        self.assertEqual(gate["unique_provider_input_count"], "measured_at_rehearsal_not_forced")
+        self.assertTrue(gate["activated_factor_no_op_is_recorded_as_zero_byte_effect"])
         self.assertTrue(gate["committed_before_provider_calls"])
         self.assertTrue(gate["exact_pairwise_factor_byte_isolation"])
         self.assertTrue(gate["scorer_fields_absent_from_every_provider_input"])
