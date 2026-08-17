@@ -401,9 +401,23 @@ conversion, so it does not support a cost- or quota-savings claim.
 
 ## P3 — bounded progressive-disclosure canary
 
-Implementation status: the packaged evaluator now verifies exact matched pairs,
+Implementation status: the packaged evaluator verifies exact matched pairs,
 retrievals, failure/correction guardrails, and fully loaded provider-cost fields.
-It evaluates imported measurements only and launches no canary or provider call.
+It still evaluates imported measurements only and launches no canary or
+provider call. A separate one-use `research/provider-live-roadmap/p3-api/v1`
+runner completed the approved direct Anthropic API measurement without granting
+the packaged evaluator or production path any provider authority.
+
+The final 2026-08-17 run completed all 240 fixed-schedule calls with exact
+`claude-sonnet-5` usage receipts and zero cache tokens. On closed-pack, combined
+used 36.590437% fewer total tokens than ordinary with both correct on 30/30. On
+realistic fallback, combined used 5.789384% more total tokens and was correct on
+1/30 versus ordinary's 0/30. Across both strata, combined used 13.317087% fewer
+total tokens, but its published-list-price estimate was 1.105507% higher because
+output usage increased 41.556257%. The standard API key had no Admin Usage &
+Cost access, so the USD 0.580690 calculation is not an authoritative billing
+receipt or fully loaded shifted cost. No P3 savings or activation claim is
+permitted; `p3-api/v1/result.json` binds the minimized private evidence.
 
 The existing Bash reference route is the first narrow implementation candidate.
 Promotion requires:

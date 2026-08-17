@@ -106,6 +106,10 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-live-roadmap/p2-codex/v1/contract.json",
         "research/provider-live-roadmap/p2-codex/v1/live_runner.py",
         "research/provider-live-roadmap/p2-codex/v1/result.json",
+        "research/provider-live-roadmap/p3-api/v1/README.md",
+        "research/provider-live-roadmap/p3-api/v1/contract.json",
+        "research/provider-live-roadmap/p3-api/v1/live_runner.py",
+        "research/provider-live-roadmap/p3-api/v1/result.json",
         "research/provider-free-roadmap/README.md",
         "research/provider-free-roadmap/boundary-contract.json",
         "research/provider-free-roadmap/g2/freeze-lock.json",
@@ -221,6 +225,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/provider-free-roadmap/test_g6_approval_packet.py",
         "tests/provider-live-roadmap/test_p2_claude_live.py",
         "tests/provider-live-roadmap/test_p2_codex_subscription.py",
+        "tests/provider-live-roadmap/test_p3_anthropic_api.py",
         "tests/test_release_candidate_smoke.py",
         "tests/test_workflows.py",
     }

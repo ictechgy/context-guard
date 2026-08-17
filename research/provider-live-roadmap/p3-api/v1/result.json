@@ -1,0 +1,219 @@
+{
+  "analysis": {
+    "closed_pack": {
+      "arms": {
+        "adaptive_only": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 14870,
+          "list_price_micro_usd": 33540,
+          "output_tokens": 380,
+          "total_tokens": 15250
+        },
+        "combined": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 14870,
+          "list_price_micro_usd": 33540,
+          "output_tokens": 380,
+          "total_tokens": 15250
+        },
+        "ordinary": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 23670,
+          "list_price_micro_usd": 51140,
+          "output_tokens": 380,
+          "total_tokens": 24050
+        },
+        "symbol_only": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 23670,
+          "list_price_micro_usd": 51140,
+          "output_tokens": 380,
+          "total_tokens": 24050
+        }
+      },
+      "combined_minus_ordinary": {
+        "correct_delta": 0,
+        "input_token_delta": -8800,
+        "input_token_delta_percent": "-37.177862",
+        "list_price_delta_micro_usd": -17600,
+        "list_price_delta_percent": "-34.415330",
+        "output_token_delta": 0,
+        "output_token_delta_percent": "0.000000",
+        "total_token_delta": -8800,
+        "total_token_delta_percent": "-36.590437"
+      },
+      "complete_blocks": 30
+    },
+    "overall": {
+      "combined": {
+        "correct": 31,
+        "denominator": 60,
+        "input_tokens": 39510,
+        "list_price_micro_usd": 146330,
+        "output_tokens": 6731,
+        "total_tokens": 46241
+      },
+      "combined_minus_ordinary": {
+        "correct_delta": 1,
+        "input_token_delta": -9080,
+        "input_token_delta_percent": "-18.686973",
+        "list_price_delta_micro_usd": 1600,
+        "list_price_delta_percent": "1.105507",
+        "output_token_delta": 1976,
+        "output_token_delta_percent": "41.556257",
+        "total_token_delta": -7104,
+        "total_token_delta_percent": "-13.317087"
+      },
+      "ordinary": {
+        "correct": 30,
+        "denominator": 60,
+        "input_tokens": 48590,
+        "list_price_micro_usd": 144730,
+        "output_tokens": 4755,
+        "total_tokens": 53345
+      }
+    },
+    "realistic_fallback": {
+      "arms": {
+        "adaptive_only": {
+          "correct": 0,
+          "denominator": 30,
+          "input_tokens": 15840,
+          "list_price_micro_usd": 97960,
+          "output_tokens": 6628,
+          "total_tokens": 22468
+        },
+        "combined": {
+          "correct": 1,
+          "denominator": 30,
+          "input_tokens": 24640,
+          "list_price_micro_usd": 112790,
+          "output_tokens": 6351,
+          "total_tokens": 30991
+        },
+        "ordinary": {
+          "correct": 0,
+          "denominator": 30,
+          "input_tokens": 24920,
+          "list_price_micro_usd": 93590,
+          "output_tokens": 4375,
+          "total_tokens": 29295
+        },
+        "symbol_only": {
+          "correct": 1,
+          "denominator": 30,
+          "input_tokens": 32230,
+          "list_price_micro_usd": 106990,
+          "output_tokens": 4253,
+          "total_tokens": 36483
+        }
+      },
+      "combined_minus_ordinary": {
+        "correct_delta": 1,
+        "input_token_delta": -280,
+        "input_token_delta_percent": "-1.123596",
+        "list_price_delta_micro_usd": 19200,
+        "list_price_delta_percent": "20.515012",
+        "output_token_delta": 1976,
+        "output_token_delta_percent": "45.165714",
+        "total_token_delta": 1696,
+        "total_token_delta_percent": "5.789384"
+      },
+      "complete_blocks": 30
+    }
+  },
+  "call_accounting": {
+    "analyzed_blocks": 60,
+    "analyzed_units": 240,
+    "completed_calls": 240,
+    "excluded_blocks": 0,
+    "excluded_calls": 0,
+    "scheduled_calls": 240
+  },
+  "claims": {
+    "activation": false,
+    "authoritative_provider_cost": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "p2_gate": {
+    "closed_pack": {
+      "activation_authority": false,
+      "blockers": [
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": true
+    },
+    "realistic_fallback": {
+      "activation_authority": false,
+      "blockers": [
+        "protected_omission",
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": false
+    }
+  },
+  "p3_gate": {
+    "blockers": [
+      "authoritative_provider_cost_unavailable",
+      "fully_loaded_shifted_cost_unavailable",
+      "descriptive_fixed_corpus_only",
+      "realistic_fallback_protected_omission"
+    ],
+    "eligible": false
+  },
+  "pricing": {
+    "authoritative_provider_cost": {
+      "availability": "unavailable",
+      "reason": "admin_usage_cost_receipt_unavailable"
+    },
+    "effective_end": "2026-08-31",
+    "effective_start": "2026-07-01",
+    "list_price_estimate": {
+      "amount_micro_usd": 580690,
+      "currency": "USD",
+      "source": "anthropic_sonnet_5_introductory_pricing"
+    }
+  },
+  "private_evidence": {
+    "bytes": 754213,
+    "committed": false,
+    "retained_until": 1787505944,
+    "sha256": "623499669f8279b43f8bfc1aaa91f6b6c0921b684d177c3303979a13a6776a02"
+  },
+  "provider": {
+    "auth_method": "standard_api_key_in_memory",
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "model_id": "claude-sonnet-5",
+    "usage_authority": "anthropic_messages_api_response"
+  },
+  "schema_version": "contextguard.p3-anthropic-api-live-result/v1",
+  "source": {
+    "base_commit": "82ba6540d04199aefbc94b3b17b667fb9aa3ea36",
+    "candidate_commit": "540c6e02222f25346ca9c797197882cebbe5331d",
+    "contract_sha256": "5fcd5e3bd061fbb3e880863401c3eaa2ab753e7c2f3e29837a1c9315fdc7c1b4",
+    "g5_summary_sha256": "d88c77919f18165f9e9a5012a553c1c6301035977653e9bd3b97b4dda0e2f983",
+    "request_plan_sha256": "9cee51422fb97578364a34b059ba006e09d926f7445b7ea15c1531993c63895f",
+    "runner_sha256": "021965a2f3f7ff6b8a0eba9a3240e7198da090ae53f3910714ac0852b1538db6"
+  },
+  "status": "completed_descriptive_standard_api_measurement",
+  "token_usage": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "completed_calls": 240,
+    "input_tokens": 174710,
+    "output_tokens": 23127,
+    "provider_total_input_tokens": 174710,
+    "provider_total_tokens": 197837
+  }
+}
