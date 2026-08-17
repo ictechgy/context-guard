@@ -47,10 +47,42 @@ before that commit. The provider-live runner remains a later gate and requires
 a separately approved call cap and USD ceiling.
 
 Before that approval, a second committed rehearsal gate must freeze all 96
-unique task-arm prompt hashes (mapped across 288 scheduled units), demonstrate
-byte-level one-factor isolation, and prove scorer-owned fields are absent from
-every provider input. This preregistration deliberately does not substitute
-declarative arm booleans for that later byte-level proof.
+task-arm cells (mapped across 288 scheduled units), demonstrate byte-level
+one-factor isolation, and prove scorer-owned fields are absent from every
+provider input. An activated factor that has no candidates or recommends no
+change is recorded as a zero-byte-effect pair; no artificial marker is added to
+make inputs different. Consequently, the unique prompt count is measured by
+the rehearsal rather than forced to 96. This preregistration deliberately does
+not substitute declarative arm booleans for byte-level proof.
+
+`evaluator.py` implements that gate without a provider. It first verifies that
+the approved partial-clone caches are fully hydrated, then disables lazy
+fetching. Each parent is exported into a no-history snapshot. Byte-identical
+canonical/plugin packer, sanitizer, and credential-policy files are bound; the
+captured canonical bytes run under an isolated Python child with a minimal
+environment. Its audit hook denies network, writes, out-of-snapshot reads, and
+every subprocess except the shipped packer's exact bounded
+`git -C <snapshot> ls-files -z` scan against a no-history index. The retrieval
+query is the first public allowed patch path; no scorer field selects context.
+The provider-visible pure symbol projection contains only path, kind, name,
+signature, and line fields from the shipped symbol receipt. All 96 inputs are
+sealed and validated before the scorer-only checker file is opened.
+
+`provider-input-freeze.json` is metadata-only: it seals source, prompt, pack,
+projection, manifest, application-receipt, producer, factor-pair, and exact
+288-unit schedule identities without storing raw prompts, packs, symbol
+objects, responses, tasks, or checkers. The later rehearsal report binds the
+scorer artifact and records the enforced phase order. In the current frozen
+corpus, 52 of 96
+cells have unique provider inputs and 88 of 144 one-factor pairs change provider
+bytes; the other 56 pairs are honest mechanism no-ops. Broken down by factor,
+adaptive changes 24/48 pairs, graph closure changes 16/48, and the pure symbol
+projection changes 48/48. These activation counts are part of the eventual
+result, not evidence to curate different tasks after seeing provider outcomes.
+`rehearsal-report.json`
+records only the provider-free audit probes and the 12 historical-checker
+rehearsals. Provider quality, token, cost, and savings evidence all remain
+explicitly unavailable, and provider execution remains unauthorized.
 
 Regenerate and verify locally without provider or network access:
 
@@ -59,6 +91,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B \
   research/provider-live-roadmap/p3-api/v3/build_preregistration.py --write
 PYTHONDONTWRITEBYTECODE=1 python3 -B \
   tests/provider-live-roadmap/test_p3_factorial_preregistration_v3.py
+CONTEXTGUARD_V3_CORPUS_ROOT=/path/to/captured/clones \
+  PYTHONDONTWRITEBYTECODE=1 python3 -B \
+  research/provider-live-roadmap/p3-api/v3/evaluator.py \
+  --corpus-root /path/to/captured/clones --write
+CONTEXTGUARD_V3_CORPUS_ROOT=/path/to/captured/clones \
+  PYTHONDONTWRITEBYTECODE=1 python3 -B \
+  tests/provider-live-roadmap/test_p3_factorial_evaluator_v3.py
 ```
 
 If the three approved read-only public clones are present, set
