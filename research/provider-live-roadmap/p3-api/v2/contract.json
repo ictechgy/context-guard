@@ -1,0 +1,57 @@
+{
+  "base_v1": {
+    "contract_sha256": "5fcd5e3bd061fbb3e880863401c3eaa2ab753e7c2f3e29837a1c9315fdc7c1b4",
+    "runner_sha256": "021965a2f3f7ff6b8a0eba9a3240e7198da090ae53f3910714ac0852b1538db6"
+  },
+  "candidate": {
+    "graph_closure_depth": 2,
+    "id": "public-two-hop-graph-plus-explicit-entrypoint-v1",
+    "prompt_suffixes": {
+      "calibration_graph": "Invoke amberWindow() and return only its result.",
+      "evaluation_graph": "Invoke verifyIndigo(800, 17) and return only its result.",
+      "train_graph": "Invoke resolver_entrypoint() and return only its result."
+    },
+    "public_context_requirements": {
+      "calibration_graph": [
+        "src/controllers/entry.ts",
+        "src/calibration/amber-calibrator.ts"
+      ],
+      "evaluation_graph": [
+        "app/runner.js",
+        "validators/index.js"
+      ],
+      "train_graph": [
+        "app/entry.py",
+        "app/routing/checksum.py",
+        "app/routing/constants.py"
+      ]
+    },
+    "secondary_seed_policy": "captured_direct_graph_neighbors"
+  },
+  "claims": {
+    "activation": false,
+    "authoritative_provider_cost": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "limits": {
+    "call_cap": 240,
+    "currency": "USD",
+    "spend_cap_usd": "20.00"
+  },
+  "operation": {
+    "surface": "p3-g5-fixed-schedule-anthropic-api-v2-measurement",
+    "version": "v2"
+  },
+  "safety": {
+    "output_mode": "owner_private",
+    "raw_content_publication": false,
+    "retention_seconds": 604800,
+    "scorer_load_after_all_calls": true
+  },
+  "schema_version": "contextguard.p3-anthropic-api-live-contract/v2",
+  "status": "approved_scope_requires_one_use_external_envelope"
+}

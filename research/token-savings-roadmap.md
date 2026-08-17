@@ -419,6 +419,18 @@ Cost access, so the USD 0.580690 calculation is not an authoritative billing
 receipt or fully loaded shifted cost. No P3 savings or activation claim is
 permitted; `p3-api/v1/result.json` binds the minimized private evidence.
 
+The follow-up `p3-api/v2` condition was frozen before its provider calls. It
+adds one bounded public dependency hop to graph-enabled arms and makes each
+realistic task's public invocation explicit. Its 240/240 completed run improved
+realistic combined correctness from 1/30 to 20/30 and reduced realistic total
+tokens by 19.572096% versus ordinary. Across both strata, combined used
+26.723159% fewer total tokens and its list-price estimate was 50.299033% lower.
+Train and calibration were each 10/10 for graph-enabled arms, while evaluation
+remained 0/10 because the legacy hidden expected output is not determined by
+the original public task. That mismatch is retained as a blocker rather than
+repaired after observing the result. The standard key still cannot supply an
+authoritative Usage & Cost receipt, so no savings or activation claim is made.
+
 The existing Bash reference route is the first narrow implementation candidate.
 Promotion requires:
 
