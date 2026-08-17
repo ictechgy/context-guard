@@ -1,0 +1,101 @@
+{
+  "approval_boundary": {
+    "module_sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0",
+    "schema_sha256": "c535d464311d9f7dd5b326face7596e6b930da4fb3e0350a5d3e0942e735eb69"
+  },
+  "base_measurement": {
+    "contract_sha256": "8c38cc3d61fd79003b56fc3357334fd22b0aea72739f3b66e41ad07b6d16a9c0",
+    "runner_sha256": "ec201cb9f8cb931131875218aa02c606899e75aa15ebc9eac6b07398eb597e28"
+  },
+  "claims": {
+    "activation": false,
+    "authoritative_provider_cost": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "destination_allowlist": [
+    {
+      "host": "api.anthropic.com",
+      "port": 443,
+      "scheme": "https"
+    }
+  ],
+  "limits": {
+    "call_cap": 240,
+    "currency": "USD",
+    "max_answer_bytes": 32768,
+    "max_request_bytes": 16384,
+    "max_response_bytes": 1048576,
+    "per_call_budget_usd": "0.25",
+    "spend_cap_usd": "20.00",
+    "timeout_seconds": 120
+  },
+  "observer": {
+    "id": "anthropic-messages-json-v1",
+    "phase": "P3",
+    "schema": "contextguard.g5-authoritative-observation/v1",
+    "surface": "anthropic-messages-api/v1"
+  },
+  "operation": {
+    "receipt_schema": "contextguard.g5-authoritative-observation/v1",
+    "surface": "p3-g5-fixed-schedule-anthropic-api-measurement",
+    "version": "v1"
+  },
+  "pricing": {
+    "authority": "published_list_price_not_billing_receipt",
+    "currency": "USD",
+    "effective_end": "2026-08-31",
+    "effective_start": "2026-07-01",
+    "input_micro_usd_per_token": 2,
+    "output_micro_usd_per_token": 10,
+    "source": "anthropic_sonnet_5_introductory_pricing"
+  },
+  "provider": {
+    "auth_method": "standard_api_key_in_memory",
+    "id": "anthropic-first-party",
+    "model_id": "claude-sonnet-5"
+  },
+  "request": {
+    "anthropic_version": "2023-06-01",
+    "cache_control": "omitted",
+    "endpoint": "/v1/messages",
+    "max_tokens": 2048,
+    "temperature": "omitted",
+    "thinking": "disabled",
+    "tools": "omitted"
+  },
+  "runtime": {
+    "client": "python-http.client",
+    "proxies": false,
+    "redirects": false,
+    "tls": "default_verified"
+  },
+  "safety": {
+    "network_redirects": false,
+    "network_proxies": false,
+    "output_mode": "owner_private",
+    "raw_content_publication": false,
+    "retention_seconds": 604800,
+    "scorer_load_after_all_calls": true
+  },
+  "schema_version": "contextguard.p3-anthropic-api-live-contract/v1",
+  "source_candidate": {
+    "artifact_ids": [
+      "9163551917",
+      "9163551685"
+    ],
+    "checksums_sha256": "a20f2fc93bfa0e2774f8288eb9d31e9c83c962a816a65cfb829351610e7c5efb",
+    "commit_sha": "540c6e02222f25346ca9c797197882cebbe5331d",
+    "manifest_sha256": "149d26383663f57a5bac2f79f52acb53ed8b3f8a7675176557120dd3ec353050"
+  },
+  "status": "approved_scope_requires_one_use_external_envelope",
+  "usage_semantics": {
+    "cache_creation_input_tokens_must_be_zero": true,
+    "cache_read_input_tokens_must_be_zero": true,
+    "provider_total_input_formula": "input_tokens + cache_creation_input_tokens + cache_read_input_tokens",
+    "provider_total_tokens_formula": "provider_total_input_tokens + output_tokens"
+  }
+}

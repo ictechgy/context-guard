@@ -1,0 +1,84 @@
+{
+  "approval_boundary": {
+    "module_sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0",
+    "schema_sha256": "c535d464311d9f7dd5b326face7596e6b930da4fb3e0350a5d3e0942e735eb69"
+  },
+  "claims": {
+    "activation": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "destination_allowlist": [
+    {
+      "host": "api.anthropic.com",
+      "port": 443,
+      "scheme": "https"
+    }
+  ],
+  "g3": {
+    "freeze_lock_sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105",
+    "manifest_sha256": "ceb3c9807dad9f5ddc501f3439ac0bc5e7350e67e5c56ac27aa84e80cbd5d677",
+    "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
+    "tree_sha256": "ef13371780b940826dd5a1134777e1bae84b578702ee1fe5c83fa6698032fa6b"
+  },
+  "g5": {
+    "freeze_lock_sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307",
+    "observation_schema_sha256": "a1934fd8a22513d070e040a3afcd24a37f7dd073ded8fba4ea0fe33820321a91",
+    "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
+    "tree_sha256": "2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8",
+    "verifier_sha256": "520ad6e66cb8116afcb128e49812511297844571103a39f11ea50262d437a686"
+  },
+  "limits": {
+    "call_cap": 240,
+    "currency": "USD",
+    "per_call_budget_usd": "0.35",
+    "spend_cap_usd": "100.00",
+    "timeout_seconds": 120
+  },
+  "observer": {
+    "id": "claude-code-print-json-v1",
+    "phase": "P2",
+    "schema": "contextguard.g5-authoritative-observation/v1",
+    "surface": "claude-print-json/v1"
+  },
+  "operation": {
+    "receipt_schema": "contextguard.g5-authoritative-observation/v1",
+    "surface": "p2-g5-fixed-schedule-shadow",
+    "version": "v1"
+  },
+  "provider": {
+    "id": "anthropic-first-party",
+    "model_id": "claude-sonnet-5"
+  },
+  "runtime": {
+    "cli_version": "2.1.229",
+    "executable_sha256": "d732f0ba0a539c58c2ffcaef06ed03b4e523726f0cb6cc27b3a5b7e7ae0a7a21",
+    "internal_model_usage_must_be_accounted": true,
+    "safe_mode": true,
+    "session_persistence": false,
+    "tools": []
+  },
+  "safety": {
+    "baseline_fallback": "exact_unchanged",
+    "network_redirects": false,
+    "network_proxies": false,
+    "output_mode": "owner_private",
+    "raw_content_publication": false,
+    "retention_seconds": 604800,
+    "scorer_load_after_all_calls": true
+  },
+  "schema_version": "contextguard.p2-claude-live-contract/v1",
+  "source_candidate": {
+    "artifact_ids": [
+      "9163551917",
+      "9163551685"
+    ],
+    "checksums_sha256": "a20f2fc93bfa0e2774f8288eb9d31e9c83c962a816a65cfb829351610e7c5efb",
+    "commit_sha": "540c6e02222f25346ca9c797197882cebbe5331d",
+    "manifest_sha256": "149d26383663f57a5bac2f79f52acb53ed8b3f8a7675176557120dd3ec353050"
+  },
+  "status": "approved_scope_requires_one_use_external_envelope"
+}

@@ -1,6 +1,6 @@
 # ContextGuard token-savings roadmap
 
-_Status date: 2026-08-12 KST_
+_Status date: 2026-08-13 KST_
 
 This file is the canonical dependency, maturity, stop-gate, and claim contract
 for ContextGuard token-savings work. Draft run packets and implementation plans
@@ -16,9 +16,9 @@ Current position:
 
 | Dimension | Status |
 | --- | --- |
-| Shipped-code readiness | Narrow P3-style Bash reference route is merged; closed provider-free P2-P6 evaluators exist, and the development branch connects their safe local components through an explicit non-activating MCP workflow plus an opt-in graph-applied context pack. |
-| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. A separate 72-call synthetic combined-workflow smoke completed on 2026-08-12; its token interval crossed zero, so it is also descriptive-only and inconclusive. |
-| Release readiness | Exact merge `fb2e177f3efb15e817f54f5742beacdbe5daf96a` and candidate run `31464306133` (artifacts `9091361857`, `9091361298`) passed CI, paired smoke, checksums, and attestations; manifest SHA-256 is `39b02e542c83ac4f15d7761d9cf1b2b61a37cfbcb6eafe6a3580949857b26ca4`. npm publication has not occurred. |
+| Shipped-code readiness | PR #302 merged normally as `1211a58c92e30b9a70b1b47cf86909fcf39a91f7`. G1-G6 provider-free implementation is complete, including the closed P2-P6 evaluators, explicit non-activating MCP workflow, and opt-in graph-applied context pack. Implementation does not imply provider execution or runtime activation. |
+| Evidence readiness | P1-F: v8 completed 108 initials, 13 policy-valid retries, and 2 discarded canaries with every identity accounted for. On 2026-08-13 the narrow Claude print-JSON P2 shadow completed its fixed 240-call schedule: closed-pack passed implementation readiness without activation, while realistic-fallback stayed diagnostic because of protected omissions. Provider token fields were invalidated after post-run model-usage review, so P3 is blocked rather than inferred. |
+| Release readiness | Immutable candidate run `31652575332` is bound to source `540c6e02222f25346ca9c797197882cebbe5331d`; its root and Receipt artifacts are `9163551917` and `9163551685`. npm publication and `next`/`latest` dist-tag mutation have not occurred. |
 | Public claim | Forbidden: power, correction, retrieval, shifted-cost, quality, and failure gates do not support a claim. |
 
 The roadmap is dependency-gated:
@@ -306,9 +306,11 @@ is diagnostic-only and cannot replace workflow attestation.
   cost are explicitly unavailable; quality/failure/correction/retrieval/cost
   gates remain false; `claim_allowed=false` and `descriptive_only=true`.
 
-The P1 dependency gate has passed. P2-P6 active promotion remains stopped until
-P2 records a supported boundary, preregistration, and phase-specific authority;
-the existing general host request-assembly observer is still unsupported.
+The P1 dependency gate has passed. P2 now has one narrow, supported Claude
+print-JSON measurement boundary; the existing general host request-assembly
+observer remains unsupported. Closed-pack may enter a future P3 only after a
+separate approval and authoritative fully loaded provider cost become
+available. Realistic-fallback remains stopped at P2.
 
 ### Exit gate
 
@@ -329,9 +331,11 @@ over-limit study. Every decision remains descriptive-only with claims disabled.
 
 ## P2 — observe-only request-boundary broker
 
-Implementation status: the packaged local evaluator now computes per-stratum
+Implementation status: the packaged local evaluator computes per-stratum
 recall, exact rehydration, freshness, construction cost, and protected-zone
-violations from a closed P2 record. It cannot observe or mutate a live request.
+violations from a closed P2 record. The separately approved
+`research/provider-live-roadmap/p2/v1` runner completed the exact 240-call
+Claude print-JSON shadow on 2026-08-13 without mutating live requests.
 
 P2 may start only after `P1-F`, authoritative host evidence identifies a
 supported interception/attribution boundary, a P2 preregistration is approved,
@@ -350,11 +354,82 @@ complete construction-cost accounting, and zero protected-zone eligibility
 violations. If the host boundary remains unsupported, P2 remains diagnostic and
 the Bash route stays the only active narrow mechanism.
 
+Result: closed-pack passed implementation readiness but received no activation
+authority. Realistic-fallback failed readiness on `protected_omission` and
+remains diagnostic. The run completed 237 provider calls successfully; three
+transport exclusions removed three whole four-arm blocks from paired analysis.
+The recorded USD 0.894320 CLI cost is explicitly non-authoritative. Post-run
+review found that the executed observer omitted helper/cache model-usage fields,
+so provider token metrics are unavailable and no savings claim is permitted.
+
+A corrected Max-session usage attempt repeated the fixed 240-call schedule, but
+only 11 calls completed; 228 were transport exclusions and one timed out. No
+complete four-arm block remained. The successful calls reported 61,547 total
+tokens, but this sparse diagnostic total cannot estimate arm-to-arm savings.
+The attempt is hash-bound in `usage-attempt-result.json`; a fresh complete
+fixed-schedule run is still required before P3 consideration.
+
+One-use follow-up probes identified an observer defect rather than a confirmed
+transport outage: a dated first-party Haiku helper key was rejected because its
+canonical model omits the date suffix. The parser now accepts only that bounded
+date-suffix form, retains the exact primary-model requirement, and passed a live
+two-model usage probe. The invalid attempt remains excluded; it is not repaired
+or reinterpreted after the fact.
+
+The corrected observer subsequently completed a new fixed 240-call Max run:
+234 calls succeeded and 55 complete four-arm blocks were analyzed. On 30
+closed-pack blocks, combined used 7.096850% fewer total tokens than ordinary
+(182,603 versus 196,552) with both arms correct on 30/30. Adaptive-only used
+6.677622% fewer with the same correctness. On 25 complete realistic-fallback
+blocks, combined used 0.637534% more tokens but improved exact correctness from
+0/25 to 10/25; adaptive-only used 7.099103% fewer but stayed 0/25 correct.
+These are descriptive frozen-corpus measurements, not generalized savings or
+activation evidence. P3 remains blocked on authoritative fully loaded provider
+cost and a separate exact P3 approval.
+
+A separate Codex subscription replication completed the same frozen 240-unit
+schedule with Codex CLI `0.146.0` and `gpt-5.6-luna` at low reasoning effort.
+It produced 226 complete receipts and 14 closed-schema exclusions, leaving 50
+complete four-arm blocks and 200 analyzed units. On all 30 closed-pack blocks,
+combined used 5,741 fewer tokens than ordinary (2.755010%) with both correct on
+29/30 units. On 20 analyzable realistic-fallback blocks, combined used 223,363
+fewer tokens (55.605123%) and was correct on 9/20 versus ordinary's 0/20.
+These are descriptive provider-specific results. Cached input and reasoning
+output remain subset counters and were not double-counted. The ChatGPT route
+provides no authoritative dollar receipt or stable subscription-quota
+conversion, so it does not support a cost- or quota-savings claim.
+
 ## P3 — bounded progressive-disclosure canary
 
-Implementation status: the packaged evaluator now verifies exact matched pairs,
+Implementation status: the packaged evaluator verifies exact matched pairs,
 retrievals, failure/correction guardrails, and fully loaded provider-cost fields.
-It evaluates imported measurements only and launches no canary or provider call.
+It still evaluates imported measurements only and launches no canary or
+provider call. A separate one-use `research/provider-live-roadmap/p3-api/v1`
+runner completed the approved direct Anthropic API measurement without granting
+the packaged evaluator or production path any provider authority.
+
+The final 2026-08-17 run completed all 240 fixed-schedule calls with exact
+`claude-sonnet-5` usage receipts and zero cache tokens. On closed-pack, combined
+used 36.590437% fewer total tokens than ordinary with both correct on 30/30. On
+realistic fallback, combined used 5.789384% more total tokens and was correct on
+1/30 versus ordinary's 0/30. Across both strata, combined used 13.317087% fewer
+total tokens, but its published-list-price estimate was 1.105507% higher because
+output usage increased 41.556257%. The standard API key had no Admin Usage &
+Cost access, so the USD 0.580690 calculation is not an authoritative billing
+receipt or fully loaded shifted cost. No P3 savings or activation claim is
+permitted; `p3-api/v1/result.json` binds the minimized private evidence.
+
+The follow-up `p3-api/v2` condition was frozen before its provider calls. It
+adds one bounded public dependency hop to graph-enabled arms and makes each
+realistic task's public invocation explicit. Its 240/240 completed run improved
+realistic combined correctness from 1/30 to 20/30 and reduced realistic total
+tokens by 19.572096% versus ordinary. Across both strata, combined used
+26.723159% fewer total tokens and its list-price estimate was 50.299033% lower.
+Train and calibration were each 10/10 for graph-enabled arms, while evaluation
+remained 0/10 because the legacy hidden expected output is not determined by
+the original public task. That mismatch is retained as a blocker rather than
+repaired after observing the result. The standard key still cannot supply an
+authoritative Usage & Cost receipt, so no savings or activation claim is made.
 
 The existing Bash reference route is the first narrow implementation candidate.
 Promotion requires:
@@ -455,36 +530,34 @@ cost accounting.
 
 ## Immediate ordered work
 
-Provider-free P2-P6 implementation and the explicit local MCP bridge are now
-implemented. The evaluator, its schemas, and the manual MCP tools remain
-non-activating surfaces: P1-F is complete, but every P2-P6 phase-specific
-observer/evidence/authority gate remains unmet, runtime activation and claim
-authority remain false, and exact fallback is unchanged. Delivery may proceed
-only to a GitHub PR or an npm candidate under separately recorded authority;
-npm `next` and `latest` remain untouched.
+Provider-free G1-G6 implementation and the explicit local MCP bridge are merged
+through PR #302. P1-F is complete and the 2026-08-13 narrow P2 shadow is now
+recorded. Closed-pack passed P2 implementation readiness; realistic-fallback
+did not. Runtime activation and claim authority remain false, exact fallback is
+unchanged, P3 is blocked on authoritative fully loaded provider cost and a
+separate phase approval, and P4-P6 are dependency-blocked. npm `next`/`latest`
+remain unauthorized and untouched.
 
-1. Preserve the exact v8 root, retained source ref, immutable candidate, and
-   P1-F report; never reinterpret missing observers or false gates as zero/pass.
-2. Before another progressive-context provider run, freeze a four-arm
-   ordinary/adaptive-only/symbol-only/combined ablation with genuinely
-   independent task structures. Include graph cases where ordinary ranking
-   misses a required neighbor, hidden-oracle adaptive labels, closed-pack and
-   realistic-fallback strata, correction/retrieval accounting, and fully loaded
-   cost intervals.
-3. Freeze a P2 preregistration for only an authoritative supported observer
-   stratum. General host request assembly remains unavailable; do not widen the
-   proven Bash tool-output boundary by inference.
-4. Record a new phase-specific privacy/call/spend authority before any further
-   P2-P6 provider activity. The 2026-08-12 authorization is consumed and grants
-   no runtime, activation, or claim authority.
-5. Execute later P2 through P6 gates sequentially. A failed dependency gate
-   stops later provider phases, keeps their already-shipped implementations
-   evaluation-only, and preserves the exact prior route.
+1. Preserve the P1-F and P2 private evidence identities; never reinterpret
+   unavailable provider token/cost fields or false gates as zero/pass.
+2. Keep realistic-fallback diagnostic until every protected omission is removed
+   or explicitly proven eligible without weakening the protected-zone policy.
+3. Before a closed-pack P3 canary, obtain authoritative fully loaded provider
+   billing evidence and a new P3-specific privacy/call/spend approval.
+4. Keep the completed Codex subscription replication provider-specific and
+   descriptive; do not reinterpret it as dollar, quota, or cross-provider
+   evidence.
+5. Keep P4-P6 evaluation-only while P3 is blocked. A failed dependency gate
+   stops later provider phases and preserves the exact prior route.
+6. Treat candidate, npm `next`, npm `latest`, and cleanup as separate authority
+   tiers; none is implied by the P2 result.
 
-The external authorization packet records the user's bounded authority; the
-packet does not create or expand authority by itself. It must be frozen after
-the source revision and immutable candidate are selected; an older development
-candidate is never reused after source changes.
+The prepared-unapproved packet records prerequisites only; it does not create,
+record, or expand external authority. A separate approval system must bind the
+exact source revision and a newly constructed immutable candidate before any
+authorized external run. The pre-merge development source and every older
+candidate remain historical evidence and must never be reused as the PR #302
+candidate.
 
 ## Authority and claim boundary
 

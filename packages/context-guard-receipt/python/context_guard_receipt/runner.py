@@ -1374,7 +1374,12 @@ def _read_process_table(
         try:
             returncode = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            raise _RunnerAbort(RunnerErrorCode.INTERNAL) from None
+            code = (
+                RunnerErrorCode.TIMEOUT
+                if deadline <= clock()
+                else RunnerErrorCode.INTERNAL
+            )
+            raise _RunnerAbort(code) from None
         if returncode != 0:
             raise _RunnerAbort(RunnerErrorCode.INTERNAL)
         return _parse_process_table(bytes(output))

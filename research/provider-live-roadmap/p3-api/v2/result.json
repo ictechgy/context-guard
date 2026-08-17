@@ -1,0 +1,271 @@
+{
+  "analysis": {
+    "closed_pack": {
+      "arms": {
+        "adaptive_only": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 14870,
+          "list_price_micro_usd": 33540,
+          "output_tokens": 380,
+          "total_tokens": 15250
+        },
+        "combined": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 14870,
+          "list_price_micro_usd": 33540,
+          "output_tokens": 380,
+          "total_tokens": 15250
+        },
+        "ordinary": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 23670,
+          "list_price_micro_usd": 51140,
+          "output_tokens": 380,
+          "total_tokens": 24050
+        },
+        "symbol_only": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 23670,
+          "list_price_micro_usd": 51140,
+          "output_tokens": 380,
+          "total_tokens": 24050
+        }
+      },
+      "combined_minus_ordinary": {
+        "correct_delta": 0,
+        "input_token_delta": -8800,
+        "input_token_delta_percent": "-37.177862",
+        "list_price_delta_micro_usd": -17600,
+        "list_price_delta_percent": "-34.415330",
+        "output_token_delta": 0,
+        "output_token_delta_percent": "0.000000",
+        "total_token_delta": -8800,
+        "total_token_delta_percent": "-36.590437"
+      },
+      "complete_blocks": 30
+    },
+    "overall": {
+      "combined": {
+        "correct": 50,
+        "denominator": 60,
+        "input_tokens": 41310,
+        "list_price_micro_usd": 88920,
+        "output_tokens": 630,
+        "total_tokens": 41940
+      },
+        "combined_minus_ordinary": {
+          "correct_delta": 20,
+          "input_token_delta": -7870,
+          "input_token_delta_percent": "-16.002440",
+          "list_price_delta_micro_usd": -89990,
+          "list_price_delta_percent": "-50.299033",
+          "output_token_delta": -7425,
+          "output_token_delta_percent": "-92.178771",
+          "total_token_delta": -15295,
+          "total_token_delta_percent": "-26.723159"
+      },
+      "ordinary": {
+        "correct": 30,
+        "denominator": 60,
+        "input_tokens": 49180,
+        "list_price_micro_usd": 178910,
+        "output_tokens": 8055,
+        "total_tokens": 57235
+      }
+    },
+    "realistic_fallback": {
+      "arms": {
+        "adaptive_only": {
+          "correct": 0,
+          "denominator": 30,
+          "input_tokens": 16430,
+          "list_price_micro_usd": 104950,
+          "output_tokens": 7209,
+          "total_tokens": 23639
+        },
+        "combined": {
+          "correct": 20,
+          "denominator": 30,
+          "input_tokens": 26440,
+          "list_price_micro_usd": 55380,
+          "output_tokens": 250,
+          "total_tokens": 26690
+        },
+        "ordinary": {
+          "correct": 0,
+          "denominator": 30,
+          "input_tokens": 25510,
+          "list_price_micro_usd": 127770,
+          "output_tokens": 7675,
+          "total_tokens": 33185
+        },
+        "symbol_only": {
+          "correct": 20,
+          "denominator": 30,
+          "input_tokens": 28070,
+          "list_price_micro_usd": 58640,
+          "output_tokens": 250,
+          "total_tokens": 28320
+        }
+      },
+      "combined_minus_ordinary": {
+        "correct_delta": 20,
+        "input_token_delta": 930,
+        "input_token_delta_percent": "3.645629",
+        "list_price_delta_micro_usd": -72390,
+        "list_price_delta_percent": "-56.656492",
+        "output_token_delta": -7425,
+        "output_token_delta_percent": "-96.742671",
+        "total_token_delta": -6495,
+        "total_token_delta_percent": "-19.572096"
+      },
+      "complete_blocks": 30
+    },
+    "realistic_task_correctness": {
+      "calibration_graph": {
+        "adaptive_only": {"correct": 0, "denominator": 10},
+        "combined": {"correct": 10, "denominator": 10},
+        "ordinary": {"correct": 0, "denominator": 10},
+        "symbol_only": {"correct": 10, "denominator": 10}
+      },
+      "evaluation_graph": {
+        "adaptive_only": {"correct": 0, "denominator": 10},
+        "combined": {"correct": 0, "denominator": 10},
+        "ordinary": {"correct": 0, "denominator": 10},
+        "symbol_only": {"correct": 0, "denominator": 10}
+      },
+      "train_graph": {
+        "adaptive_only": {"correct": 0, "denominator": 10},
+        "combined": {"correct": 10, "denominator": 10},
+        "ordinary": {"correct": 0, "denominator": 10},
+        "symbol_only": {"correct": 10, "denominator": 10}
+      }
+    }
+  },
+  "call_accounting": {
+    "analyzed_blocks": 60,
+    "analyzed_units": 240,
+    "completed_calls": 240,
+    "excluded_blocks": 0,
+    "excluded_calls": 0,
+    "scheduled_calls": 240
+  },
+  "candidate_metrics": {
+    "baseline_complete_tasks": 2,
+    "candidate_complete_tasks": 3,
+    "denominator": 3,
+    "missing_dependency_edges": 0
+  },
+  "claims": {
+    "activation": false,
+    "authoritative_provider_cost": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "p2_gate": {
+    "closed_pack": {
+      "activation_authority": false,
+      "blockers": [
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": true
+    },
+    "realistic_fallback": {
+      "activation_authority": false,
+      "blockers": [
+        "protected_omission",
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": false
+    }
+  },
+  "p3_gate": {
+    "blockers": [
+      "authoritative_provider_cost_unavailable",
+      "fully_loaded_shifted_cost_unavailable",
+      "descriptive_fixed_corpus_only",
+      "evaluation_public_oracle_mismatch",
+      "realistic_fallback_protected_omission"
+    ],
+    "eligible": false
+  },
+  "pricing": {
+    "authoritative_provider_cost": {
+      "availability": "unavailable",
+      "reason": "daily_aggregate_not_attributable_to_run"
+    },
+    "effective_end": "2026-08-31",
+    "effective_start": "2026-07-01",
+    "list_price_estimate": {
+      "amount_micro_usd": 516100,
+      "currency": "USD",
+      "source": "anthropic_sonnet_5_introductory_pricing"
+    },
+    "provider_reported_daily_billing": {
+      "authority": "provider_reported_daily_aggregate",
+      "daily_total_display": {
+        "amount": "1.03",
+        "currency": "USD"
+      },
+      "known_v2_runs_on_date": 2,
+      "model": "Claude Sonnet 5",
+      "per_run_attribution": false,
+      "raw_export_included": false,
+      "rounded_csv_cost_rows": [
+        {
+          "cost_usd": "0.69",
+          "list_price_usd": "0.69",
+          "token_type": "input_no_cache"
+        },
+        {
+          "cost_usd": "0.33",
+          "list_price_usd": "0.33",
+          "token_type": "output"
+        }
+      ],
+      "source": "anthropic_console_csv_manual_observation",
+      "usage_date_utc": "2026-08-17"
+    }
+  },
+  "private_evidence": {
+    "bytes": 757306,
+    "committed": false,
+    "retained_until": 1787545135,
+    "sha256": "ec5a8a6387cc9ee2eecfdf83a2c0d74eeecc5cf94bc41cf9e896b27154bd54e5"
+  },
+  "provider": {
+    "auth_method": "standard_api_key_in_memory",
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "model_id": "claude-sonnet-5",
+    "usage_authority": "anthropic_messages_api_response"
+  },
+  "schema_version": "contextguard.p3-anthropic-api-live-result/v2",
+  "source": {
+    "base_commit": "59456cc4a8e2a49f8b0ddb4aaf45c9dd249495fc",
+    "candidate_identity_sha256": "22693b089bd3ccd707962b80206c7f984b2f1d8f35f4205fbff2f5f4404b5569",
+    "contract_sha256": "9023b51f5934db7bc3a6c099ffba8b37fe1bc0d353e60ef7fb493a7dcf7496df",
+    "request_plan_sha256": "079e913ac4cbf9e16514a9c99795f2324e7c8c2695edaef26a1588610df5dc3e",
+    "runner_sha256": "03ee382d6bd2d7bcd0c8873e00a824cc1ee8f24123cb195cdf6beb23cb40ea3d",
+    "v1_result_sha256": "39f861a13127180dd8a20c001bf18c681a7cde9c380930e6ebe40272dc9bbe57"
+  },
+  "status": "completed_descriptive_standard_api_measurement_v2",
+  "token_usage": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "completed_calls": 240,
+    "input_tokens": 173530,
+    "output_tokens": 16904,
+    "provider_total_input_tokens": 173530,
+    "provider_total_tokens": 190434
+  }
+}

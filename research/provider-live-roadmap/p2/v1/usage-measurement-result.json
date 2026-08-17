@@ -1,0 +1,203 @@
+{
+  "call_accounting": {
+    "analyzed_blocks": 55,
+    "analyzed_units": 220,
+    "excluded_blocks": 5,
+    "excluded_units": 20,
+    "provider_successes": 234,
+    "scheduled_calls": 240,
+    "transport_errors": 6
+  },
+  "claims": {
+    "activation": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "models_observed": [
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-5"
+  ],
+  "non_authoritative_cli_cost": {
+    "amount_micro_usd": 874767,
+    "currency": "USD"
+  },
+  "p2_gate": {
+    "closed_pack": {
+      "activation_authority": false,
+      "blockers": [
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": true
+    },
+    "realistic_fallback": {
+      "activation_authority": false,
+      "blockers": [
+        "protected_omission",
+        "activation_not_recorded",
+        "external_activation_authority_required"
+      ],
+      "implementation_readiness": false
+    }
+  },
+  "p3_gate": {
+    "blockers": [
+      "authoritative_provider_cost_unavailable",
+      "separate_p3_external_approval_absent"
+    ],
+    "eligible": false
+  },
+  "private_evidence": {
+    "bytes": 698271,
+    "committed": false,
+    "retained_until": 1787203114,
+    "sha256": "ba8915d57c418e040c2bb3d4544c065c0e4d591d24870aa666a6a56a1305a850"
+  },
+  "schema_version": "contextguard.p2-claude-max-usage-measurement/v1",
+  "source": {
+    "attempt_kind": "post_outcome_observer_repair_descriptive_only",
+    "candidate_commit": "540c6e02222f25346ca9c797197882cebbe5331d",
+    "contract_sha256": "8c38cc3d61fd79003b56fc3357334fd22b0aea72739f3b66e41ad07b6d16a9c0",
+    "controller_commit": "64e1b5595aa3377ec551f74150792784b3d5e041",
+    "controller_runner_sha256": "ec201cb9f8cb931131875218aa02c606899e75aa15ebc9eac6b07398eb597e28"
+  },
+  "status": "completed_descriptive_usage_measurement",
+  "usage_measurement": {
+    "closed_pack": {
+      "arms": {
+        "adaptive_only": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 182560,
+          "output_tokens": 867,
+          "total_tokens": 183427
+        },
+        "combined": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 181758,
+          "output_tokens": 845,
+          "total_tokens": 182603
+        },
+        "ordinary": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 195722,
+          "output_tokens": 830,
+          "total_tokens": 196552
+        },
+        "symbol_only": {
+          "correct": 30,
+          "denominator": 30,
+          "input_tokens": 196907,
+          "output_tokens": 842,
+          "total_tokens": 197749
+        }
+      },
+      "complete_blocks": 30,
+      "contrasts": {
+        "adaptive_only_minus_ordinary": {
+          "delta_tokens": -13125,
+          "savings_basis_points": 668,
+          "savings_percent_decimal": "6.677622"
+        },
+        "combined_minus_ordinary": {
+          "delta_tokens": -13949,
+          "savings_basis_points": 710,
+          "savings_percent_decimal": "7.096850"
+        },
+        "symbol_only_minus_ordinary": {
+          "delta_tokens": 1197,
+          "savings_basis_points": -61,
+          "savings_percent_decimal": "-0.608999"
+        }
+      },
+      "paired_sensitivity": {
+        "descriptive_mean_combined_minus_ordinary": {
+          "denominator": 30,
+          "numerator": -13949
+        },
+        "inference_claim_allowed": false,
+        "reason": "exact three-lineage signed-cluster sensitivity crosses zero",
+        "signed_cluster_minimum": {
+          "denominator": 30,
+          "numerator": -13949
+        },
+        "signed_cluster_maximum": {
+          "denominator": 30,
+          "numerator": 13949
+        }
+      }
+    },
+    "interpretation": "descriptive fixed synthetic corpus measurement; no activation, external-validity, production, or generalized savings claim",
+    "realistic_fallback": {
+      "arms": {
+        "adaptive_only": {
+          "correct": 0,
+          "denominator": 25,
+          "input_tokens": 153855,
+          "output_tokens": 2356,
+          "total_tokens": 156211
+        },
+        "combined": {
+          "correct": 10,
+          "denominator": 25,
+          "input_tokens": 167830,
+          "output_tokens": 1390,
+          "total_tokens": 169220
+        },
+        "ordinary": {
+          "correct": 0,
+          "denominator": 25,
+          "input_tokens": 166198,
+          "output_tokens": 1950,
+          "total_tokens": 168148
+        },
+        "symbol_only": {
+          "correct": 10,
+          "denominator": 25,
+          "input_tokens": 178520,
+          "output_tokens": 1233,
+          "total_tokens": 179753
+        }
+      },
+      "complete_blocks": 25,
+      "contrasts": {
+        "adaptive_only_minus_ordinary": {
+          "delta_tokens": -11937,
+          "savings_basis_points": 710,
+          "savings_percent_decimal": "7.099103"
+        },
+        "combined_minus_ordinary": {
+          "delta_tokens": 1072,
+          "savings_basis_points": -64,
+          "savings_percent_decimal": "-0.637534"
+        },
+        "symbol_only_minus_ordinary": {
+          "delta_tokens": 11605,
+          "savings_basis_points": -690,
+          "savings_percent_decimal": "-6.901658"
+        }
+      },
+      "paired_sensitivity": {
+        "descriptive_mean_combined_minus_ordinary": {
+          "denominator": 25,
+          "numerator": 1072
+        },
+        "inference_claim_allowed": false,
+        "reason": "exact three-lineage signed-cluster sensitivity crosses zero",
+        "signed_cluster_minimum": {
+          "denominator": 10,
+          "numerator": -1083
+        },
+        "signed_cluster_maximum": {
+          "denominator": 10,
+          "numerator": 1083
+        }
+      }
+    }
+  }
+}

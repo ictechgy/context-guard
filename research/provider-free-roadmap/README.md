@@ -1,5 +1,28 @@
 # Provider-free roadmap boundary
 
+## Current merged status
+
+PR #302 merged normally as commit
+`1211a58c92e30b9a70b1b47cf86909fcf39a91f7`, the exact merged implementation
+baseline. The repository-side G1-G6 provider-free mechanisms are implemented.
+Their provider-free profiles performed no P2-P6 provider run, network or
+credential access, runtime activation, npm candidate construction for this
+merge, npm publication, dist-tag mutation, or token/cost savings claim. Exact
+unchanged fallback remains required, and every external approval and claim
+surface stays fail-closed.
+
+A separate one-use live boundary under `../provider-live-roadmap/p2/v1`
+completed the narrow Claude print-JSON P2 shadow on 2026-08-13. That event does
+not alter these provider-free artifacts or locks: closed-pack passed
+implementation readiness without activation, realistic-fallback remained
+diagnostic, provider token metrics were marked unavailable after model-usage
+review, and P3-P6 remain blocked.
+
+`g6/v1/STATUS.md` is the immutable historical status of the G6
+`prepared_unapproved` artifact and remains covered by `g6/freeze-lock.json`.
+It is not rewritten to describe the later PR #302 merge and grants no current
+authority.
+
 This directory records a provider-free boundary. The evidence manifest is
 historical: it describes only the repository-side P1-v8 evidence stored in the
 immutable Git commit `96cfd58f82c02166c2749389a22dd1249712c92d`. The verifier

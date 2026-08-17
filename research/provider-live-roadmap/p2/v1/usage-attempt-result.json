@@ -1,0 +1,127 @@
+{
+  "call_accounting": {
+    "analyzed_blocks": 0,
+    "analyzed_units": 0,
+    "excluded_blocks": 60,
+    "excluded_units": 240,
+    "provider_successes": 11,
+    "scheduled_calls": 240,
+    "timeouts": 1,
+    "transport_errors": 228
+  },
+  "claims": {
+    "activation": false,
+    "arm_token_savings": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false
+  },
+  "diagnosis": {
+    "corrected_parser_runner_sha256": "ec201cb9f8cb931131875218aa02c606899e75aa15ebc9eac6b07398eb597e28",
+    "recorded_transport_errors_are_confirmed_transport_failures": false,
+    "root_cause": "a dated first-party helper-model key was rejected when its canonical model omitted the date suffix",
+    "status": "confirmed"
+  },
+  "models_observed_on_success": [
+    "claude-sonnet-5"
+  ],
+  "non_authoritative_cli_cost": {
+    "amount_micro_usd": 22222,
+    "currency": "USD"
+  },
+  "p3_gate": {
+    "blockers": [
+      "no_complete_four_arm_block",
+      "authoritative_provider_cost_unavailable",
+      "separate_p3_external_approval_absent"
+    ],
+    "eligible": false
+  },
+  "private_evidence": {
+    "bytes": 692839,
+    "committed": false,
+    "retained_until": 1787201634,
+    "sha256": "6d59972c97ca1c3e3a11f8fd99ae1f2f76780033c8e259364fa5593c8eac72d8"
+  },
+  "schema_version": "contextguard.p2-claude-max-usage-attempt/v1",
+  "source": {
+    "attempt_kind": "post_outcome_observer_repair_descriptive_only",
+    "candidate_commit": "540c6e02222f25346ca9c797197882cebbe5331d",
+    "contract_sha256": "8c38cc3d61fd79003b56fc3357334fd22b0aea72739f3b66e41ad07b6d16a9c0",
+    "controller_commit": "0065c41ea70848e842d25d3d6dfb53067e401542",
+    "controller_runner_sha256": "9a8d78179ab87bc36320403c8944a076c81f9eb802262362104d4bbffddfa4e8"
+  },
+  "status": "completed_unusable_descriptive_usage_attempt",
+  "usage_measurement": {
+    "by_stratum_and_arm": {
+      "closed_pack": {
+        "adaptive_only": {
+          "completed": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "scheduled": 30,
+          "total_tokens": 0
+        },
+        "combined": {
+          "completed": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "scheduled": 30,
+          "total_tokens": 0
+        },
+        "ordinary": {
+          "completed": 4,
+          "input_tokens": 22160,
+          "output_tokens": 58,
+          "scheduled": 30,
+          "total_tokens": 22218
+        },
+        "symbol_only": {
+          "completed": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "scheduled": 30,
+          "total_tokens": 0
+        }
+      },
+      "realistic_fallback": {
+        "adaptive_only": {
+          "completed": 1,
+          "input_tokens": 5226,
+          "output_tokens": 15,
+          "scheduled": 30,
+          "total_tokens": 5241
+        },
+        "combined": {
+          "completed": 2,
+          "input_tokens": 11296,
+          "output_tokens": 16,
+          "scheduled": 30,
+          "total_tokens": 11312
+        },
+        "ordinary": {
+          "completed": 3,
+          "input_tokens": 16655,
+          "output_tokens": 155,
+          "scheduled": 30,
+          "total_tokens": 16810
+        },
+        "symbol_only": {
+          "completed": 1,
+          "input_tokens": 5958,
+          "output_tokens": 8,
+          "scheduled": 30,
+          "total_tokens": 5966
+        }
+      }
+    },
+    "comparison_status": "unavailable",
+    "reason": "no complete four-arm block remained after transport exclusions",
+    "successful_call_tokens": {
+      "input": 61295,
+      "output": 252,
+      "total": 61547
+    }
+  }
+}

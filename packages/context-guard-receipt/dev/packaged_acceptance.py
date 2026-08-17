@@ -929,9 +929,12 @@ def distribution() -> None:
             or mcp_tools
             != [
                 "receipt_assemble",
+                "receipt_context",
+                "receipt_diagnose",
                 "receipt_expand",
                 "receipt_inspect",
                 "receipt_tool_select",
+                "receipt_twin",
             ]
             or tuple(root.rglob("twin-v1")) != twin_directories_before_mcp
             or sentinel.exists()

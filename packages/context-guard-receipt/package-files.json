@@ -13,7 +13,7 @@
     {
       "mode": "0644",
       "path": "README.md",
-      "sha256": "a6ac083940c6b04be08169927f570cab1eef0e9e10ca4c51422b2054930ba0a3"
+      "sha256": "cd8c45e3ed5524b08753502cf3c189aa5a56d3822cc3256584bc757a565b57f2"
     },
     {
       "mode": "0755",
@@ -28,7 +28,7 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "0695f900f1451953cb4ad1aeff2a1322046e9462b1c5b5a0b58657970bcaf857"
+      "sha256": "a415c117abc2cc05408e1d4efa61608199a3ef7953688b2caadcf074d06b87e2"
     },
     {
       "mode": "0644",
@@ -102,6 +102,11 @@
     },
     {
       "mode": "0644",
+      "path": "python/context_guard_receipt/external_approval.py",
+      "sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0"
+    },
+    {
+      "mode": "0644",
       "path": "python/context_guard_receipt/identity.py",
       "sha256": "31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c"
     },
@@ -143,7 +148,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/runner.py",
-      "sha256": "2193f7ae1032990b2ff5d954bd97ea6de67d58a9eb2cf395e939b25593a79cf8"
+      "sha256": "05659031a491b89d93f7bd4d5d69d122cd51fa511100021c727e6939a2b822c1"
     },
     {
       "mode": "0644",
@@ -234,6 +239,11 @@
       "mode": "0644",
       "path": "schemas/expansion-refusal.schema.json",
       "sha256": "c5196da89d9b96349deb4c2c0ad2970d6f27d7760f9236b6d07d702443ee9da0"
+    },
+    {
+      "mode": "0644",
+      "path": "schemas/external-approval.schema.json",
+      "sha256": "c535d464311d9f7dd5b326face7596e6b930da4fb3e0350a5d3e0942e735eb69"
     },
     {
       "mode": "0644",
