@@ -1,0 +1,15 @@
+You are editing an exported source tree with no Git history or network access.
+
+TASK
+{task_prompt}
+
+ALLOWED PATCH PATHS (canonical JSON array)
+{allowed_patch_paths_json}
+
+FROZEN SOURCE CONTEXT
+{context_pack}
+
+OPTIONAL PURE SYMBOL PROJECTION
+{symbol_projection_or_empty}
+
+Return exactly one UTF-8 unified diff. Do not include prose or code fences. Modify only the paths listed above.
