@@ -1,0 +1,2388 @@
+{
+  "arms_per_block": 8,
+  "block_count": 36,
+  "blocks": [
+    {
+      "arm_order": [
+        "a010",
+        "a110",
+        "a101",
+        "a001",
+        "a111",
+        "a000",
+        "a100",
+        "a011"
+      ],
+      "block_id": "swift_argument_parser_boundary_hardening:r1",
+      "block_order_key": "006e1f7a874dd7d7557c9ceb97d319d87c585c18e926cdfcd1ed5c647fe4b748",
+      "repetition": 1,
+      "task_id": "swift_argument_parser_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a110"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a101"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a001"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a111"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a000"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a100"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r1:a011"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a000",
+        "a100",
+        "a101",
+        "a001",
+        "a110",
+        "a011",
+        "a111",
+        "a010"
+      ],
+      "block_id": "swift_argument_parser_maintenance:r2",
+      "block_order_key": "05c7046268cf1a279f4b2abd705b23a1149913d9d444d9cee6af4f1a24c68e3b",
+      "repetition": 2,
+      "task_id": "swift_argument_parser_maintenance",
+      "units": [
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a000"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a100"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a101"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a001"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a111"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r2:a010"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a011",
+        "a001",
+        "a101",
+        "a010",
+        "a111",
+        "a000",
+        "a110",
+        "a100"
+      ],
+      "block_id": "typescript_maintenance:r0",
+      "block_order_key": "0c694f7a68e2c98ed3af5b35156df4ecf7060ba8a5de1e651049685ca9731587",
+      "repetition": 0,
+      "task_id": "typescript_maintenance",
+      "units": [
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a011"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a001"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a101"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a010"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a111"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a000"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a110"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r0:a100"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a100",
+        "a001",
+        "a010",
+        "a101",
+        "a110",
+        "a000",
+        "a011",
+        "a111"
+      ],
+      "block_id": "requests_maintenance:r2",
+      "block_order_key": "1a206886db1aea44f43a63458a93aa87bc7e793bc6c96cf2df70959e3ebce8fa",
+      "repetition": 2,
+      "task_id": "requests_maintenance",
+      "units": [
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a001"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a010"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r2:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a000",
+        "a010",
+        "a011",
+        "a001",
+        "a100",
+        "a111",
+        "a101",
+        "a110"
+      ],
+      "block_id": "requests_bug_fix:r0",
+      "block_order_key": "235d04b52ed464988fe1fe4b4610eb989c762915cb5f4081b1808a0014fdb2fb",
+      "repetition": 0,
+      "task_id": "requests_bug_fix",
+      "units": [
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a000"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a010"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a011"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a001"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r0:a110"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a010",
+        "a110",
+        "a011",
+        "a111",
+        "a101",
+        "a000",
+        "a001",
+        "a100"
+      ],
+      "block_id": "swift_argument_parser_feature:r1",
+      "block_order_key": "27db4aac534dda258c3232deff420705703e89d39e3dae94d7348170e46bbf6b",
+      "repetition": 1,
+      "task_id": "swift_argument_parser_feature",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a101"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a000"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a001"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r1:a100"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a011",
+        "a101",
+        "a100",
+        "a001",
+        "a110",
+        "a000",
+        "a010",
+        "a111"
+      ],
+      "block_id": "typescript_boundary_hardening:r0",
+      "block_order_key": "29f6555e5ad79f1e6ed8f2c89077fc1ff19e25b4d2b4105d3e290b09c347af20",
+      "repetition": 0,
+      "task_id": "typescript_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a101"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a001"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a000"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a010"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r0:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a101",
+        "a111",
+        "a001",
+        "a000",
+        "a010",
+        "a110",
+        "a011",
+        "a100"
+      ],
+      "block_id": "requests_feature:r0",
+      "block_order_key": "2ba081af1a7b941dc07b49e56bec10132581a3a44507411a74b1f1373a710dd2",
+      "repetition": 0,
+      "task_id": "requests_feature",
+      "units": [
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a101"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a111"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a001"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a000"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a011"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r0:a100"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a110",
+        "a011",
+        "a111",
+        "a000",
+        "a101",
+        "a001",
+        "a100",
+        "a010"
+      ],
+      "block_id": "swift_argument_parser_bug_fix:r0",
+      "block_order_key": "3045bb71f120a9e182eb4902d58a789d8693b84c3b36bb0ec18c2f7e5b66b0a5",
+      "repetition": 0,
+      "task_id": "swift_argument_parser_bug_fix",
+      "units": [
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a111"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a000"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a101"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a001"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a100"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r0:a010"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a110",
+        "a001",
+        "a011",
+        "a010",
+        "a100",
+        "a000",
+        "a111",
+        "a101"
+      ],
+      "block_id": "requests_boundary_hardening:r0",
+      "block_order_key": "3388e7ec13859acf7951cc8b212a22edaf8ac29a4e495c3cd97bb76ee90c4da6",
+      "repetition": 0,
+      "task_id": "requests_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a110"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a001"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a011"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a100"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a000"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r0:a101"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a010",
+        "a001",
+        "a011",
+        "a111",
+        "a100",
+        "a101",
+        "a000",
+        "a110"
+      ],
+      "block_id": "swift_argument_parser_bug_fix:r1",
+      "block_order_key": "346567ce5a3e010421f2a173d51bc70bf5200df397a4f200b6e2739c9d028f78",
+      "repetition": 1,
+      "task_id": "swift_argument_parser_bug_fix",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a010"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a001"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a111"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a100"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a101"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a000"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r1:a110"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a010",
+        "a110",
+        "a111",
+        "a101",
+        "a001",
+        "a100",
+        "a011",
+        "a000"
+      ],
+      "block_id": "swift_argument_parser_boundary_hardening:r0",
+      "block_order_key": "4553d82794bd16372d0bed79bcac10c54c1db48a185e7e4c09844c50664a6249",
+      "repetition": 0,
+      "task_id": "swift_argument_parser_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a110"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a101"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a001"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a100"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a011"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r0:a000"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a001",
+        "a010",
+        "a110",
+        "a000",
+        "a111",
+        "a011",
+        "a101",
+        "a100"
+      ],
+      "block_id": "swift_argument_parser_boundary_hardening:r2",
+      "block_order_key": "4c7f18403fe121c91b880935ce2b154e9b80c42c6a69d69f48e52ff084f47f91",
+      "repetition": 2,
+      "task_id": "swift_argument_parser_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a001"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a000"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a111"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a101"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_boundary_hardening",
+          "unit_id": "swift_argument_parser_boundary_hardening:r2:a100"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a001",
+        "a010",
+        "a110",
+        "a000",
+        "a111",
+        "a101",
+        "a011",
+        "a100"
+      ],
+      "block_id": "swift_argument_parser_bug_fix:r2",
+      "block_order_key": "50962cc954b5219354fb08acf8733774d8edeaccefda4a3254aab21108f52832",
+      "repetition": 2,
+      "task_id": "swift_argument_parser_bug_fix",
+      "units": [
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a001"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a000"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a101"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a011"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_bug_fix",
+          "unit_id": "swift_argument_parser_bug_fix:r2:a100"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a111",
+        "a001",
+        "a000",
+        "a100",
+        "a101",
+        "a010",
+        "a011",
+        "a110"
+      ],
+      "block_id": "typescript_feature:r2",
+      "block_order_key": "522266113b13499703d9495c2267082a7f4890bcf16182a7c9a7da4ceee9a8e2",
+      "repetition": 2,
+      "task_id": "typescript_feature",
+      "units": [
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a111"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a001"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a000"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a100"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a101"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a010"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a011"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r2:a110"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a000",
+        "a110",
+        "a101",
+        "a100",
+        "a010",
+        "a011",
+        "a111",
+        "a001"
+      ],
+      "block_id": "requests_maintenance:r0",
+      "block_order_key": "5c29b548323e07866dcc0a050973afb143b0af696b5c31a74c16c1eb67904bca",
+      "repetition": 0,
+      "task_id": "requests_maintenance",
+      "units": [
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a000"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a110"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a101"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a100"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a010"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a111"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r0:a001"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a101",
+        "a010",
+        "a001",
+        "a111",
+        "a100",
+        "a011",
+        "a000",
+        "a110"
+      ],
+      "block_id": "typescript_maintenance:r1",
+      "block_order_key": "741fa031f0e6b9084bed0bde1bbdde8515901015717bef24172c8145914935ef",
+      "repetition": 1,
+      "task_id": "typescript_maintenance",
+      "units": [
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a101"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a010"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a001"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a111"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a100"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a011"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a000"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r1:a110"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a111",
+        "a001",
+        "a010",
+        "a000",
+        "a011",
+        "a110",
+        "a100",
+        "a101"
+      ],
+      "block_id": "typescript_feature:r0",
+      "block_order_key": "8f10b909e2cab3d804498d00a4a6e72c5fccdd0dfa472496395ad09678b968fc",
+      "repetition": 0,
+      "task_id": "typescript_feature",
+      "units": [
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a111"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a001"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a010"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a011"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a110"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a100"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r0:a101"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a011",
+        "a001",
+        "a111",
+        "a101",
+        "a010",
+        "a000",
+        "a110",
+        "a100"
+      ],
+      "block_id": "swift_argument_parser_feature:r2",
+      "block_order_key": "b0b25e4ad02d7933ce2a7164997760c3a99a0d73701c6d14fc1949eb94467a70",
+      "repetition": 2,
+      "task_id": "swift_argument_parser_feature",
+      "units": [
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a011"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a001"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a101"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a010"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a000"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a110"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r2:a100"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a000",
+        "a101",
+        "a011",
+        "a010",
+        "a100",
+        "a001",
+        "a111",
+        "a110"
+      ],
+      "block_id": "requests_boundary_hardening:r1",
+      "block_order_key": "b51ff42a4504ad94f7208b5800cd1dc804b0c229869a76d3ffbd8f95b32729d3",
+      "repetition": 1,
+      "task_id": "requests_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a000"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a101"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a011"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a001"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a111"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r1:a110"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a110",
+        "a000",
+        "a011",
+        "a010",
+        "a001",
+        "a101",
+        "a100",
+        "a111"
+      ],
+      "block_id": "requests_bug_fix:r2",
+      "block_order_key": "b6050471455637e978509f3658e5ab1c22053d97bb38a79acf1b557ad7335d19",
+      "repetition": 2,
+      "task_id": "requests_bug_fix",
+      "units": [
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a011"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a010"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a001"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a101"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r2:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a100",
+        "a111",
+        "a010",
+        "a110",
+        "a011",
+        "a001",
+        "a000",
+        "a101"
+      ],
+      "block_id": "typescript_boundary_hardening:r1",
+      "block_order_key": "ba7cfb1c21917af24e7f1049001717c5fef0f81a394ba3f13de0c86608e43a5d",
+      "repetition": 1,
+      "task_id": "typescript_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a111"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a011"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a001"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a000"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r1:a101"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a011",
+        "a111",
+        "a101",
+        "a110",
+        "a010",
+        "a100",
+        "a001",
+        "a000"
+      ],
+      "block_id": "requests_boundary_hardening:r2",
+      "block_order_key": "bc36fed12fe62c9a6d64665db7f94c34f1a633faf7888847300160fcdff25162",
+      "repetition": 2,
+      "task_id": "requests_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a111"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a110"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a001"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "requests_boundary_hardening",
+          "unit_id": "requests_boundary_hardening:r2:a000"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a100",
+        "a000",
+        "a001",
+        "a101",
+        "a011",
+        "a110",
+        "a010",
+        "a111"
+      ],
+      "block_id": "typescript_bug_fix:r0",
+      "block_order_key": "c26b8e3a6b3773a28f94aad3ffdeadaf64c69564136764b12920ae78b9a21b24",
+      "repetition": 0,
+      "task_id": "typescript_bug_fix",
+      "units": [
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a100"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a000"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a001"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a101"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a011"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a110"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a010"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r0:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a101",
+        "a000",
+        "a010",
+        "a100",
+        "a011",
+        "a111",
+        "a110",
+        "a001"
+      ],
+      "block_id": "requests_feature:r2",
+      "block_order_key": "c379056914b85ccc4fd4c4f0d6041e4d8bf8fd0f705ef6938df320ac93b9a0a5",
+      "repetition": 2,
+      "task_id": "requests_feature",
+      "units": [
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a101"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a000"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a100"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a111"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a110"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r2:a001"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a100",
+        "a001",
+        "a111",
+        "a010",
+        "a101",
+        "a110",
+        "a000",
+        "a011"
+      ],
+      "block_id": "typescript_bug_fix:r1",
+      "block_order_key": "c63651225d865e185fe1d08051dd983ba1584a4fa8c4a8923f339549b98b3d4c",
+      "repetition": 1,
+      "task_id": "typescript_bug_fix",
+      "units": [
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a001"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a111"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a010"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r1:a011"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a001",
+        "a101",
+        "a000",
+        "a011",
+        "a010",
+        "a100",
+        "a111",
+        "a110"
+      ],
+      "block_id": "requests_feature:r1",
+      "block_order_key": "cab72ee901739645ea08a5127f1b4d0d9e3feffa547cd1f6ed509ada8b88c601",
+      "repetition": 1,
+      "task_id": "requests_feature",
+      "units": [
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a001"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a101"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a011"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a111"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "requests_feature",
+          "unit_id": "requests_feature:r1:a110"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a010",
+        "a011",
+        "a101",
+        "a100",
+        "a000",
+        "a001",
+        "a110",
+        "a111"
+      ],
+      "block_id": "requests_bug_fix:r1",
+      "block_order_key": "cb347418fcc1c253bb1b3d84ebb9c04a0c43065942478d6c49984985bc6093ec",
+      "repetition": 1,
+      "task_id": "requests_bug_fix",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a010"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a101"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a100"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a000"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a001"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a110"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "requests_bug_fix",
+          "unit_id": "requests_bug_fix:r1:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a010",
+        "a100",
+        "a001",
+        "a110",
+        "a000",
+        "a011",
+        "a101",
+        "a111"
+      ],
+      "block_id": "swift_argument_parser_maintenance:r0",
+      "block_order_key": "d9575ad128c76804cf8d9f35ca19c78e99168344cc2752a72be0a85e000ca81b",
+      "repetition": 0,
+      "task_id": "swift_argument_parser_maintenance",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a001"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a101"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r0:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a101",
+        "a110",
+        "a000",
+        "a011",
+        "a100",
+        "a001",
+        "a010",
+        "a111"
+      ],
+      "block_id": "swift_argument_parser_maintenance:r1",
+      "block_order_key": "e2b4dc73492d7993c1d554baa1079559849fc21dd5574e5f2b5b54f0eb0cad7e",
+      "repetition": 1,
+      "task_id": "swift_argument_parser_maintenance",
+      "units": [
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a110"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a011"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a001"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a010"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "swift_argument_parser_maintenance",
+          "unit_id": "swift_argument_parser_maintenance:r1:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a000",
+        "a010",
+        "a110",
+        "a100",
+        "a011",
+        "a001",
+        "a101",
+        "a111"
+      ],
+      "block_id": "typescript_boundary_hardening:r2",
+      "block_order_key": "eaae8cb1a0402c5e5fef4df0512965e07deb1139201208de848e883f16f15e21",
+      "repetition": 2,
+      "task_id": "typescript_boundary_hardening",
+      "units": [
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a000"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a010"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a110"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a100"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a011"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a001"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a101"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "typescript_boundary_hardening",
+          "unit_id": "typescript_boundary_hardening:r2:a111"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a000",
+        "a100",
+        "a001",
+        "a101",
+        "a110",
+        "a011",
+        "a111",
+        "a010"
+      ],
+      "block_id": "typescript_bug_fix:r2",
+      "block_order_key": "ed2ca1e1ca239d8c2788742836b0463bfc632419be2cd6759aa751ac01b2d8b0",
+      "repetition": 2,
+      "task_id": "typescript_bug_fix",
+      "units": [
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a000"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a001"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a011"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a111"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "typescript_bug_fix",
+          "unit_id": "typescript_bug_fix:r2:a010"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a111",
+        "a010",
+        "a000",
+        "a011",
+        "a101",
+        "a110",
+        "a100",
+        "a001"
+      ],
+      "block_id": "requests_maintenance:r1",
+      "block_order_key": "ed5d82b4d74a6fc4305581a8891f431db3b87162e5d918d60c3499332fed22df",
+      "repetition": 1,
+      "task_id": "requests_maintenance",
+      "units": [
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a111"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a010"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a101"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a110"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a100"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "requests_maintenance",
+          "unit_id": "requests_maintenance:r1:a001"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a001",
+        "a100",
+        "a111",
+        "a000",
+        "a011",
+        "a110",
+        "a101",
+        "a010"
+      ],
+      "block_id": "swift_argument_parser_feature:r0",
+      "block_order_key": "ef0961d6b2449b6d6d8b485f1fe3ca39856768198fedea03506d26ee2cc29b94",
+      "repetition": 0,
+      "task_id": "swift_argument_parser_feature",
+      "units": [
+        {
+          "arm_id": "a001",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a001"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a111"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a011"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a110"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a101"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 0,
+          "task_id": "swift_argument_parser_feature",
+          "unit_id": "swift_argument_parser_feature:r0:a010"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a110",
+        "a001",
+        "a010",
+        "a100",
+        "a111",
+        "a000",
+        "a011",
+        "a101"
+      ],
+      "block_id": "typescript_maintenance:r2",
+      "block_order_key": "f4d5790a75cea51f8a222a29d121a1fa86225dc9125b46377fe2d006990eaafc",
+      "repetition": 2,
+      "task_id": "typescript_maintenance",
+      "units": [
+        {
+          "arm_id": "a110",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a110"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a001"
+        },
+        {
+          "arm_id": "a010",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a010"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a111"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a000"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 2,
+          "task_id": "typescript_maintenance",
+          "unit_id": "typescript_maintenance:r2:a101"
+        }
+      ]
+    },
+    {
+      "arm_order": [
+        "a010",
+        "a000",
+        "a001",
+        "a110",
+        "a011",
+        "a101",
+        "a100",
+        "a111"
+      ],
+      "block_id": "typescript_feature:r1",
+      "block_order_key": "ff54783fb1d620e5519fa1de58deadeff9a6b4227a6dd4c54680c1e5122b343c",
+      "repetition": 1,
+      "task_id": "typescript_feature",
+      "units": [
+        {
+          "arm_id": "a010",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a010"
+        },
+        {
+          "arm_id": "a000",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a000"
+        },
+        {
+          "arm_id": "a001",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a001"
+        },
+        {
+          "arm_id": "a110",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a110"
+        },
+        {
+          "arm_id": "a011",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a011"
+        },
+        {
+          "arm_id": "a101",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a101"
+        },
+        {
+          "arm_id": "a100",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a100"
+        },
+        {
+          "arm_id": "a111",
+          "repetition": 1,
+          "task_id": "typescript_feature",
+          "unit_id": "typescript_feature:r1:a111"
+        }
+      ]
+    }
+  ],
+  "order_algorithm": "ascending_sha256_seed_nul_domain_nul_identity",
+  "repetitions_per_task_arm": 3,
+  "scheduled_units": 288,
+  "schema_version": "contextguard.p3-v3-schedule/v1",
+  "seed": "contextguard-p3-v3-factorial-public-projects-20260817",
+  "stopping_rule": "one_terminal_receipt_per_scheduled_unit_no_reruns_replacements_or_extension"
+}

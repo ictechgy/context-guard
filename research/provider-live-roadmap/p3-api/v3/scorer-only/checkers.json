@@ -1,0 +1,287 @@
+{
+  "checkers": [
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": "requests/models.py",
+          "required_literals": [
+            "except JSONDecodeError as e:",
+            "raise RequestsJSONDecodeError(e.msg, e.doc, e.pos)"
+          ]
+        },
+        {
+          "forbidden_literals": [],
+          "path": "tests/test_lowlevel.py",
+          "required_literals": [
+            "test_json_decode_compatibility_for_alt_utf_encodings",
+            "assert r.text not in str(excinfo.value)"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 1999,
+        "sha256": "82c34df5e895f5317c4c5fb35a6fe1c335df106ce43bba459e54ec8fdd23771f"
+      },
+      "id": "checker_requests_bug_fix",
+      "task_id": "requests_bug_fix",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": "requests/sessions.py",
+          "required_literals": [
+            "or original_parsed.port != redirect_parsed.port",
+            "or original_parsed.scheme != redirect_parsed.scheme"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 1821,
+        "sha256": "fda629ba0cc4a38d1ebe13bdcd1b2d6bb51c6c20632a34834b9732a706b9cec6"
+      },
+      "id": "checker_requests_boundary_hardening",
+      "task_id": "requests_boundary_hardening",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": "src/requests/status_codes.py",
+          "required_literals": [
+            "early-hints",
+            "content_too_large",
+            "uri_too_long",
+            "unprocessable_content"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 1445,
+        "sha256": "c545938e67d4420a0f0a7d7ddd86c8f2fe29ace496db191a52566571bec844fd"
+      },
+      "id": "checker_requests_feature",
+      "task_id": "requests_feature",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [
+            "How long to wait for the server to send"
+          ],
+          "path": "src/requests/sessions.py",
+          "required_literals": [
+            "How many seconds to wait for the server to send"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 756,
+        "sha256": "f0ca4bddf5e608d09290dc6df472bcea14bce29d59768a3b20536a13d677aae9"
+      },
+      "id": "checker_requests_maintenance",
+      "task_id": "requests_maintenance",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [
+            "Debug.assert(isExpressionNode(node));"
+          ],
+          "path": "src/compiler/checker.ts",
+          "required_literals": []
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 4974,
+        "sha256": "9d4a278e8bba7ab5922fad987a169fad292ddaf939a8b76a5e417a55d89a919b"
+      },
+      "id": "checker_typescript_bug_fix",
+      "task_id": "typescript_bug_fix",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [
+            "replaceAll(s, ts.version, \"FakeVersion\")"
+          ],
+          "path": "src/harness/tsserverLogger.ts",
+          "required_literals": [
+            "ts.regExpEscape(ts.version)",
+            "ts.regExpEscape(ts.versionMajorMinor)"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 1692,
+        "sha256": "9a5b76fa46b06c9031c69c8af86cda846e483016df49b88fbee97f651c9db023"
+      },
+      "id": "checker_typescript_boundary_hardening",
+      "task_id": "typescript_boundary_hardening",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": "src/compiler/checker.ts",
+          "required_literals": [
+            "getUnknownType: () => unknownType"
+          ]
+        },
+        {
+          "forbidden_literals": [],
+          "path": "src/compiler/types.ts",
+          "required_literals": [
+            "getUnknownType(): Type;"
+          ]
+        },
+        {
+          "forbidden_literals": [],
+          "path": "tests/baselines/reference/api/typescript.d.ts",
+          "required_literals": [
+            "getUnknownType(): Type;"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 1722,
+        "sha256": "1f6deb4bc403d90400ced147c108c7ce5173fde0a9e98a8318160a192906b5d5"
+      },
+      "id": "checker_typescript_feature",
+      "task_id": "typescript_feature",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [
+            "workflows/CI/badge.svg"
+          ],
+          "path": "README.md",
+          "required_literals": [
+            "actions/workflows/ci.yml/badge.svg",
+            "actions/workflows/ci.yml"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 901,
+        "sha256": "bc53ec21c1b4318d8c759988125ba110f3de1b4d74d61a3a96562507d672fe6f"
+      },
+      "id": "checker_typescript_maintenance",
+      "task_id": "typescript_maintenance",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [
+            "split.count == 1"
+          ],
+          "path": "Sources/ArgumentParser/Parsing/CommandParser.swift",
+          "required_literals": [
+            "split.originalInput.count == 1"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 2418,
+        "sha256": "7e2d5791b82c8477981854d5be732cb9f05708ec214effff2dc7dc9334ae8350"
+      },
+      "id": "checker_swift_argument_parser_bug_fix",
+      "task_id": "swift_argument_parser_bug_fix",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": ".github/workflows/pull_request.yml",
+          "required_literals": [
+            "permissions:\n  contents: read"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 401,
+        "sha256": "7b3cb65d215d33d8856484bacc861b038339289ac1af5238f890dea97a54961e"
+      },
+      "id": "checker_swift_argument_parser_boundary_hardening",
+      "task_id": "swift_argument_parser_boundary_hardening",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": "Sources/ArgumentParser/Parsable Properties/ParentCommand.swift",
+          "required_literals": [
+            "@propertyWrapper",
+            "public struct ParentCommand",
+            "previousValue(Value.self)"
+          ]
+        },
+        {
+          "forbidden_literals": [],
+          "path": "Sources/ArgumentParser/Parsing/ParserError.swift",
+          "required_literals": [
+            "case notParentCommand(String)"
+          ]
+        },
+        {
+          "forbidden_literals": [],
+          "path": "Sources/ArgumentParser/Usage/UsageGenerator.swift",
+          "required_literals": [
+            "is not a parent of the current command"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 5378,
+        "sha256": "15edf3854ad8e8c841405a99a3af953b70855834656971df902a6e51a0b37b09"
+      },
+      "id": "checker_swift_argument_parser_feature",
+      "task_id": "swift_argument_parser_feature",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    },
+    {
+      "assertions": [
+        {
+          "forbidden_literals": [],
+          "path": "Sources/ArgumentParser/Documentation.docc/Articles/GettingStarted.md",
+          "required_literals": [
+            "// swift-tools-version:5.7"
+          ]
+        },
+        {
+          "forbidden_literals": [],
+          "path": "Sources/ArgumentParser/Documentation.docc/Extensions/AsyncParsableCommand.md",
+          "required_literals": [
+            "obsolete versions 1.1.x & 1.2.x"
+          ]
+        }
+      ],
+      "expected_selected_path_patch": {
+        "bytes": 3029,
+        "sha256": "36dfa439428b50b34d786a74173ce0a349883f4d8b6591b125ea738478b02d69"
+      },
+      "id": "checker_swift_argument_parser_maintenance",
+      "task_id": "swift_argument_parser_maintenance",
+      "type": "source_assertions_and_exact_selected_path_historical_patch_v1"
+    }
+  ],
+  "claim_boundary": {
+    "full_upstream_suite_equivalence": false,
+    "historical_target_must_pass": true,
+    "selected_path_historical_patch_byte_equivalence": true,
+    "unmodified_parent_must_fail": true
+  },
+  "schema_version": "contextguard.p3-v3-source-checkers/v1"
+}

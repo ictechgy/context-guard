@@ -1,0 +1,574 @@
+import importlib.util
+import copy
+import inspect
+import json
+import os
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[2]
+V3 = ROOT / "research/provider-live-roadmap/p3-api/v3"
+V4 = ROOT / "research/provider-live-roadmap/p3-api/v4"
+RUNNER = V4 / "live_runner.py"
+CONTRACT = V4 / "live-contract.json"
+LAUNCHER = V4 / "live_launcher.py"
+CAPTURE = V3 / "provider-input-freeze.json"
+POLICY = V4 / "budget_policy.py"
+REPORT = V4 / "budget-policy-report.json"
+
+
+def load_runner():
+    if not RUNNER.is_file():
+        raise AssertionError("V4 live runner is not implemented")
+    spec = importlib.util.spec_from_file_location("p3_anthropic_api_v4_test", RUNNER)
+    if spec is None or spec.loader is None:
+        raise AssertionError("V4 live runner is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class P3AnthropicAPIV4Tests(unittest.TestCase):
+    @staticmethod
+    def _selection(runner, *, prompt: str = "selected provider input") -> dict[str, object]:
+        prompt_raw = prompt.encode("utf-8")
+        return {
+            "decision_sha256": "a" * 64,
+            "ordinary_prompt_ceiling_bytes": 14678,
+            "policy": copy.deepcopy(runner.EXPECTED_POLICY_IDENTITY),
+            "requested": {
+                "arm_id": "a111",
+                "cell_id": "requests_boundary_hardening:a111",
+                "prompt_bytes": 22436,
+                "prompt_sha256": "c" * 64,
+            },
+            "selected": {
+                "arm_id": "a110",
+                "cell_id": "requests_boundary_hardening:a110",
+                "prompt_bytes": len(prompt_raw),
+                "prompt_sha256": runner.sha256(prompt_raw),
+            },
+        }
+
+    @classmethod
+    def _plan(cls, runner, *, count: int = 288) -> tuple[list[dict[str, object]], dict[str, object]]:
+        selection = cls._selection(runner)
+        plan = []
+        for index in range(count):
+            item = {
+                "arm_id": "a111",
+                "payload_sha256": selection["selected"]["prompt_sha256"],
+                "prompt": "selected provider input",
+                "repetition": index % 3,
+                "scheduled_unit_id": f"v4-unit-{index:03d}",
+                "selection_identity": selection,
+                "task_id": "requests_boundary_hardening",
+            }
+            item["request_id"] = runner._request_identity(item)
+            plan.append(item)
+        return plan, selection
+
+    def test_contract_binds_v3_generation_inputs_and_exact_budget_policy(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+
+        runner.validate_contract(contract, repo_root=ROOT)
+        artifacts = contract["artifacts"]
+        self.assertEqual(artifacts["evaluator"]["path"], "research/provider-live-roadmap/p3-api/v3/evaluator.py")
+        self.assertEqual(artifacts["provider_input_capture"]["path"], str(CAPTURE.relative_to(ROOT)))
+        self.assertEqual(artifacts["schedule"]["path"], "research/provider-live-roadmap/p3-api/v3/schedule.json")
+        self.assertEqual(artifacts["budget_policy"]["path"], str(POLICY.relative_to(ROOT)))
+        self.assertEqual(artifacts["budget_policy_report"]["path"], str(REPORT.relative_to(ROOT)))
+
+    def test_selection_is_sealed_into_request_batch_and_approval_identities(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        prompt = "selected provider input"
+        selection = {
+            "decision_sha256": "a" * 64,
+            "ordinary_prompt_ceiling_bytes": 14678,
+            "policy": runner.EXPECTED_POLICY_IDENTITY,
+            "requested": {
+                "arm_id": "a111",
+                "cell_id": "requests_boundary_hardening:a111",
+                "prompt_bytes": 22436,
+                "prompt_sha256": "c" * 64,
+            },
+            "selected": {
+                "arm_id": "a110",
+                "cell_id": "requests_boundary_hardening:a110",
+                "prompt_bytes": len(prompt.encode("utf-8")),
+                "prompt_sha256": runner.sha256(prompt.encode("utf-8")),
+            },
+        }
+        item = {
+            "arm_id": "a111",
+            "prompt": prompt,
+            "payload_sha256": selection["selected"]["prompt_sha256"],
+            "repetition": 0,
+            "scheduled_unit_id": "requests_boundary_hardening:r0:a111",
+            "selection_identity": selection,
+            "task_id": "requests_boundary_hardening",
+        }
+        item["request_id"] = runner._request_identity(item)
+        plan = [item] * 288
+        plan = [{**unit, "scheduled_unit_id": f"unit-{index:03d}"} for index, unit in enumerate(plan)]
+        for unit in plan:
+            unit["request_id"] = runner._request_identity(unit)
+
+        with mock.patch.object(runner, "_bound_selection_identity", return_value=selection):
+            body = json.loads(runner.build_request_body(item, contract=contract))
+            validated = runner._validate_plan(plan)
+            batch = runner.build_batch_plans(validated)[0]
+            projection = batch["items"][0]
+            scope = runner.build_approval_scope(
+                contract=contract,
+                batch=batch,
+                plan_sha256=runner.request_plan_sha256(plan),
+            )
+        self.assertEqual(
+            runner.sha256(body["messages"][0]["content"].encode()),
+            selection["selected"]["prompt_sha256"],
+        )
+        for value in (item["request_id"], projection["request_id"], scope["request_ids"][0]):
+            self.assertIsInstance(value, str)
+        self.assertEqual(projection["selection_identity"], selection)
+
+    def test_direct_callable_and_production_launcher_are_closed(self) -> None:
+        runner = load_runner()
+
+        self.assertEqual(runner.main([]), 2)
+        self.assertFalse(hasattr(runner, "run_live"))
+        spec = importlib.util.spec_from_file_location("p3_anthropic_api_v4_launcher_test", LAUNCHER)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader if spec else None)
+        launcher = importlib.util.module_from_spec(spec)
+        assert spec is not None and spec.loader is not None
+        spec.loader.exec_module(launcher)
+        self.assertEqual(launcher.main([]), 2)
+
+    def test_launcher_activation_binds_exact_core_commit_and_blobs(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "p3_anthropic_api_v4_activation_test", LAUNCHER
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("V4 launcher is unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+
+        self.assertEqual(
+            launcher.EXPECTED_CORE_COMMIT,
+            "3cc4db3689b38860237be9a59d750a04b0e88666",
+        )
+        launcher._verify_core_commit(ROOT)
+        with mock.patch.object(launcher, "EXPECTED_CORE_COMMIT", "0" * 40):
+            with self.assertRaises(Exception):
+                launcher._verify_core_commit(ROOT)
+        with tempfile.TemporaryDirectory() as name:
+            with self.assertRaises(Exception):
+                launcher._verify_core_commit(Path(name))
+
+        expected = b"committed-v4-core"
+        digest = __import__("hashlib").sha256(expected).hexdigest()
+        launcher._verify_blob_triple(expected, expected, expected, digest)
+        for changed in (
+            (b"changed-core", expected, expected),
+            (expected, b"changed-head", expected),
+            (expected, expected, b"changed-worktree"),
+        ):
+            with self.assertRaises(Exception):
+                launcher._verify_blob_triple(*changed, digest)
+
+    def test_activated_launcher_calls_only_the_bound_v4_surface(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "p3_anthropic_api_v4_launch_test", LAUNCHER
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("V4 launcher is unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        runner = mock.Mock()
+        runner.parse_json.side_effect = [
+            {"approval": "batch-1"},
+            {"approval": "batch-2"},
+        ]
+        arguments = [
+            "--execute",
+            "--contract", str(CONTRACT),
+            "--repo-root", str(ROOT),
+            "--corpus-root", str(ROOT),
+            "--output-root", str(ROOT / "output"),
+            "--state-root", str(ROOT / "state"),
+            "--approval-1", str(ROOT / "approval-1.json"),
+            "--approval-2", str(ROOT / "approval-2.json"),
+            "--verification-key-file", str(ROOT / "verification.key"),
+            "--registry-key-file", str(ROOT / "registry.key"),
+        ]
+        with (
+            mock.patch.object(launcher, "_load_runner", return_value=runner),
+            mock.patch.object(launcher, "_verify_core_commit"),
+            mock.patch.object(
+                launcher, "_read_bound", return_value=CONTRACT.read_bytes()
+            ),
+            mock.patch.object(launcher, "_read_owner_file", return_value=b"k" * 32),
+            mock.patch.object(
+                launcher, "_read_keychain_secret", return_value=b"sk-ant-api03-test"
+            ),
+        ):
+            self.assertEqual(launcher.main(arguments), 0)
+        runner.run_live_authorized.assert_called_once()
+        call = runner.run_live_authorized.call_args.kwargs
+        self.assertEqual(call["contract_path"], CONTRACT)
+        self.assertEqual(call["repo_root"], ROOT)
+        self.assertEqual(call["approvals"], [
+            {"approval": "batch-1"},
+            {"approval": "batch-2"},
+        ])
+        self.assertNotIn("previous_output_root", call)
+        self.assertNotIn("previous_state_root", call)
+
+    def test_v4_launcher_keychain_lookup_is_fixed_and_value_free(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "p3_anthropic_api_v4_keychain_test", LAUNCHER
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("V4 launcher is unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        completed = mock.Mock(returncode=0, stdout=b"sk-ant-api03-test-key\n")
+        with mock.patch.object(
+            launcher.subprocess, "run", return_value=completed
+        ) as run:
+            value = launcher._read_keychain_secret()
+        self.assertEqual(value, b"sk-ant-api03-test-key")
+        self.assertEqual(
+            run.call_args.args[0][:4],
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                "contextguard-anthropic-p3",
+            ],
+        )
+        self.assertNotIn(value.decode(), str(run.call_args))
+
+    def test_selection_mutation_changes_request_batch_approval_and_plan_identities(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        with mock.patch.object(runner, "_bound_selection_identity", return_value=selection):
+            baseline_batches = runner.build_batch_plans(plan)
+            baseline_plan_sha = runner.request_plan_sha256(plan)
+            baseline_scope = runner.build_approval_scope(
+                contract=contract,
+                batch=baseline_batches[0],
+                plan_sha256=baseline_plan_sha,
+            )
+            changed = copy.deepcopy(plan)
+            changed[0]["selection_identity"] = copy.deepcopy(
+                changed[0]["selection_identity"]
+            )
+            changed[0]["selection_identity"]["selected"]["prompt_sha256"] = "d" * 64
+            changed[0]["request_id"] = runner._request_identity(changed[0])
+            changed_batches = runner.build_batch_plans(changed)
+            changed_plan_sha = runner.request_plan_sha256(changed)
+            changed_scope = runner.build_approval_scope(
+                contract=contract,
+                batch=changed_batches[0],
+                plan_sha256=changed_plan_sha,
+            )
+        self.assertNotEqual(plan[0]["request_id"], changed[0]["request_id"])
+        self.assertNotEqual(baseline_batches[0]["plan_sha256"], changed_batches[0]["plan_sha256"])
+        self.assertNotEqual(baseline_plan_sha, changed_plan_sha)
+        self.assertEqual(baseline_scope["body_sha256"], changed_scope["body_sha256"])
+        self.assertNotEqual(
+            baseline_scope["selection_identities"], changed_scope["selection_identities"]
+        )
+
+    def test_bound_policy_capture_and_report_tampering_refuses(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        for name in ("budget_policy", "budget_policy_report", "provider_input_capture"):
+            changed = copy.deepcopy(contract)
+            changed["artifacts"][name]["sha256"] = "0" * 64
+            with self.subTest(name=name), self.assertRaisesRegex(
+                runner.LiveRunError, "invalid_artifacts"
+            ):
+                runner.validate_contract(changed, repo_root=ROOT)
+
+    def test_prompt_mutation_refuses_before_request_body_construction(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner, count=1)
+        changed = dict(plan[0])
+        changed["prompt"] = "mutated provider input"
+        with mock.patch.object(runner, "_bound_selection_identity", return_value=selection):
+            with self.assertRaisesRegex(
+                runner.LiveRunError, "payload_identity_mismatch"
+            ):
+                runner.build_request_body(changed, contract=contract)
+
+    def test_v4_domains_state_and_capsule_schema_do_not_accept_v3_values(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, _selection = self._plan(runner)
+        with mock.patch.object(runner, "_bound_selection_identity", return_value=plan[0]["selection_identity"]):
+            batches = runner.build_batch_plans(plan)
+            reservation = runner.calculate_worst_case_reservation(
+                contract=contract, batches=batches
+            )
+        self.assertTrue(runner.SCHEMA.endswith("/v4"))
+        self.assertTrue(runner.EVIDENCE_SCHEMA.endswith("/v4"))
+        self.assertTrue(runner._request_identity(plan[0]).startswith("v4-request-"))
+        state: dict[str, object] = {}
+        with mock.patch.object(runner, "_bound_selection_identity", return_value=plan[0]["selection_identity"]):
+            runner._initialize_ledger(
+                state,
+                contract=contract,
+                batches=batches,
+                plan_sha256=runner.request_plan_sha256(plan),
+                reservation=reservation,
+            )
+        self.assertEqual(state["schema_version"], "contextguard.p3-v4-ledger/v1")
+        old_state = {**state, "schema_version": "contextguard.p3-v3-ledger/v1"}
+        with self.assertRaisesRegex(runner.LiveRunError, "ledger_schema_mismatch"):
+            with mock.patch.object(runner, "_bound_selection_identity", return_value=plan[0]["selection_identity"]):
+                runner._initialize_ledger(
+                    old_state,
+                    contract=contract,
+                    batches=batches,
+                    plan_sha256=runner.request_plan_sha256(plan),
+                    reservation=reservation,
+                )
+
+    def test_public_evidence_seals_exact_requested_and_selected_identity(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        response = json.dumps({
+            "content": [{"text": "READY", "type": "text"}],
+            "id": "msg-v4-evidence",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "type": "message",
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }, separators=(",", ":"), sort_keys=True).encode()
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            state, output = root / "state", root / "output"
+            state.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            with mock.patch.object(runner, "_bound_selection_identity", return_value=selection), \
+                mock.patch.object(runner, "_expected_bound_selection", return_value=selection):
+                result = runner._execute_schedule_test_core(
+                    contract=contract,
+                    plan=plan,
+                    state_root=state,
+                    output_root=output,
+                    approval_consume=lambda scope: {"approved": scope["batch_id"]},
+                    invoke=lambda item: {
+                        "body": response, "http_status": 200,
+                        "provider_request_id": None,
+                    },
+                    scorer_loader=lambda: (lambda capsules, prepared: {
+                        "failed_units": 0,
+                        "passed_units": len(prepared),
+                        "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
+                        "status": "complete",
+                        "total_units": len(prepared),
+                    }),
+                )
+                evidence = json.loads((output / "p3-api-evidence.json").read_bytes())
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(len(evidence["sealed_units"]), 288)
+                self.assertTrue(all(
+                    unit["selection_identity"] == selection
+                    for unit in evidence["sealed_units"]
+                ))
+                changed = copy.deepcopy(evidence)
+                changed["sealed_units"][0]["selection_identity"]["requested"]["arm_id"] = "a000"
+                with self.assertRaisesRegex(
+                    runner.LiveRunError, "invalid_public_evidence"
+                ):
+                    runner.validate_public_evidence(
+                        changed, contract_raw=runner.canonical(contract)
+                    )
+
+    def test_authorized_entry_has_no_injectable_invoke_scorer_selector_or_plan(self) -> None:
+        runner = load_runner()
+        parameters = inspect.signature(runner.run_live_authorized).parameters
+        for forbidden in ("plan", "invoke", "scorer_loader", "selector", "approval_consume"):
+            self.assertNotIn(forbidden, parameters)
+        self.assertIn("approvals", parameters)
+        self.assertIn("api_key", parameters)
+
+    def test_v3_transport_capsule_is_not_accepted_by_v4_reader(self) -> None:
+        runner = load_runner()
+        plan, selection = self._plan(runner, count=1)
+        identity = plan[0]
+        with tempfile.TemporaryDirectory() as name:
+            private = Path(name)
+            key = b"z" * 32
+            runner._write_transport_capsule(
+                private,
+                identity["scheduled_unit_id"],
+                {"body": b"body", "http_status": 200, "provider_request_id": None},
+                key,
+                identity,
+            )
+            metadata_path = private / (
+                runner._capsule_stem(identity["scheduled_unit_id"]) + ".json"
+            )
+            metadata = json.loads(metadata_path.read_bytes())
+            metadata["capsule_hmac_sha256"] = "0" * 64
+            metadata_path.write_bytes(runner.canonical(metadata))
+            with self.assertRaisesRegex(
+                runner.LiveRunError, "transport_capsule_tampered"
+            ):
+                runner._read_transport_capsule(
+                    private, identity["scheduled_unit_id"], key, identity
+                )
+
+    def test_authorized_output_root_lock_serializes_distinct_state_roots(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        response = {
+            "body": json.dumps({
+                "content": [{"text": "READY", "type": "text"}],
+                "id": "msg-v4-lock",
+                "model": "claude-sonnet-5",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "type": "message",
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            }, separators=(",", ":"), sort_keys=True).encode(),
+            "http_status": 200,
+            "provider_request_id": None,
+        }
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            output = root / "shared-output"
+            output.mkdir(mode=0o700)
+            state_roots = [root / "state-a", root / "state-b"]
+            for state in state_roots:
+                state.mkdir(mode=0o700)
+            calls: list[str] = []
+            errors: list[BaseException] = []
+            first_invoke_entered = threading.Event()
+            release_first_invoke = threading.Event()
+            second_lock_attempted = threading.Event()
+
+            def invoke(item):
+                calls.append(item["scheduled_unit_id"])
+                if len(calls) == 1:
+                    first_invoke_entered.set()
+                    if not release_first_invoke.wait(timeout=30):
+                        raise AssertionError("first invoke was not released")
+                return response
+
+            original_lock = runner._with_authorized_run_lock
+
+            def observed_lock(lock_root, function):
+                if threading.current_thread().name == "second-authorized-run":
+                    second_lock_attempted.set()
+                return original_lock(lock_root, function)
+
+            def run(state_root: Path) -> None:
+                try:
+                    runner._execute_schedule_test_core(
+                        contract=contract,
+                        plan=plan,
+                        state_root=state_root,
+                        output_root=output,
+                        approval_consume=lambda scope: {"approved": scope["batch_id"]},
+                        invoke=invoke,
+                        scorer_loader=lambda: (lambda capsules, prepared: {
+                            "failed_units": 0,
+                            "passed_units": len(prepared),
+                            "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
+                            "status": "complete",
+                            "total_units": len(prepared),
+                        }),
+                        _authorized_lock_root=output,
+                    )
+                except BaseException as error:  # report both worker failures
+                    errors.append(error)
+
+            first = threading.Thread(
+                name="first-authorized-run", target=run, args=(state_roots[0],)
+            )
+            second = threading.Thread(
+                name="second-authorized-run", target=run, args=(state_roots[1],)
+            )
+            with (
+                mock.patch.object(
+                    runner, "_with_authorized_run_lock", side_effect=observed_lock
+                ),
+                mock.patch.object(
+                    runner, "_bound_selection_identity", return_value=selection
+                ),
+                mock.patch.object(
+                    runner, "_expected_bound_selection", return_value=selection
+                ),
+            ):
+                first.start()
+                self.assertTrue(first_invoke_entered.wait(timeout=30))
+                second.start()
+                self.assertTrue(second_lock_attempted.wait(timeout=30))
+                release_first_invoke.set()
+                first.join(timeout=30)
+                second.join(timeout=30)
+            self.assertFalse(first.is_alive() or second.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], runner.LiveRunError)
+            self.assertEqual(str(errors[0]), "output_exists")
+            self.assertEqual(len(calls), 288)
+
+    def test_opt_in_frozen_corpus_preparation_has_no_selected_growth(self) -> None:
+        corpus_value = os.environ.get("CONTEXTGUARD_V3_CORPUS_ROOT")
+        if not corpus_value:
+            self.skipTest("set CONTEXTGUARD_V3_CORPUS_ROOT to run the 288-cell integration")
+        corpus_root = Path(corpus_value).expanduser().resolve()
+        if not corpus_root.is_dir():
+            self.skipTest("CONTEXTGUARD_V3_CORPUS_ROOT is not a directory")
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan = runner.prepare_live_plan(
+            contract=contract, repo_root=ROOT, corpus_root=corpus_root
+        )
+        self.assertEqual(len(plan), 288)
+        self.assertEqual(len({item["request_id"] for item in plan}), 288)
+        boundary = [
+            item for item in plan
+            if item["task_id"] == "requests_boundary_hardening"
+            and item["arm_id"] == "a111"
+        ]
+        self.assertTrue(boundary)
+        self.assertTrue(all(
+            item["selection_identity"]["selected"]["arm_id"] == "a110"
+            for item in boundary
+        ))
+        self.assertTrue(all(
+            item["selection_identity"]["selected"]["prompt_bytes"]
+            <= item["selection_identity"]["ordinary_prompt_ceiling_bytes"]
+            for item in plan
+        ))
+        report = json.loads(REPORT.read_bytes())
+        self.assertEqual(
+            report["policy_summary"]["factor_decisions"],
+            {
+                "adaptive": {"applied": 24, "suppressed_or_no_op": 24},
+                "graph_closure": {"applied": 0, "suppressed_or_no_op": 48},
+                "symbol_memory": {"applied": 12, "suppressed_or_no_op": 36},
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

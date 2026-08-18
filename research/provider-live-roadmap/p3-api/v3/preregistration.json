@@ -1,0 +1,300 @@
+{
+  "analysis": {
+    "complete_case_rule": "all_3_repetitions_and_all_8_arms_per_task",
+    "factorial_effect_count": 7,
+    "independent_cluster": "project",
+    "independent_cluster_count": 3,
+    "inferential_claim_status": "unavailable_only_3_independent_project_clusters",
+    "interactions_and_arm_rows": "descriptive_with_intervals",
+    "main_effect_formulas": {
+      "adaptive": "mean_task((a100+a101+a110+a111-a000-a001-a010-a011)/4)",
+      "graph_closure": "mean_task((a001+a011+a101+a111-a000-a010-a100-a110)/4)",
+      "symbol_memory": "mean_task((a010+a011+a110+a111-a000-a001-a100-a101)/4)"
+    },
+    "missingness_rule": "any_missing_unit_blocks_all_predeclared_contrast_and_factorial_effect_estimates",
+    "multiplicity": "no_null_rejection_claims_report_all_4_predeclared_contrasts_and_all_7_factorial_effects",
+    "predeclared_contrasts": [
+      "a111_minus_a000",
+      "adaptive_main_effect",
+      "symbol_memory_main_effect",
+      "graph_closure_main_effect"
+    ],
+    "primary_percent_reduction": "100 * (sum_task_mean_a000 - sum_task_mean_a111) / sum_task_mean_a000",
+    "primary_usage_estimand": "task_balanced_mean_total_provider_tokens_a111_minus_a000",
+    "quality_gate": {
+      "allowed_baseline_pass_candidate_fail_pairs": 0,
+      "allowed_technical_missing_units": 0,
+      "any_failure_blocks_quality_preserving_savings_claim": true,
+      "required_checker_pass_rate": 1.0,
+      "required_pass_scope": [
+        "every_task",
+        "every_taxonomy",
+        "every_project"
+      ],
+      "required_terminal_receipts": 288
+    },
+    "technical_repetitions_reduced_within_task": 3,
+    "total_provider_tokens": "input_tokens_plus_output_tokens",
+    "uncertainty": {
+      "claim": "descriptive_finite_corpus_sensitivity_only",
+      "leave_one_project_out_rows": 3,
+      "method": "all_27_ordered_project_cluster_resamples"
+    }
+  },
+  "artifacts": {
+    "checkers": {
+      "bytes": 9165,
+      "path": "research/provider-live-roadmap/p3-api/v3/scorer-only/checkers.json",
+      "sha256": "179e4cb2bbab5ce1290f1c0c190881c1dd38fd3a7f5a881b223f4b81f0872db8"
+    },
+    "corpus": {
+      "bytes": 17228,
+      "path": "research/provider-live-roadmap/p3-api/v3/corpus-manifest.json",
+      "sha256": "9bcb35534348c631aa6eed49effa7d8d534fe755d1e7367a57f618d817007d63"
+    },
+    "prompt_template": {
+      "bytes": 383,
+      "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
+      "sha256": "a60429640b5c89ecae4febfb8da33616ba6ac909661fa393398ce17f55263cf1"
+    },
+    "schedule": {
+      "bytes": 67571,
+      "path": "research/provider-live-roadmap/p3-api/v3/schedule.json",
+      "sha256": "5ca56b87906b72384fe8d3e7e643cb50502befd8c5d7ad3632a977846a5001fc"
+    }
+  },
+  "claims": {
+    "all_task_quality_guarantee": false,
+    "future_project_generalization": false,
+    "probability_sample": false,
+    "quality_outcome": "exact_selected_path_historical_patch_reproduction_plus_source_assertions",
+    "scope": "these_12_retrospective_tasks_in_3_public_projects",
+    "semantic_alternative_patch_acceptance": false,
+    "semantic_correctness_guarantee": false
+  },
+  "cost_evidence": {
+    "calculated_list_price_authority": "calculated_not_provider_reported",
+    "eight_exclusive_standard_keys": "provider_arm_aggregates_at_best",
+    "messages_api_per_request_authority": "token_usage_only",
+    "one_exclusive_standard_key": "provider_experiment_total_aggregate_only",
+    "provider_confirmed_per_request_usd": "unavailable_without_request_level_export_or_unique_bucket_per_request",
+    "raw_key_identifiers_public": false
+  },
+  "design": {
+    "arms": [
+      {
+        "adaptive": false,
+        "graph_closure": false,
+        "id": "a000",
+        "intervention": {
+          "manifest_adaptive_pruned": false,
+          "manifest_graph_expanded": false,
+          "packer_repo_map_mode": "none",
+          "provider_sees_pure_symbol_projection": false,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": []
+        },
+        "symbol_memory": false
+      },
+      {
+        "adaptive": false,
+        "graph_closure": true,
+        "id": "a001",
+        "intervention": {
+          "manifest_adaptive_pruned": false,
+          "manifest_graph_expanded": true,
+          "packer_repo_map_mode": "apply_symbol_memory_graph_pack_only",
+          "provider_sees_pure_symbol_projection": false,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": []
+        },
+        "symbol_memory": false
+      },
+      {
+        "adaptive": false,
+        "graph_closure": false,
+        "id": "a010",
+        "intervention": {
+          "manifest_adaptive_pruned": false,
+          "manifest_graph_expanded": false,
+          "packer_repo_map_mode": "symbol_memory_advisory_only",
+          "provider_sees_pure_symbol_projection": true,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": [
+            "graph_context",
+            "graph_edges",
+            "graph_rank"
+          ]
+        },
+        "symbol_memory": true
+      },
+      {
+        "adaptive": false,
+        "graph_closure": true,
+        "id": "a011",
+        "intervention": {
+          "manifest_adaptive_pruned": false,
+          "manifest_graph_expanded": true,
+          "packer_repo_map_mode": "apply_symbol_memory_graph_pack_only",
+          "provider_sees_pure_symbol_projection": true,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": [
+            "graph_context",
+            "graph_edges",
+            "graph_rank"
+          ]
+        },
+        "symbol_memory": true
+      },
+      {
+        "adaptive": true,
+        "graph_closure": false,
+        "id": "a100",
+        "intervention": {
+          "manifest_adaptive_pruned": true,
+          "manifest_graph_expanded": false,
+          "packer_repo_map_mode": "none",
+          "provider_sees_pure_symbol_projection": false,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": []
+        },
+        "symbol_memory": false
+      },
+      {
+        "adaptive": true,
+        "graph_closure": true,
+        "id": "a101",
+        "intervention": {
+          "manifest_adaptive_pruned": true,
+          "manifest_graph_expanded": true,
+          "packer_repo_map_mode": "apply_symbol_memory_graph_pack_only",
+          "provider_sees_pure_symbol_projection": false,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": []
+        },
+        "symbol_memory": false
+      },
+      {
+        "adaptive": true,
+        "graph_closure": false,
+        "id": "a110",
+        "intervention": {
+          "manifest_adaptive_pruned": true,
+          "manifest_graph_expanded": false,
+          "packer_repo_map_mode": "symbol_memory_advisory_only",
+          "provider_sees_pure_symbol_projection": true,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": [
+            "graph_context",
+            "graph_edges",
+            "graph_rank"
+          ]
+        },
+        "symbol_memory": true
+      },
+      {
+        "adaptive": true,
+        "graph_closure": true,
+        "id": "a111",
+        "intervention": {
+          "manifest_adaptive_pruned": true,
+          "manifest_graph_expanded": true,
+          "packer_repo_map_mode": "apply_symbol_memory_graph_pack_only",
+          "provider_sees_pure_symbol_projection": true,
+          "provider_sees_raw_symbol_memory": false,
+          "pure_symbol_projection_forbidden_fields": [
+            "graph_context",
+            "graph_edges",
+            "graph_rank"
+          ]
+        },
+        "symbol_memory": true
+      }
+    ],
+    "factors": [
+      "adaptive",
+      "symbol_memory",
+      "graph_closure"
+    ],
+    "provider_input_rehearsal_gate": {
+      "activated_factor_no_op_is_recorded_as_zero_byte_effect": true,
+      "committed_before_provider_calls": true,
+      "exact_pairwise_factor_byte_isolation": true,
+      "required_task_arm_cells": 96,
+      "required_units": 288,
+      "scorer_fields_absent_from_every_provider_input": true,
+      "unique_provider_input_count": "measured_at_rehearsal_not_forced"
+    },
+    "provider_prompt_variability": "only_context_pack_and_pure_symbol_projection_may_vary_by_arm",
+    "provider_visible_factor_definition": "only_bytes_in_the_provider_prompt_are_interventions",
+    "transformation_order": [
+      "ordinary_selection",
+      "adaptive_pruning",
+      "graph_expansion",
+      "pack_build",
+      "pure_symbol_projection"
+    ]
+  },
+  "execution_authorized": false,
+  "execution_protocol": {
+    "apply_steps": [
+      "git_apply_check",
+      "git_apply",
+      "verify_exact_selected_path_patch",
+      "run_frozen_source_assertions"
+    ],
+    "checker_timeout_seconds": 30,
+    "completed_quality_failures": [
+      "invalid_patch",
+      "truncated_patch",
+      "forbidden_path",
+      "apply_failure",
+      "checker_failure"
+    ],
+    "dirty_tree_policy": "only_allowed_patch_paths_may_change",
+    "network_during_checker": "denied",
+    "provider_input_allowed_task_fields": [
+      "allowed_patch_paths",
+      "prompt"
+    ],
+    "provider_input_non_allowlisted_fields_forbidden": true,
+    "provider_input_task_field_policy": "closed_allowlist",
+    "provider_worktree": "exported_parent_tree_without_git_history",
+    "rejected_patch_features": [
+      "absolute_path",
+      "path_traversal",
+      "symlink",
+      "submodule",
+      "binary_patch",
+      "outside_allowed_paths"
+    ],
+    "response_grammar": "exactly_one_utf8_unified_diff_no_prose_or_fences",
+    "seal_raw_response_and_usage_before_parse": true,
+    "technical_missingness": [
+      "pre_receipt_transport_error",
+      "pre_receipt_timeout",
+      "cancellation",
+      "identity_mismatch",
+      "malformed_or_missing_receipt"
+    ]
+  },
+  "freeze": {
+    "effective_after_tracked_commit": true,
+    "provider_calls_before_tracked_commit_allowed": false,
+    "tracked_commit": null
+  },
+  "model_contract": {
+    "adaptive_thinking": "disabled",
+    "max_output_tokens": 4096,
+    "messages_requests_per_unit": 1,
+    "model": "claude-sonnet-5",
+    "prompt_caching": "absent",
+    "request_timeout_seconds": 120,
+    "temperature": 0,
+    "tools": "disabled"
+  },
+  "prepared_at_utc": "2026-08-17T10:20:00Z",
+  "provider_calls_during_preregistration": 0,
+  "schema_version": "contextguard.p3-api-factorial-preregistration/v3",
+  "status": "draft_preregistered_no_execution"
+}

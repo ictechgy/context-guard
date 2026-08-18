@@ -1,0 +1,44 @@
+{
+  "authorization": {
+    "fresh_approval_required": true,
+    "measurement_call_cap": 288,
+    "prior_protocol_validation_calls": 1,
+    "total_external_call_cap": 289
+  },
+  "correction": {
+    "analysis_plan_changed": false,
+    "measurement_calls": 288,
+    "provider_sampling_parameters": "provider_default_unset",
+    "removed_request_fields": [
+      "temperature"
+    ],
+    "schedule_changed": false
+  },
+  "failed_preflight": {
+    "attempted_calls": 1,
+    "error_class": "invalid_request_error",
+    "error_semantics": "request_field_deprecated_for_model",
+    "http_status": 400,
+    "included_in_analysis": false,
+    "provider_cost": "unavailable",
+    "provider_usage": "unavailable",
+    "raw_evidence": "owner_private_uncommitted",
+    "retried": false,
+    "spend_status": "unknown"
+  },
+  "previous_activation_commit": "5c016ff6f10fa1cad2925762421c3f277443347d",
+  "previous_core": {
+    "commit": "d8b82f019da60ee148456e2f01d3e15d453a63fd",
+    "contract_sha256": "c5da4a227f8b5e0388bd2e86427e4d93b9659535550c7dba5d1dcf96950125ec",
+    "runner_sha256": "984608ff631d3c8f095a5471d0e52d3e040fc1c91ee12499467ff855057897f4"
+  },
+  "reason": "provider_transport_contract_compatibility",
+  "schema_version": "contextguard.p3-anthropic-api-protocol-amendment/v1",
+  "scientific_scope": {
+    "provider_answer_observed": false,
+    "provider_quality_observed": false,
+    "provider_usage_observed": false,
+    "statistical_estimands_changed": false,
+    "task_or_arm_selection_changed": false
+  }
+}
