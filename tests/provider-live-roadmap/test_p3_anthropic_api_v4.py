@@ -151,6 +151,111 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
+    def test_launcher_activation_binds_exact_core_commit_and_blobs(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "p3_anthropic_api_v4_activation_test", LAUNCHER
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("V4 launcher is unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+
+        self.assertEqual(
+            launcher.EXPECTED_CORE_COMMIT,
+            "3cc4db3689b38860237be9a59d750a04b0e88666",
+        )
+        launcher._verify_core_commit(ROOT)
+        with mock.patch.object(launcher, "EXPECTED_CORE_COMMIT", "0" * 40):
+            with self.assertRaises(Exception):
+                launcher._verify_core_commit(ROOT)
+        with tempfile.TemporaryDirectory() as name:
+            with self.assertRaises(Exception):
+                launcher._verify_core_commit(Path(name))
+
+        expected = b"committed-v4-core"
+        digest = __import__("hashlib").sha256(expected).hexdigest()
+        launcher._verify_blob_triple(expected, expected, expected, digest)
+        for changed in (
+            (b"changed-core", expected, expected),
+            (expected, b"changed-head", expected),
+            (expected, expected, b"changed-worktree"),
+        ):
+            with self.assertRaises(Exception):
+                launcher._verify_blob_triple(*changed, digest)
+
+    def test_activated_launcher_calls_only_the_bound_v4_surface(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "p3_anthropic_api_v4_launch_test", LAUNCHER
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("V4 launcher is unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        runner = mock.Mock()
+        runner.parse_json.side_effect = [
+            {"approval": "batch-1"},
+            {"approval": "batch-2"},
+        ]
+        arguments = [
+            "--execute",
+            "--contract", str(CONTRACT),
+            "--repo-root", str(ROOT),
+            "--corpus-root", str(ROOT),
+            "--output-root", str(ROOT / "output"),
+            "--state-root", str(ROOT / "state"),
+            "--approval-1", str(ROOT / "approval-1.json"),
+            "--approval-2", str(ROOT / "approval-2.json"),
+            "--verification-key-file", str(ROOT / "verification.key"),
+            "--registry-key-file", str(ROOT / "registry.key"),
+        ]
+        with (
+            mock.patch.object(launcher, "_load_runner", return_value=runner),
+            mock.patch.object(launcher, "_verify_core_commit"),
+            mock.patch.object(
+                launcher, "_read_bound", return_value=CONTRACT.read_bytes()
+            ),
+            mock.patch.object(launcher, "_read_owner_file", return_value=b"k" * 32),
+            mock.patch.object(
+                launcher, "_read_keychain_secret", return_value=b"sk-ant-api03-test"
+            ),
+        ):
+            self.assertEqual(launcher.main(arguments), 0)
+        runner.run_live_authorized.assert_called_once()
+        call = runner.run_live_authorized.call_args.kwargs
+        self.assertEqual(call["contract_path"], CONTRACT)
+        self.assertEqual(call["repo_root"], ROOT)
+        self.assertEqual(call["approvals"], [
+            {"approval": "batch-1"},
+            {"approval": "batch-2"},
+        ])
+        self.assertNotIn("previous_output_root", call)
+        self.assertNotIn("previous_state_root", call)
+
+    def test_v4_launcher_keychain_lookup_is_fixed_and_value_free(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "p3_anthropic_api_v4_keychain_test", LAUNCHER
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("V4 launcher is unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        completed = mock.Mock(returncode=0, stdout=b"sk-ant-api03-test-key\n")
+        with mock.patch.object(
+            launcher.subprocess, "run", return_value=completed
+        ) as run:
+            value = launcher._read_keychain_secret()
+        self.assertEqual(value, b"sk-ant-api03-test-key")
+        self.assertEqual(
+            run.call_args.args[0][:4],
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                "contextguard-anthropic-p3",
+            ],
+        )
+        self.assertNotIn(value.decode(), str(run.call_args))
+
     def test_selection_mutation_changes_request_batch_approval_and_plan_identities(self) -> None:
         runner = load_runner()
         contract = json.loads(CONTRACT.read_bytes())

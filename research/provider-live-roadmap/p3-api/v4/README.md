@@ -58,10 +58,10 @@ last request-building boundary.  V3 approvals, ledgers, and capsules cannot be
 migrated into this V4 protocol, and the historical V3 launcher now refuses
 before reading approval or credential material.
 
-Activation uses two commits.  The core commit leaves `live_launcher.py`
-fail-closed.  A separately reviewed follow-up commit may bind that exact core
-commit plus the exact runner and contract blobs; only then is the V4 launcher
-an executable production surface.  This changes no historical V3 call or
+Activation uses two commits.  The core commit left `live_launcher.py`
+fail-closed.  The follow-up activation commit binds that exact core commit plus
+the exact runner and contract blobs before the V4 launcher can read private
+inputs or call its production surface.  This changes no historical V3 call or
 result and performs no provider call by itself.
 
 Rebuild the metadata-only report without network or provider access:
