@@ -370,9 +370,13 @@ def install_captured_tool(
 
 
 PACKER_CHILD_BOOTSTRAP = r'''
-import __future__, _colorize, argparse, ast, base64, codecs, collections, copy, hashlib, heapq, importlib.machinery, importlib.util
+import __future__, argparse, ast, base64, codecs, collections, copy, hashlib, heapq, importlib.machinery, importlib.util
 import fnmatch, gettext, json, locale, math, os, pathlib, posixpath, queue, re, shlex, shutil, signal, socket, stat, subprocess, sys, threading, time, types, typing
 from dataclasses import dataclass
+try:
+    import _colorize
+except ModuleNotFoundError:
+    pass
 request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 os.environ.pop("__CF_USER_TEXT_ENCODING", None)
 workspace = pathlib.Path(request["workspace"]).resolve(strict=True)
@@ -689,6 +693,27 @@ def relative_identity(path: Path, repo_root: Path) -> dict[str, object]:
     }
 
 
+def frozen_preregistration(repo_root: Path) -> dict[str, Any]:
+    preregistration_path = PREREGISTRATION.relative_to(repo_root).as_posix()
+    committed_raw = run_git(
+        repo_root,
+        ["show", f"{PREREGISTRATION_COMMIT}:{preregistration_path}"],
+    )
+    if committed_raw != PREREGISTRATION.read_bytes():
+        fail("preregistration commit binding mismatch")
+    return parse_object(committed_raw, PREREGISTRATION.name)
+
+
+def validate_preregistered_artifact(
+    preregistration: dict[str, Any],
+    name: str,
+    identity: dict[str, object],
+) -> None:
+    artifacts = preregistration.get("artifacts")
+    if type(artifacts) is not dict or artifacts.get(name) != identity:
+        fail("preregistration artifact binding mismatch")
+
+
 def artifact_identities(repo_root: Path) -> dict[str, dict[str, object]]:
     paths = {
         "canonical_packer": CANONICAL_PACKER,
@@ -710,13 +735,9 @@ def artifact_identities(repo_root: Path) -> dict[str, dict[str, object]]:
         fail("canonical and plugin sanitizer bytes differ")
     if CANONICAL_CREDENTIAL_POLICY.read_bytes() != PLUGIN_CREDENTIAL_POLICY.read_bytes():
         fail("canonical and plugin credential policy bytes differ")
-    preregistration_path = PREREGISTRATION.relative_to(repo_root).as_posix()
-    committed_preregistration = run_git(
-        repo_root,
-        ["show", f"{PREREGISTRATION_COMMIT}:{preregistration_path}"],
-    )
-    if committed_preregistration != PREREGISTRATION.read_bytes():
-        fail("preregistration commit binding mismatch")
+    preregistration = frozen_preregistration(repo_root)
+    for name in ("corpus", "prompt_template", "schedule"):
+        validate_preregistered_artifact(preregistration, name, result[name])
     return result
 
 
@@ -1436,6 +1457,14 @@ def load_scorer_contract(
         checkers_raw = CHECKERS.read_bytes()
     except OSError as exc:
         raise EvaluationError("invalid frozen artifact: checkers.json") from exc
+    scorer_identity = {
+        "bytes": len(checkers_raw),
+        "path": CHECKERS.relative_to(repo_root).as_posix(),
+        "sha256": sha256(checkers_raw),
+    }
+    validate_preregistered_artifact(
+        frozen_preregistration(repo_root), "checkers", scorer_identity
+    )
     checkers_doc = parse_object(checkers_raw, CHECKERS.name)
     checkers = {item["task_id"]: item for item in checkers_doc.get("checkers", [])}
     task_ids = {str(item["task_id"]) for item in capture["source_tasks"]}
@@ -1455,11 +1484,7 @@ def load_scorer_contract(
             "sha256": task["selected_path_historical_patch_sha256"],
         }:
             fail("checker/patch identity mismatch")
-    return checkers, {
-        "bytes": len(checkers_raw),
-        "path": CHECKERS.relative_to(repo_root).as_posix(),
-        "sha256": sha256(checkers_raw),
-    }
+    return checkers, scorer_identity
 
 
 def generate_evidence(*, repo_root: Path, corpus_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:

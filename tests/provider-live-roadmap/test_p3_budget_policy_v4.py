@@ -3,7 +3,9 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +58,23 @@ class BudgetPolicyTests(unittest.TestCase):
             self.report["source"]["provider_evidence_sha256"],
             hashlib.sha256(self.evidence_raw).hexdigest(),
         )
+        self.assertEqual(
+            self.report["source"]["budget_policy_sha256"],
+            hashlib.sha256(POLICY.read_bytes()).hexdigest(),
+        )
+
+    def test_report_rejects_budget_policy_generator_drift(self):
+        with tempfile.TemporaryDirectory(prefix="p3-budget-policy-") as directory:
+            drifted_policy = Path(directory) / "budget_policy.py"
+            drifted_policy.write_bytes(POLICY.read_bytes() + b"\n# generator drift\n")
+            with mock.patch.object(self.policy, "__file__", str(drifted_policy)):
+                with self.assertRaisesRegex(ValueError, "budget_policy_report_mismatch"):
+                    self.policy.validate_report(
+                        self.report,
+                        capture_raw=self.capture_raw,
+                        evidence_raw=self.evidence_raw,
+                        result_raw=self.result_raw,
+                    )
 
     def test_every_selected_prompt_is_an_existing_frozen_cell_with_no_growth(self):
         capture = json.loads(self.capture_raw)

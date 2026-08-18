@@ -3,7 +3,9 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -203,6 +205,85 @@ class FactorialResultsTests(unittest.TestCase):
                 schedule_raw=(V3 / "schedule.json").read_bytes(),
                 contract_raw=(V3 / "live-contract.json").read_bytes(),
             )
+
+    def test_runner_digest_mismatch_is_rejected_before_import_side_effect(self):
+        with tempfile.TemporaryDirectory(prefix="p3-runner-import-") as directory:
+            marker = Path(directory) / "marker"
+            malicious_runner = Path(directory) / "live_runner.py"
+            malicious_runner.write_text(
+                f"from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('imported')\n"
+                "def validate_public_evidence(evidence, *, contract_raw):\n"
+                "    return None\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(self.analyzer, "RUNNER", malicious_runner):
+                with self.assertRaisesRegex(ValueError, "runner_digest_mismatch"):
+                    self.analyzer.build_result(
+                        self.evidence_raw,
+                        preregistration_raw=(V3 / "preregistration.json").read_bytes(),
+                        corpus_raw=(V3 / "corpus-manifest.json").read_bytes(),
+                        schedule_raw=(V3 / "schedule.json").read_bytes(),
+                        contract_raw=(V3 / "live-contract.json").read_bytes(),
+                    )
+            self.assertFalse(marker.exists())
+
+    def test_current_contract_and_public_inputs_are_bound_before_historical_replay(self):
+        current_contract_raw = (V3 / "live-contract.json").read_bytes()
+        changed_contract = current_contract_raw.replace(
+            b"955fa958ac113b04c9f2d8fbe3b610dda55bfd3edf252ab02ba69bc1a0a39888",
+            b"0" * 64,
+            1,
+        )
+        with self.assertRaisesRegex(ValueError, "validator_contract_mismatch"):
+            self.analyzer.build_result(
+                self.evidence_raw,
+                preregistration_raw=(V3 / "preregistration.json").read_bytes(),
+                corpus_raw=(V3 / "corpus-manifest.json").read_bytes(),
+                schedule_raw=(V3 / "schedule.json").read_bytes(),
+                contract_raw=changed_contract,
+            )
+
+        frozen_inputs = {
+            "preregistration": (V3 / "preregistration.json").read_bytes(),
+            "corpus": (V3 / "corpus-manifest.json").read_bytes(),
+            "schedule": (V3 / "schedule.json").read_bytes(),
+        }
+        for name in frozen_inputs:
+            changed_inputs = dict(frozen_inputs)
+            document = json.loads(changed_inputs[name])
+            document["synchronized_mutation"] = True
+            changed_inputs[name] = self.analyzer.canonical(document)
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, f"{name}_digest_mismatch"
+            ):
+                self.analyzer.build_result(
+                    self.evidence_raw,
+                    preregistration_raw=changed_inputs["preregistration"],
+                    corpus_raw=changed_inputs["corpus"],
+                    schedule_raw=changed_inputs["schedule"],
+                    contract_raw=current_contract_raw,
+                )
+
+    def test_hardened_validator_preserves_executed_contract_and_runner_provenance(self):
+        result = self.analyzer.build_result(
+            self.evidence_raw,
+            preregistration_raw=(V3 / "preregistration.json").read_bytes(),
+            corpus_raw=(V3 / "corpus-manifest.json").read_bytes(),
+            schedule_raw=(V3 / "schedule.json").read_bytes(),
+            contract_raw=(V3 / "live-contract.json").read_bytes(),
+        )
+        evidence = json.loads(self.evidence_raw)
+        self.assertEqual(result["source"]["contract_sha256"], evidence["contract_sha256"])
+        self.assertEqual(result["source"]["runner_sha256"], evidence["runner_sha256"])
+        self.assertEqual(
+            result["source"]["validator_runner_sha256"],
+            hashlib.sha256((V3 / "live_runner.py").read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            result["source"]["validator_contract_sha256"],
+            hashlib.sha256((V3 / "live-contract.json").read_bytes()).hexdigest(),
+        )
 
 
 if __name__ == "__main__":

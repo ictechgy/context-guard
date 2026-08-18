@@ -22,6 +22,15 @@ V3 = Path(__file__).resolve().parent
 RUNNER = V3 / "live_runner.py"
 PUBLIC_EVIDENCE = V3 / "provider-evidence.json"
 RESULT = V3 / "result.json"
+EXPECTED_VALIDATOR_RUNNER_SHA256 = "5f44608ec1261720a15dc6ab8710b217367745f7c031f609e4c4fa196dde2e9e"
+EXPECTED_VALIDATOR_CONTRACT_SHA256 = "1e7c1751e5b720c99e2b09b82502542bfa255da4858f012845ca335595eb5e16"
+EXPECTED_EVIDENCE_RUNNER_SHA256 = "3dc212a7ee763628fe2b554502a457e702d25509ddb50b8431982368945372a9"
+EXPECTED_EXECUTED_CONTRACT_SHA256 = "0bd1bc740079ad71851044860f12e0586c15ba968f85ec0926793e488d3a6168"
+EXECUTED_ARTIFACT_SHA256 = {
+    "evaluator": "0db688ebb441b29ebb36d69e5ee3a8ffa169a8d637eb0c4e230be6fd9ad57c67",
+    "provider_input_capture": "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd",
+    "rehearsal_report": "b7440d238e76aed229c240eceb12dd3cbc67fe71508dc86a34870ac8324e7204",
+}
 
 ARM_IDS = tuple(f"a{value:03b}" for value in range(8))
 FACTOR_INDEX = {"adaptive": 0, "symbol_memory": 1, "graph_closure": 2}
@@ -126,6 +135,37 @@ def _load_runner(raw: bytes):
     except Exception as error:
         raise ValueError("runner_unavailable") from error
     return module
+
+
+def _executed_contract_raw(current_raw: bytes) -> bytes:
+    current = parse_json(current_raw, "contract")
+    artifacts = current.get("artifacts")
+    if type(artifacts) is not dict or any(
+        type(artifacts.get(name)) is not dict for name in EXECUTED_ARTIFACT_SHA256
+    ):
+        raise ValueError("invalid_contract")
+    raw = current_raw
+    for name, digest in EXECUTED_ARTIFACT_SHA256.items():
+        current_digest = artifacts[name].get("sha256")
+        if not isinstance(current_digest, str):
+            raise ValueError("invalid_contract")
+        needle = current_digest.encode("ascii")
+        if raw.count(needle) != 1:
+            raise ValueError("invalid_contract")
+        raw = raw.replace(needle, digest.encode("ascii"), 1)
+    parse_json(raw, "executed_contract")
+    if sha256(raw) != EXPECTED_EXECUTED_CONTRACT_SHA256:
+        raise ValueError("executed_contract_mismatch")
+    return raw
+
+
+def _validate_current_artifact(
+    contract: Mapping[str, object], name: str, raw: bytes
+) -> None:
+    artifacts = contract.get("artifacts")
+    identity = artifacts.get(name) if type(artifacts) is dict else None
+    if type(identity) is not dict or identity.get("sha256") != sha256(raw):
+        raise ValueError(f"{name}_digest_mismatch")
 
 
 def _validate_preregistration(preregistration: Mapping[str, object]) -> None:
@@ -532,19 +572,32 @@ def build_result(
     evidence = parse_json(evidence_raw, "provider_evidence")
     if canonical(evidence) != evidence_raw:
         raise ValueError("noncanonical_provider_evidence")
+    if sha256(contract_raw) != EXPECTED_VALIDATOR_CONTRACT_SHA256:
+        raise ValueError("validator_contract_mismatch")
+    current_contract = parse_json(contract_raw, "contract")
+    for name, raw in (
+        ("preregistration", preregistration_raw),
+        ("corpus", corpus_raw),
+        ("schedule", schedule_raw),
+    ):
+        _validate_current_artifact(current_contract, name, raw)
     preregistration = parse_json(preregistration_raw, "preregistration")
     corpus = parse_json(corpus_raw, "corpus")
     schedule = parse_json(schedule_raw, "schedule")
-    contract = parse_json(contract_raw, "contract")
+    executed_contract_raw = _executed_contract_raw(contract_raw)
+    contract = parse_json(executed_contract_raw, "contract")
     _validate_preregistration(preregistration)
     runner_raw = RUNNER.read_bytes()
+    runner_digest = sha256(runner_raw)
+    if runner_digest != EXPECTED_VALIDATOR_RUNNER_SHA256:
+        raise ValueError("runner_digest_mismatch")
+    if evidence.get("runner_sha256") != EXPECTED_EVIDENCE_RUNNER_SHA256:
+        raise ValueError("runner_evidence_mismatch")
     runner = _load_runner(runner_raw)
     try:
-        runner.validate_public_evidence(evidence, contract_raw=contract_raw)
+        runner.validate_public_evidence(evidence, contract_raw=executed_contract_raw)
     except Exception as error:
         raise ValueError("invalid_provider_evidence") from error
-    if evidence.get("runner_sha256") != sha256(runner_raw):
-        raise ValueError("runner_evidence_mismatch")
     if evidence.get("plan_sha256") != contract.get("resume", {}).get(
         "previous_plan_sha256"
     ):
@@ -644,13 +697,15 @@ def build_result(
         },
         "source": {
             "analyzer_sha256": sha256(Path(__file__).read_bytes()),
-            "contract_sha256": sha256(contract_raw),
+            "contract_sha256": sha256(executed_contract_raw),
             "corpus_sha256": sha256(corpus_raw),
             "plan_sha256": evidence["plan_sha256"],
             "preregistration_sha256": sha256(preregistration_raw),
             "provider_evidence_bytes": len(evidence_raw),
             "provider_evidence_sha256": sha256(evidence_raw),
-            "runner_sha256": sha256(runner_raw),
+            "runner_sha256": evidence["runner_sha256"],
+            "validator_runner_sha256": runner_digest,
+            "validator_contract_sha256": sha256(contract_raw),
             "schedule_sha256": sha256(schedule_raw),
         },
         "status": "complete_quality_gate_failed",

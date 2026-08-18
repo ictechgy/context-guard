@@ -30,6 +30,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 SCHEMA = "contextguard.p3-anthropic-api-live-contract/v3"
 EVIDENCE_SCHEMA = "contextguard.p3-anthropic-api-live-evidence/v3"
+EXPECTED_CONTRACT_SHA256 = "1e7c1751e5b720c99e2b09b82502542bfa255da4858f012845ca335595eb5e16"
 EXPECTED_SCORER_SHA256 = "179e4cb2bbab5ce1290f1c0c190881c1dd38fd3a7f5a881b223f4b81f0872db8"
 EXPECTED_ARTIFACTS = {
     "approval_module": {
@@ -58,7 +59,7 @@ EXPECTED_ARTIFACTS = {
     },
     "evaluator": {
         "path": "research/provider-live-roadmap/p3-api/v3/evaluator.py",
-        "sha256": "0db688ebb441b29ebb36d69e5ee3a8ffa169a8d637eb0c4e230be6fd9ad57c67",
+        "sha256": "955fa958ac113b04c9f2d8fbe3b610dda55bfd3edf252ab02ba69bc1a0a39888",
     },
     "preregistration": {
         "path": "research/provider-live-roadmap/p3-api/v3/preregistration.json",
@@ -66,11 +67,11 @@ EXPECTED_ARTIFACTS = {
     },
     "provider_input_capture": {
         "path": "research/provider-live-roadmap/p3-api/v3/provider-input-freeze.json",
-        "sha256": "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd",
+        "sha256": "8e3fcb2cf046f3abda1439b107ea774e05b4f654caa8f46472c539073904a4d8",
     },
     "rehearsal_report": {
         "path": "research/provider-live-roadmap/p3-api/v3/rehearsal-report.json",
-        "sha256": "b7440d238e76aed229c240eceb12dd3cbc67fe71508dc86a34870ac8324e7204",
+        "sha256": "7651b72392c14f7e5da8a9b551869ec76664b717ca5ada5be5de0b4c344c1549",
     },
     "schedule": {
         "path": "research/provider-live-roadmap/p3-api/v3/schedule.json",
@@ -1745,7 +1746,7 @@ def _initialize_ledger(
         "pending_evidence_sha256": None,
         "reservation": copy.deepcopy(reservation),
         "schema_version": "contextguard.p3-v3-ledger/v2",
-        "spend_status": "known",
+        "spend_status": EXPECTED_RESERVATION["prior_protocol_validation"]["spend_status"],
         "status": "pending",
         "token_usage": _empty_usage(),
         "units": units,
@@ -2067,6 +2068,17 @@ def _apply_terminal(
         state["spend_status"] = "unknown"
 
 
+def _cumulative_list_price_micro_usd(state: Mapping[str, object]) -> int:
+    usage = state.get("token_usage")
+    if type(usage) is not dict:
+        refuse("ledger_schema_mismatch")
+    measurement = usage.get("list_price_micro_usd")
+    if type(measurement) is not int or measurement < 0:
+        refuse("ledger_schema_mismatch")
+    prior = EXPECTED_RESERVATION["prior_protocol_validation"]
+    return measurement + prior["worst_case_list_price_micro_usd"]
+
+
 def _mark_not_dispatched(
     state: dict[str, object], *, reason: str = "not_dispatched_spend_unknown"
 ) -> None:
@@ -2310,6 +2322,15 @@ def _execute_schedule_test_core(
 
     _with_ledger(state_root, ledger_key, recover)
 
+    recovered_state = _ledger_snapshot(state_root, ledger_key)
+    if _cumulative_list_price_micro_usd(recovered_state) > 40_000_000:
+        recovery_halt = True
+        _update_ledger(
+            state_root,
+            ledger_key,
+            lambda current: _mark_not_dispatched(current),
+        )
+
     for batch in batches:
         state = _ledger_snapshot(state_root, ledger_key)
         batch_state = state["batches"][batch["batch_id"]]
@@ -2369,7 +2390,7 @@ def _execute_schedule_test_core(
                         current_state, batch
                     ) + parsed["usage"]["list_price_micro_usd"]
                     projected_total = (
-                        current_state["token_usage"]["list_price_micro_usd"]
+                        _cumulative_list_price_micro_usd(current_state)
                         + parsed["usage"]["list_price_micro_usd"]
                     )
                     if projected_batch > 20_000_000 or projected_total > 40_000_000:
@@ -2513,6 +2534,7 @@ def _execute_schedule_test_core(
             )
         })
     public = {
+        "schema_version": EVIDENCE_SCHEMA,
         "analysis": copy.deepcopy(state.get("scoring")),
         "accounting": {
             "provider_receipt_units": provider_receipt_units,
@@ -2595,9 +2617,11 @@ def validate_public_evidence(
     expected_keys = {
         "accounting", "analysis", "claims", "contract_sha256", "list_price_estimate",
         "model_id", "provider_cost", "provider_usage", "runner_sha256",
-        "plan_sha256", "scoring", "sealed_units", "status", "token_usage",
+        "plan_sha256", "schema_version", "scoring", "sealed_units", "status", "token_usage",
     }
     if type(evidence) is not dict or set(evidence) != expected_keys:
+        refuse("invalid_public_evidence")
+    if evidence.get("schema_version") != EVIDENCE_SCHEMA:
         refuse("invalid_public_evidence")
     if type(contract_raw) is not bytes or evidence["contract_sha256"] != sha256(contract_raw):
         refuse("invalid_public_evidence")
@@ -2830,6 +2854,8 @@ def run_live_authorized(
         contract_raw = contract_path.read_bytes()
     except OSError:
         refuse("contract_unavailable")
+    if sha256(contract_raw) != EXPECTED_CONTRACT_SHA256:
+        refuse("contract_digest_mismatch")
     contract = parse_json(contract_raw, "contract")
     validate_contract(contract, repo_root=repo_root)
     validate_pricing_window(contract)
@@ -2848,7 +2874,10 @@ def run_live_authorized(
     approval_module = _load_bound_approval_module(
         contract=contract, repo_root=repo_root
     )
-    approval_state_root = state_root / "external-approval"
+    # The approval nonce registry is anchored to the approval-bound output
+    # root, not the caller-selected resumable ledger root. Reusing an envelope
+    # with a fresh state root therefore observes the same consumed nonce.
+    approval_state_root = output_root / ".external-approval-registry"
     _private_dir(state_root)
     _private_dir(approval_state_root)
     authorized_ledger_key = _derive_ledger_key(registry_key)

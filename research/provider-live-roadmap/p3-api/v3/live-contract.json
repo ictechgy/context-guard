@@ -14,7 +14,7 @@
     },
     "evaluator": {
       "path": "research/provider-live-roadmap/p3-api/v3/evaluator.py",
-      "sha256": "0db688ebb441b29ebb36d69e5ee3a8ffa169a8d637eb0c4e230be6fd9ad57c67"
+      "sha256": "955fa958ac113b04c9f2d8fbe3b610dda55bfd3edf252ab02ba69bc1a0a39888"
     },
     "preregistration": {
       "path": "research/provider-live-roadmap/p3-api/v3/preregistration.json",
@@ -22,7 +22,7 @@
     },
     "provider_input_capture": {
       "path": "research/provider-live-roadmap/p3-api/v3/provider-input-freeze.json",
-      "sha256": "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd"
+      "sha256": "8e3fcb2cf046f3abda1439b107ea774e05b4f654caa8f46472c539073904a4d8"
     },
     "canonical_packer": {
       "path": "context-guard-kit/context_pack.py",
@@ -38,7 +38,7 @@
     },
     "rehearsal_report": {
       "path": "research/provider-live-roadmap/p3-api/v3/rehearsal-report.json",
-      "sha256": "b7440d238e76aed229c240eceb12dd3cbc67fe71508dc86a34870ac8324e7204"
+      "sha256": "7651b72392c14f7e5da8a9b551869ec76664b717ca5ada5be5de0b4c344c1549"
     },
     "schedule": {
       "path": "research/provider-live-roadmap/p3-api/v3/schedule.json",

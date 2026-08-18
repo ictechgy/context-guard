@@ -14,9 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 V3 = ROOT / "research/provider-live-roadmap/p3-api/v3"
 V4 = ROOT / "research/provider-live-roadmap/p3-api/v4"
-CAPTURE_SHA256 = "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd"
-EVIDENCE_SHA256 = "c5496fea9de4e9ce0465de39a64b01f3c35a1073a8312e72469d11357e44bd90"
-RESULT_SHA256 = "114441b7a87d0c3e66a710ec3d890b0b04288d43b32fb41cffb928a151b9bb51"
+CAPTURE_SHA256 = "8e3fcb2cf046f3abda1439b107ea774e05b4f654caa8f46472c539073904a4d8"
+EVIDENCE_SHA256 = "f3334e7a70439c17c198b3771930b3cf798c60e60a13b46d4ff95f7dd469e2b5"
+RESULT_SHA256 = "00b803d30061378ea92463af4ef8bf003cf92ffa03b36efefb5c99744361e875"
 ARM_IDS = tuple(f"a{adaptive}{symbol}{graph}" for adaptive in "01" for symbol in "01" for graph in "01")
 FACTOR_BITS = (
     ("adaptive", 1),
@@ -397,6 +397,7 @@ def build_report(
         },
         "schema_version": "contextguard.p3-api-budget-policy-report/v1",
         "source": {
+            "budget_policy_sha256": sha256(Path(__file__).read_bytes()),
             "observed_result_sha256": RESULT_SHA256,
             "provider_evidence_sha256": EVIDENCE_SHA256,
             "provider_input_freeze_sha256": CAPTURE_SHA256,

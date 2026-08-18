@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -17,8 +18,8 @@ CORPUS = V3 / "corpus-manifest.json"
 CHECKERS = V3 / "scorer-only/checkers.json"
 CAPTURE_FREEZE = V3 / "provider-input-freeze.json"
 REHEARSAL_REPORT = V3 / "rehearsal-report.json"
-EXPECTED_CAPTURE_FILE_SHA256 = "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd"
-EXPECTED_REPORT_FILE_SHA256 = "b7440d238e76aed229c240eceb12dd3cbc67fe71508dc86a34870ac8324e7204"
+EXPECTED_CAPTURE_FILE_SHA256 = "8e3fcb2cf046f3abda1439b107ea774e05b4f654caa8f46472c539073904a4d8"
+EXPECTED_REPORT_FILE_SHA256 = "7651b72392c14f7e5da8a9b551869ec76664b717ca5ada5be5de0b4c344c1549"
 CORPUS_ROOT = Path(
     os.environ.get("CONTEXTGUARD_V3_CORPUS_ROOT", "/private/tmp/contextguard-v3-corpus.5dKHrG")
 )
@@ -110,6 +111,69 @@ class P3FactorialEvaluatorV3Tests(unittest.TestCase):
             144,
         )
         self.assertTrue(all(cell["producer"] == "captured_shipped_context_pack" for cell in self.capture["cells"]))
+
+    def test_captured_packer_bootstrap_runs_on_supported_python_without_private_stdlib(self) -> None:
+        supported_python = shutil.which("python3.12") or shutil.which("python3.11")
+        if supported_python is None:
+            supported_python = os.fspath(Path(os.sys.executable).resolve())
+        packer = (
+            b"import argparse\n"
+            b"def main(arguments):\n"
+            b"    argparse.ArgumentParser(description='portable')\n"
+            b"    print('{}')\n"
+            b"    return 0\n"
+        )
+        interpreters = {supported_python, os.fspath(Path(os.sys.executable).resolve())}
+        for interpreter in sorted(interpreters):
+            with self.subTest(interpreter=interpreter), tempfile.TemporaryDirectory(
+                prefix="p3-portable-packer-"
+            ) as directory:
+                workspace = Path(directory)
+                module_file = workspace / "packer.py"
+                module_file.write_bytes(packer)
+                with mock.patch.object(self.evaluator.sys, "executable", interpreter):
+                    completed = self.evaluator.run_captured_packer(
+                        packer_bytes=packer,
+                        workspace=workspace,
+                        module_file=module_file,
+                        arguments=[],
+                    )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    completed.stderr.decode("utf-8", "replace"),
+                )
+
+    def test_preregistration_binds_public_inputs_and_post_seal_scorer(self) -> None:
+        for attribute, original in (
+            ("CORPUS", CORPUS),
+            ("PROMPT_TEMPLATE", V3 / "provider-prompt-template.txt"),
+            ("SCHEDULE", V3 / "schedule.json"),
+        ):
+            with self.subTest(attribute=attribute), tempfile.TemporaryDirectory(
+                prefix="p3-prereg-binding-", dir=V3
+            ) as directory:
+                mutated = Path(directory) / original.name
+                mutated.write_bytes(original.read_bytes() + b"\n")
+                with mock.patch.object(self.evaluator, attribute, mutated):
+                    with self.assertRaisesRegex(
+                        self.evaluator.EvaluationError, "preregistration artifact binding"
+                    ):
+                        self.evaluator.artifact_identities(ROOT)
+
+        with tempfile.TemporaryDirectory(
+            prefix="p3-scorer-binding-", dir=V3
+        ) as directory:
+            mutated_checkers = Path(directory) / CHECKERS.name
+            mutated_checkers.write_bytes(CHECKERS.read_bytes() + b"\n")
+            capture = copy.deepcopy(self.capture)
+            capture["artifact_identities"] = self.evaluator.artifact_identities(ROOT)
+            capture["capture_sha256"] = self.evaluator.capture_identity(capture)
+            with mock.patch.object(self.evaluator, "CHECKERS", mutated_checkers):
+                with self.assertRaisesRegex(
+                    self.evaluator.EvaluationError, "preregistration artifact binding"
+                ):
+                    self.evaluator.load_scorer_contract(capture, repo_root=ROOT)
 
     def test_schedule_is_bound_unit_for_unit_to_the_frozen_prompt(self) -> None:
         bindings = self.capture["prepared_unit_bindings"]

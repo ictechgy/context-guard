@@ -19,6 +19,7 @@ CONTRACT = V3 / "live-contract.json"
 LAUNCHER = V3 / "live_launcher.py"
 PROTOCOL_AMENDMENT = V3 / "protocol-amendment.json"
 RESPONSE_AMENDMENT = V3 / "response-amendment.json"
+PUBLIC_EVIDENCE = V3 / "provider-evidence.json"
 
 
 def load_runner():
@@ -31,6 +32,38 @@ def load_runner():
 
 
 class P3AnthropicAPIV3Tests(unittest.TestCase):
+    def test_public_evidence_requires_exact_schema_version(self) -> None:
+        runner = load_runner()
+        evidence = json.loads(PUBLIC_EVIDENCE.read_bytes())
+        contract_raw = CONTRACT.read_bytes()
+        for current_digest, executed_digest in (
+            (
+                "955fa958ac113b04c9f2d8fbe3b610dda55bfd3edf252ab02ba69bc1a0a39888",
+                "0db688ebb441b29ebb36d69e5ee3a8ffa169a8d637eb0c4e230be6fd9ad57c67",
+            ),
+            (
+                "8e3fcb2cf046f3abda1439b107ea774e05b4f654caa8f46472c539073904a4d8",
+                "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd",
+            ),
+            (
+                "7651b72392c14f7e5da8a9b551869ec76664b717ca5ada5be5de0b4c344c1549",
+                "b7440d238e76aed229c240eceb12dd3cbc67fe71508dc86a34870ac8324e7204",
+            ),
+        ):
+            contract_raw = contract_raw.replace(
+                current_digest.encode("ascii"), executed_digest.encode("ascii"), 1
+            )
+        self.assertEqual(evidence["schema_version"], runner.EVIDENCE_SCHEMA)
+        runner.validate_public_evidence(evidence, contract_raw=contract_raw)
+        for value in (None, "contextguard.p3-anthropic-api-live-evidence/v2"):
+            changed = copy.deepcopy(evidence)
+            if value is None:
+                changed.pop("schema_version")
+            else:
+                changed["schema_version"] = value
+            with self.assertRaisesRegex(runner.LiveRunError, "invalid_public_evidence"):
+                runner.validate_public_evidence(changed, contract_raw=contract_raw)
+
     def test_contract_binds_the_exact_committed_g4_artifacts(self) -> None:
         runner = load_runner()
         contract = json.loads(CONTRACT.read_bytes())
@@ -609,14 +642,15 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_activation_binds_resume_digest_correction(self) -> None:
+    def test_launcher_refuses_unactivated_core(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        launcher._verify_core_commit(ROOT)
+        with self.assertRaisesRegex(RuntimeError, "bound core unavailable"):
+            launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
             "2fb00e4eb3e175eb6d716c67848d48ebac8588ad",
@@ -1189,6 +1223,259 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
             # authorize the second batch or produce any second-batch calls.
             self.assertEqual(len(calls), 144)
             self.assertFalse((output / "p3-api-evidence.json").exists())
+
+    def test_authorized_approval_registry_is_shared_across_run_state_roots(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan = []
+        for index in range(288):
+            prompt = f"cross-root-{index}"
+            item = {
+                "scheduled_unit_id": f"cross-root-unit-{index:03d}",
+                "prompt": prompt,
+                "payload_sha256": runner.sha256(prompt.encode()),
+                "task_id": "task",
+                "arm_id": "a000",
+                "repetition": index % 3,
+            }
+            item["request_id"] = runner._request_identity(item)
+            plan.append(item)
+        batches = runner.build_batch_plans(plan)
+        verification_key = bytes(range(32))
+        registry_key = bytes(range(32, 64))
+        response = json.dumps({
+            "content": [{"text": "READY", "type": "text"}],
+            "id": "msg-cross-root",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "type": "message",
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }, separators=(",", ":"), sort_keys=True).encode()
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            output = root / "output"
+            first_state = root / "state-one"
+            second_state = root / "state-two"
+            output.mkdir(mode=0o700)
+            first_state.mkdir(mode=0o700)
+            second_state.mkdir(mode=0o700)
+            module = runner._load_bound_approval_module(contract=contract, repo_root=ROOT)
+            now = int(__import__("time").time())
+            approvals = []
+            for index, batch in enumerate(batches):
+                scope = runner.build_external_approval_scope(
+                    contract=contract,
+                    batch=batch,
+                    plan_sha256=runner._plan_digest(batches),
+                    runner_sha256=runner._runner_identity(),
+                    output_root=output,
+                )
+                approvals.append(module.create_approval(
+                    scope=scope,
+                    issued_at=now - 1,
+                    expires_at=now + 300,
+                    nonce=f"{index + 21:064x}",
+                    revocation_handle=f"{index + 31:064x}",
+                    signing_key=verification_key,
+                ))
+            calls: list[str] = []
+
+            def fake_invoke(item, **kwargs):
+                calls.append(item["scheduled_unit_id"])
+                return {"body": response, "http_status": 200, "provider_request_id": None}
+
+            scorer = lambda: (lambda capsules, prepared: {
+                "failed_units": 0,
+                "passed_units": len(prepared),
+                "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
+                "total_units": len(prepared),
+                "status": "complete",
+            })
+            patches = (
+                mock.patch.object(runner, "validate_contract"),
+                mock.patch.object(runner, "prepare_live_plan", return_value=plan),
+                mock.patch.object(runner, "_migrate_verified_capsules"),
+                mock.patch.object(runner, "invoke_anthropic", side_effect=fake_invoke),
+                mock.patch.object(runner, "_bound_scorer_loader", return_value=scorer()),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                runner.run_live_authorized(
+                    contract_path=CONTRACT, repo_root=ROOT, corpus_root=root,
+                    output_root=output, state_root=first_state,
+                    previous_output_root=root, previous_state_root=root,
+                    approvals=approvals, verification_key=verification_key,
+                    registry_key=registry_key,
+                    api_key=b"sk-ant-api03-test-secret-never-publish",
+                )
+                self.assertEqual(len(calls), 288)
+                with self.assertRaisesRegex(runner.LiveRunError, "approval_unavailable"):
+                    runner.run_live_authorized(
+                        contract_path=CONTRACT, repo_root=ROOT, corpus_root=root,
+                        output_root=output, state_root=second_state,
+                        previous_output_root=root, previous_state_root=root,
+                        approvals=approvals, verification_key=verification_key,
+                        registry_key=registry_key,
+                        api_key=b"sk-ant-api03-test-secret-never-publish",
+                    )
+            self.assertEqual(len(calls), 288)
+
+    def test_contract_bytes_are_rechecked_inside_authorized_runner(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory(prefix="p3-contract-race-", dir=V3) as name:
+            changed_contract = Path(name) / CONTRACT.name
+            changed_contract.write_bytes(CONTRACT.read_bytes() + b"\n")
+            with self.assertRaisesRegex(runner.LiveRunError, "contract_digest_mismatch"):
+                runner.run_live_authorized(
+                    contract_path=changed_contract,
+                    repo_root=ROOT,
+                    corpus_root=Path(name),
+                    output_root=Path(name) / "output",
+                    state_root=Path(name) / "state",
+                    previous_output_root=Path(name),
+                    previous_state_root=Path(name),
+                    approvals=[{}, {}],
+                    verification_key=bytes(range(32)),
+                    registry_key=bytes(range(32, 64)),
+                    api_key=b"sk-ant-api03-test-secret-never-publish",
+                )
+
+    def test_prior_unknown_reservation_is_in_runtime_cap_and_public_status(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan = [
+            {
+                "scheduled_unit_id": f"prior-cap-unit-{index:03d}",
+                "prompt": "x",
+                "payload_sha256": runner.sha256(b"x"),
+                "task_id": "task",
+                "arm_id": "a000",
+                "repetition": index % 3,
+            }
+            for index in range(288)
+        ]
+        response = json.dumps({
+            "content": [{"text": "READY", "type": "text"}],
+            "id": "msg-prior-cap",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "type": "message",
+            "usage": {"input_tokens": 69300, "output_tokens": 0},
+        }, separators=(",", ":"), sort_keys=True).encode()
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            state, output = root / "state", root / "output"
+            state.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            calls: list[str] = []
+            result = runner._execute_schedule_test_core(
+                contract=contract,
+                plan=plan,
+                state_root=state,
+                output_root=output,
+                approval_consume=lambda scope: {"approved": True},
+                invoke=lambda item: (
+                    calls.append(item["scheduled_unit_id"])
+                    or {"body": response, "http_status": 200, "provider_request_id": None}
+                ),
+                scorer_loader=lambda: (_ for _ in ()).throw(
+                    AssertionError("scorer must not run after cumulative refusal")
+                ),
+            )
+            self.assertLess(len(calls), 288)
+            self.assertEqual(result["status"], "provider_receipts_sealed_pending_scoring")
+            evidence = json.loads((output / "p3-api-evidence.json").read_bytes())
+            self.assertEqual(evidence["accounting"]["spend_status"], "unknown")
+            self.assertLessEqual(
+                evidence["token_usage"]["list_price_micro_usd"]
+                + contract["reservation"]["prior_protocol_validation"][
+                    "worst_case_list_price_micro_usd"
+                ],
+                40_000_000,
+            )
+
+    def test_recovered_over_cap_ledger_refuses_before_approval_or_dispatch(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan = [
+            {
+                "scheduled_unit_id": f"recovered-cap-unit-{index:03d}",
+                "prompt": "x",
+                "payload_sha256": runner.sha256(b"x"),
+                "task_id": "task",
+                "arm_id": "a000",
+                "repetition": index % 3,
+            }
+            for index in range(288)
+        ]
+        batches = runner.build_batch_plans(plan)
+        plan_sha = runner._plan_digest(batches)
+        ledger_key = __import__("hashlib").sha256(
+            b"contextguard/p3-v3-test-ledger/v1\0"
+            + runner.canonical({"contract": contract, "plan_sha256": plan_sha})
+        ).digest()
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            state, output = root / "state", root / "output"
+            state.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            reservation = runner.calculate_worst_case_reservation(
+                contract=contract, batches=batches
+            )
+            runner._with_ledger(
+                state,
+                ledger_key,
+                lambda value, key: runner._initialize_ledger(
+                    value,
+                    contract=contract,
+                    batches=batches,
+                    plan_sha256=plan_sha,
+                    reservation=reservation,
+                ),
+            )
+            recovered_usage = {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 20_000_000,
+                "list_price_micro_usd": 40_000_000,
+                "output_tokens": 0,
+                "provider_total_input_tokens": 20_000_000,
+                "provider_total_tokens": 20_000_000,
+            }
+            recovered_record = runner._terminal_record(
+                item=plan[0],
+                capsule={"body": b"{}", "http_status": 200, "provider_request_id": None},
+                status="completed",
+                error="none",
+                parsed={"usage": recovered_usage},
+                started=1,
+                ended=2,
+            )
+            def seed_recovered_terminal(value, key):
+                del key
+                unit_id = plan[0]["scheduled_unit_id"]
+                value["units"][unit_id].update({"reserved": True, "status": "reserved"})
+                runner._apply_terminal(value, unit_id=unit_id, record=recovered_record)
+
+            runner._with_ledger(state, ledger_key, seed_recovered_terminal)
+            approvals: list[str] = []
+            calls: list[str] = []
+            runner._execute_schedule_test_core(
+                contract=contract,
+                plan=plan,
+                state_root=state,
+                output_root=output,
+                approval_consume=lambda scope: approvals.append(scope["batch_id"]),
+                invoke=lambda item: calls.append(item["scheduled_unit_id"]),
+                scorer_loader=lambda: (_ for _ in ()).throw(
+                    AssertionError("scorer must not run for recovered over-cap ledger")
+                ),
+            )
+            self.assertEqual(approvals, [])
+            self.assertEqual(calls, [])
 
     def test_authorized_registry_commit_crash_restarts_same_envelopes_without_redispatch(self) -> None:
         runner = load_runner()
