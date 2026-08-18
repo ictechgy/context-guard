@@ -66,7 +66,7 @@
     },
     "response_amendment": {
       "path": "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
-      "sha256": "5929e351c80b17d8207675ad31481769c5412196da133f0c7113ddd3a1783901"
+      "sha256": "a8df109295b6a45632b0dfdea90b525c34f45add8ec8e79b8c075691c7354415"
     }
   },
   "claims": {
@@ -150,7 +150,7 @@
   },
   "resume": {
     "policy": "hmac_verify_single_capsule_without_redispatch",
-    "previous_contract_sha256": "ebbbdfe4a61d953e4f321d39003356d52a79c15c86216179e530b4e31c0cf50e",
+    "previous_ledger_contract_sha256": "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
     "previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
     "previous_response_sha256": "5f4e79d9377f6c0dda14fb898d71d4e85bca999f44db2627e51f9fabfb8116d6",
     "sealed_unit_id": "swift_argument_parser_boundary_hardening:r1:a010"

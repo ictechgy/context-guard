@@ -108,6 +108,14 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         self.assertEqual(amendment["correction"]["removed_request_fields"], ["temperature"])
         self.assertEqual(amendment["correction"]["measurement_calls"], 288)
         self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
+        self.assertEqual(
+            contract["resume"]["previous_ledger_contract_sha256"],
+            "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
+        )
+        self.assertNotEqual(
+            contract["resume"]["previous_ledger_contract_sha256"],
+            amendment["previous_core"]["contract_sha256"],
+        )
         self.assertTrue(amendment["authorization"]["fresh_approval_required"])
         prior = contract["reservation"]["prior_protocol_validation"]
         self.assertEqual(prior["attempted_calls"], 1)
@@ -263,7 +271,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     plan_sha256=plan_sha, reservation=reservation,
                 )
                 value["contract_sha256"] = runner.EXPECTED_RESUME[
-                    "previous_contract_sha256"
+                    "previous_ledger_contract_sha256"
                 ]
                 first = value["units"][plan[0]["scheduled_unit_id"]]
                 first["reserved"] = True
@@ -290,8 +298,8 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
             )
             expected_resume = {
                 "policy": "hmac_verify_single_capsule_without_redispatch",
-                "previous_contract_sha256": runner.EXPECTED_RESUME[
-                    "previous_contract_sha256"
+                "previous_ledger_contract_sha256": runner.EXPECTED_RESUME[
+                    "previous_ledger_contract_sha256"
                 ],
                 "previous_plan_sha256": plan_sha,
                 "previous_response_sha256": runner.sha256(response),
@@ -533,14 +541,15 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_activation_binds_response_amendment_core_and_exact_blobs(self) -> None:
+    def test_launcher_remains_fail_closed_until_ledger_hash_fix_activation(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        launcher._verify_core_commit(ROOT)
+        with self.assertRaises(Exception):
+            launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
             "f1ae619a5d0ebd751e6d1c7bd1fa8040bab24168",

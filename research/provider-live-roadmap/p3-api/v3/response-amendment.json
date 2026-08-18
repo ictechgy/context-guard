@@ -36,6 +36,7 @@
   "recovery": {
     "expected_previous_completion_event": "provider_receipt_missing",
     "expected_previous_http_status": 200,
+    "expected_previous_ledger_contract_sha256": "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
     "expected_previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
     "policy": "hmac_verify_reclassify_without_redispatch",
     "sealed_unit_id": "swift_argument_parser_boundary_hardening:r1:a010"
