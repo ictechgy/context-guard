@@ -1,48 +1,50 @@
 {
   "authorization": {
-    "additional_external_calls": 287,
+    "additional_external_calls": 276,
     "fresh_approval_envelopes_required": true,
     "measurement_call_cap": 288,
-    "prior_external_calls": 2,
+    "prior_external_calls": 13,
     "total_external_call_cap": 289
   },
   "correction": {
     "accepted_private_content_blocks": [
       "thinking"
     ],
-    "provider_answer_source": "exactly_one_text_block",
+    "provider_answer_source": "final_text_block_or_empty_on_max_tokens",
     "provider_thinking_publication": false,
     "provider_thinking_scoring": false,
     "redispatch_sealed_unit": false,
-    "remaining_measurement_calls": 287
+    "remaining_measurement_calls": 276
   },
   "observed_receipt": {
     "completion_event_before_correction": "provider_receipt_missing",
     "http_status": 200,
     "provider_content_block_types": [
-      "thinking",
-      "text"
+      "thinking"
     ],
     "provider_output_token_detail_fields": [
       "thinking_tokens"
     ],
     "provider_usage_fields_present": true,
     "raw_evidence": "owner_private_uncommitted",
-    "response_bytes": 1340,
-    "response_sha256": "5f4e79d9377f6c0dda14fb898d71d4e85bca999f44db2627e51f9fabfb8116d6"
+    "response_bytes": 16742,
+    "response_sha256": "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c"
   },
-  "previous_activation_commit": "21c80d42a7f171701ff73e3730dec89314c812c4",
+  "previous_activation_commit": "299be5d0c2542d51ba5ae9b149e7fd36c86f494b",
   "previous_core": {
-    "contract_sha256": "ebbbdfe4a61d953e4f321d39003356d52a79c15c86216179e530b4e31c0cf50e",
-    "runner_sha256": "332179a1d22deb11faff46e6671940601b6101dd91bf661c12aec82ac921380f"
+    "contract_sha256": "704a1111e3e4cae9e7e053dd0e9e0f6b67fe0e270b1d58d142cacb19714ca9fc",
+    "runner_sha256": "a3f2f271942ffb4ae3b30f0c37fde08ed090cfe154616a550bcf4f8d4e2a8c05"
   },
   "recovery": {
     "expected_previous_completion_event": "provider_receipt_missing",
     "expected_previous_http_status": 200,
-    "expected_previous_ledger_contract_sha256": "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
+    "expected_completed_provider_receipts": 11,
+    "expected_failed_response_sha256": "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
+    "expected_previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
     "expected_previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
-    "policy": "hmac_verify_reclassify_without_redispatch",
-    "sealed_unit_id": "swift_argument_parser_boundary_hardening:r1:a010"
+    "expected_reclassified_provider_receipts": 12,
+    "policy": "hmac_verify_reclassify_all_sealed_capsules_without_redispatch",
+    "sealed_provider_receipt_count": 12
   },
   "reason": "provider_response_contract_compatibility",
   "schema_version": "contextguard.p3-anthropic-api-response-amendment/v1",

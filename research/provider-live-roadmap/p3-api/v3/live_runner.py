@@ -98,7 +98,7 @@ EXPECTED_ARTIFACTS = {
     },
     "response_amendment": {
         "path": "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
-        "sha256": "75bee28235d978a2ea94155b235204b819aae9c8d71ee30eab256874bd105c61",
+        "sha256": "fecbe0f8cb4161ca962c74d7ecf28e9ef64d8e0f78c4422632fc424cacbce87c",
     },
 }
 EXPECTED_CLAIMS = {
@@ -123,11 +123,11 @@ EXPECTED_REQUEST = {
     "thinking": "provider_default_private_ignored_for_scoring",
 }
 EXPECTED_RESUME = {
-    "policy": "hmac_verify_single_capsule_without_redispatch",
-    "previous_ledger_contract_sha256": "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
+    "failed_response_sha256": "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
+    "policy": "hmac_verify_sealed_capsules_without_redispatch",
+    "previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
     "previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
-    "previous_response_sha256": "5f4e79d9377f6c0dda14fb898d71d4e85bca999f44db2627e51f9fabfb8116d6",
-    "sealed_unit_id": "swift_argument_parser_boundary_hardening:r1:a010",
+    "sealed_provider_receipt_count": 12,
 }
 EXPECTED_LIMITS = {
     "batch_count": 2,
@@ -448,10 +448,19 @@ def parse_anthropic_response(
             refuse("unsupported_provider_content")
         saw_text = True
         answer_parts.append(block["text"])
-    if not saw_text or content[-1].get("type") != "text":
+    stop_reason = value.get("stop_reason")
+    if saw_text:
+        if content[-1].get("type") != "text":
+            refuse("unsupported_provider_content")
+    elif stop_reason != "max_tokens" or any(
+        block.get("type") != "thinking" for block in content
+    ):
         refuse("unsupported_provider_content")
     answer = "".join(answer_parts)
-    if not answer or len(answer.encode("utf-8")) > EXPECTED_LIMITS["max_answer_bytes"]:
+    if (
+        (not answer and stop_reason != "max_tokens")
+        or len(answer.encode("utf-8")) > EXPECTED_LIMITS["max_answer_bytes"]
+    ):
         refuse("provider_answer_limit")
     usage = value.get("usage")
     if type(usage) is not dict:
@@ -1220,7 +1229,7 @@ def _copy_owner_private_exact(source: Path, target: Path, *, maximum_bytes: int)
     _private_file(target, raw)
 
 
-def _migrate_single_verified_capsule_core(
+def _migrate_verified_capsules_core(
     *,
     contract: Mapping[str, object],
     plan: object,
@@ -1232,14 +1241,14 @@ def _migrate_single_verified_capsule_core(
     expected_resume: Mapping[str, object],
 ) -> None:
     expected_keys = {
-        "policy", "previous_ledger_contract_sha256", "previous_plan_sha256",
-        "previous_response_sha256", "sealed_unit_id",
+        "failed_response_sha256", "policy", "previous_ledger_contract_sha256",
+        "previous_plan_sha256", "sealed_provider_receipt_count",
     }
     if (
         type(expected_resume) is not dict
         or set(expected_resume) != expected_keys
         or expected_resume.get("policy")
-        != "hmac_verify_single_capsule_without_redispatch"
+        != "hmac_verify_sealed_capsules_without_redispatch"
     ):
         refuse("invalid_resume")
     validated_plan = _validate_plan(plan)
@@ -1248,10 +1257,6 @@ def _migrate_single_verified_capsule_core(
     if plan_sha != expected_resume["previous_plan_sha256"]:
         refuse("migration_plan_mismatch")
     item_by_id = {item["scheduled_unit_id"]: item for item in validated_plan}
-    unit_id = expected_resume["sealed_unit_id"]
-    item = item_by_id.get(unit_id)
-    if item is None:
-        refuse("migration_plan_mismatch")
     if previous_state_root == state_root or previous_output_root == output_root:
         refuse("migration_root_mismatch")
     ledger_key = _derive_ledger_key(registry_key)
@@ -1276,44 +1281,62 @@ def _migrate_single_verified_capsule_core(
             dispatched.append((candidate_id, terminal))
         elif unit.get("status") != "not_dispatched_spend_unknown":
             refuse("migration_source_mismatch")
-    if len(dispatched) != 1 or dispatched[0][0] != unit_id:
-        refuse("migration_source_mismatch")
-    terminal = dispatched[0][1]
+    expected_count = expected_resume["sealed_provider_receipt_count"]
     if (
-        terminal.get("status") != "failed"
-        or terminal.get("completion_event") != "provider_receipt_missing"
-        or terminal.get("http_status") != 200
-        or terminal.get("response_sha256")
-        != expected_resume["previous_response_sha256"]
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < 1
+        or len(dispatched) != expected_count
     ):
         refuse("migration_source_mismatch")
     previous_private = previous_output_root / "private"
-    capsule = _read_transport_capsule(
-        previous_private, unit_id, ledger_key, item
-    )
-    if capsule is None or sha256(capsule["body"]) != expected_resume[
-        "previous_response_sha256"
-    ]:
+    failed_matches = 0
+    migrated_ids: list[str] = []
+    for unit_id, terminal in dispatched:
+        item = item_by_id.get(unit_id)
+        if item is None or terminal.get("http_status") != 200:
+            refuse("migration_source_mismatch")
+        response_sha = terminal.get("response_sha256")
+        if response_sha == expected_resume["failed_response_sha256"]:
+            failed_matches += 1
+            if (
+                terminal.get("status") != "failed"
+                or terminal.get("completion_event") != "provider_receipt_missing"
+            ):
+                refuse("migration_source_mismatch")
+        elif (
+            terminal.get("status") != "completed"
+            or terminal.get("completion_event") != "normal_completion"
+        ):
+            refuse("migration_source_mismatch")
+        capsule = _read_transport_capsule(
+            previous_private, unit_id, ledger_key, item
+        )
+        if capsule is None or sha256(capsule["body"]) != response_sha:
+            refuse("migration_source_mismatch")
+        status, _error, parsed = _classify_capsule(capsule, contract=contract)
+        if status != "completed" or parsed is None:
+            refuse("migration_reclassification_failed")
+        migrated_ids.append(unit_id)
+    if failed_matches != 1:
         refuse("migration_source_mismatch")
-    status, _error, parsed = _classify_capsule(capsule, contract=contract)
-    if status != "completed" or parsed is None:
-        refuse("migration_reclassification_failed")
 
     _private_dir(state_root)
     _private_dir(output_root)
     private_root = output_root / "private"
     _private_dir(private_root)
-    stem = _capsule_stem(unit_id)
-    _copy_owner_private_exact(
-        previous_private / (stem + ".body"),
-        private_root / (stem + ".body"),
-        maximum_bytes=EXPECTED_LIMITS["max_response_bytes"],
-    )
-    _copy_owner_private_exact(
-        previous_private / (stem + ".json"),
-        private_root / (stem + ".json"),
-        maximum_bytes=65536,
-    )
+    for unit_id in migrated_ids:
+        stem = _capsule_stem(unit_id)
+        _copy_owner_private_exact(
+            previous_private / (stem + ".body"),
+            private_root / (stem + ".body"),
+            maximum_bytes=EXPECTED_LIMITS["max_response_bytes"],
+        )
+        _copy_owner_private_exact(
+            previous_private / (stem + ".json"),
+            private_root / (stem + ".json"),
+            maximum_bytes=65536,
+        )
     reservation = calculate_worst_case_reservation(
         contract=contract, batches=batches
     )
@@ -1322,9 +1345,9 @@ def _migrate_single_verified_capsule_core(
         "previous_ledger_contract_sha256": expected_resume[
             "previous_ledger_contract_sha256"
         ],
-        "previous_response_sha256": expected_resume["previous_response_sha256"],
-        "sealed_unit_id": unit_id,
-        "status": "verified_capsule_ready_for_reclassification",
+        "failed_response_sha256": expected_resume["failed_response_sha256"],
+        "sealed_provider_receipt_count": expected_count,
+        "status": "verified_capsules_ready_for_reclassification",
     }
 
     def initialize(state: dict[str, object], _key: bytes) -> None:
@@ -1338,25 +1361,30 @@ def _migrate_single_verified_capsule_core(
         if state.get("migration") is not None:
             if state["migration"] != migration:
                 refuse("migration_target_mismatch")
-            migrated_unit = state["units"].get(unit_id)
-            if type(migrated_unit) is not dict or migrated_unit.get("status") not in {
-                "reserved", "completed",
-            }:
-                refuse("migration_target_mismatch")
+            for unit_id in migrated_ids:
+                migrated_unit = state["units"].get(unit_id)
+                if type(migrated_unit) is not dict or migrated_unit.get("status") not in {
+                    "reserved", "completed",
+                }:
+                    refuse("migration_target_mismatch")
             return
-        migrated_unit = state["units"].get(unit_id)
-        if type(migrated_unit) is not dict or migrated_unit.get("status") != "pending":
-            refuse("migration_target_mismatch")
-        migrated_unit["reserved"] = True
-        migrated_unit["status"] = "reserved"
+        for unit_id in migrated_ids:
+            migrated_unit = state["units"].get(unit_id)
+            if type(migrated_unit) is not dict or migrated_unit.get("status") != "pending":
+                refuse("migration_target_mismatch")
+            migrated_unit["reserved"] = True
+            migrated_unit["status"] = "reserved"
         state["migration"] = migration
 
     _with_ledger(state_root, ledger_key, initialize)
-    if _read_transport_capsule(private_root, unit_id, ledger_key, item) is None:
-        refuse("migration_target_mismatch")
+    for unit_id in migrated_ids:
+        if _read_transport_capsule(
+            private_root, unit_id, ledger_key, item_by_id[unit_id]
+        ) is None:
+            refuse("migration_target_mismatch")
 
 
-def _migrate_single_verified_capsule(
+def _migrate_verified_capsules(
     *,
     contract: Mapping[str, object],
     plan: object,
@@ -1366,7 +1394,7 @@ def _migrate_single_verified_capsule(
     output_root: Path,
     registry_key: bytes,
 ) -> None:
-    _migrate_single_verified_capsule_core(
+    _migrate_verified_capsules_core(
         contract=contract,
         plan=plan,
         previous_state_root=previous_state_root,
@@ -2807,7 +2835,7 @@ def run_live_authorized(
     validate_pricing_window(contract)
     plan = prepare_live_plan(contract=contract, repo_root=repo_root, corpus_root=corpus_root)
     batches = build_batch_plans(plan)
-    _migrate_single_verified_capsule(
+    _migrate_verified_capsules(
         contract=contract,
         plan=plan,
         previous_state_root=previous_state_root,

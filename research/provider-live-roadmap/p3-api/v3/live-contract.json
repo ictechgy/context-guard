@@ -66,7 +66,7 @@
     },
     "response_amendment": {
       "path": "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
-      "sha256": "75bee28235d978a2ea94155b235204b819aae9c8d71ee30eab256874bd105c61"
+      "sha256": "fecbe0f8cb4161ca962c74d7ecf28e9ef64d8e0f78c4422632fc424cacbce87c"
     }
   },
   "claims": {
@@ -149,11 +149,11 @@
     "thinking": "provider_default_private_ignored_for_scoring"
   },
   "resume": {
-    "policy": "hmac_verify_single_capsule_without_redispatch",
-    "previous_ledger_contract_sha256": "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
+    "failed_response_sha256": "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
+    "policy": "hmac_verify_sealed_capsules_without_redispatch",
+    "previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
     "previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
-    "previous_response_sha256": "5f4e79d9377f6c0dda14fb898d71d4e85bca999f44db2627e51f9fabfb8116d6",
-    "sealed_unit_id": "swift_argument_parser_boundary_hardening:r1:a010"
+    "sealed_provider_receipt_count": 12
   },
   "runtime": {
     "client": "python-http.client",

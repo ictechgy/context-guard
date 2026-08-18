@@ -128,17 +128,20 @@ ceiling. A fresh approval must raise the lifetime external-call cap from 288 to
 289 before a new balanced 288-unit run may be activated; until then the old
 launcher hashes deliberately fail closed.
 
-The first amended measurement request returned HTTP 200 with authoritative
-usage fields and two content blocks: private provider thinking followed by the
-text answer. The original parser deliberately rejected that unregistered
-shape, sealed the response, and stopped before the other 287 requests. No
-answer text or token count was inspected while correcting the parser.
-`response-amendment.json` freezes the response shape and recovery policy. The
-new parser accepts only exact leading `{type, thinking, signature}` blocks plus
-exactly one final `{type, text}` block; thinking and signatures remain private
-and are neither published nor scored. Recovery verifies the prior HMAC ledger
-and capsule, reclassifies those same sealed bytes without redispatch, then
-continues only the remaining 287 calls. The lifetime cap remains 289.
+The amended run has twelve sealed HTTP 200 provider receipts. Eleven include
+authoritative usage and a final text answer. One stopped at `max_tokens` with
+only a private thinking block. The earlier parser deliberately rejected each
+previously unregistered shape, sealed the response, and stopped before any
+later request. No answer or thinking text was inspected while correcting the
+parser. `response-amendment.json` freezes both response-shape corrections and
+the recovery policy. The parser accepts exact leading
+`{type, thinking, signature}` blocks plus an optional final `{type, text}`
+block; a missing text block is accepted only when `stop_reason` is
+`max_tokens`, in which case the empty answer is scored as a completed quality
+failure rather than technical missingness. Thinking and signatures remain
+private and are neither published nor scored. Recovery verifies all twelve
+prior HMAC-bound capsules, reclassifies the same bytes without redispatch, and
+continues only the remaining 276 calls. The lifetime cap remains 289.
 
 Regenerate and verify locally without provider or network access:
 

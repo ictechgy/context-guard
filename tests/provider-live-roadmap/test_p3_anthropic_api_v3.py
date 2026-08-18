@@ -110,7 +110,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
         self.assertEqual(
             contract["resume"]["previous_ledger_contract_sha256"],
-            "a6c4965c5d938bb6da667bbfde2efb32e539c397c23ad864eb707c6e5e491b5d",
+            "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
         )
         self.assertNotEqual(
             contract["resume"]["previous_ledger_contract_sha256"],
@@ -209,8 +209,20 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
             contract["artifacts"]["response_amendment"]["sha256"],
             runner.sha256(RESPONSE_AMENDMENT.read_bytes()),
         )
-        self.assertEqual(amendment["correction"]["remaining_measurement_calls"], 287)
+        self.assertEqual(amendment["authorization"]["prior_external_calls"], 13)
+        self.assertEqual(amendment["correction"]["remaining_measurement_calls"], 276)
         self.assertFalse(amendment["correction"]["redispatch_sealed_unit"])
+        self.assertEqual(
+            amendment["correction"]["provider_answer_source"],
+            "final_text_block_or_empty_on_max_tokens",
+        )
+        self.assertEqual(
+            amendment["recovery"]["sealed_provider_receipt_count"], 12
+        )
+        self.assertEqual(
+            contract["resume"]["failed_response_sha256"],
+            "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
+        )
         self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
 
         malformed = json.loads(raw)
@@ -220,6 +232,16 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 json.dumps(malformed, separators=(",", ":"), sort_keys=True).encode(),
                 contract=contract,
             )
+
+        truncated = json.loads(raw)
+        truncated["content"] = [truncated["content"][0]]
+        truncated["stop_reason"] = "max_tokens"
+        parsed_truncated = runner.parse_anthropic_response(
+            json.dumps(truncated, separators=(",", ":"), sort_keys=True).encode(),
+            contract=contract,
+        )
+        self.assertEqual(parsed_truncated["answer"], "")
+        self.assertEqual(parsed_truncated["usage"]["provider_total_tokens"], 14)
 
     def test_verified_capsule_migration_resumes_without_redispatch(self) -> None:
         runner = load_runner()
@@ -251,6 +273,23 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
             "type": "message",
             "usage": {"input_tokens": 10, "output_tokens": 2},
         }, separators=(",", ":"), sort_keys=True).encode()
+        truncated_response = json.dumps({
+            "content": [
+                {"signature": "private-signature-2", "thinking": "private-reasoning-2", "type": "thinking"},
+            ],
+            "id": "msg-migration-truncated",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "stop_details": None,
+            "stop_reason": "max_tokens",
+            "stop_sequence": None,
+            "type": "message",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 4096,
+                "output_tokens_details": {"thinking_tokens": 4096},
+            },
+        }, separators=(",", ":"), sort_keys=True).encode()
         registry_key = bytes(range(32, 64))
         derived_key = runner._derive_ledger_key(registry_key)
         batches = runner.build_batch_plans(plan)
@@ -277,18 +316,29 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 value["contract_sha256"] = runner.EXPECTED_RESUME[
                     "previous_ledger_contract_sha256"
                 ]
-                first = value["units"][plan[0]["scheduled_unit_id"]]
-                first["reserved"] = True
-                first["status"] = "reserved"
+                for item in plan[:2]:
+                    unit = value["units"][item["scheduled_unit_id"]]
+                    unit["reserved"] = True
+                    unit["status"] = "reserved"
                 runner._mark_not_dispatched(value)
-                record = runner._terminal_record(
+                completed_record = runner._terminal_record(
                     item=plan[0],
                     capsule={"body": response, "http_status": 200, "provider_request_id": "private"},
-                    status="failed", error="provider_receipt_missing", parsed=None,
+                    status="completed", error="none",
+                    parsed=runner.parse_anthropic_response(response, contract=contract),
                     started=1, ended=2,
                 )
                 runner._apply_terminal(
-                    value, unit_id=plan[0]["scheduled_unit_id"], record=record
+                    value, unit_id=plan[0]["scheduled_unit_id"], record=completed_record
+                )
+                failed_record = runner._terminal_record(
+                    item=plan[1],
+                    capsule={"body": truncated_response, "http_status": 200, "provider_request_id": "private-2"},
+                    status="failed", error="provider_receipt_missing", parsed=None,
+                    started=3, ended=4,
+                )
+                runner._apply_terminal(
+                    value, unit_id=plan[1]["scheduled_unit_id"], record=failed_record
                 )
                 runner._mark_terminal_batches(value, batches)
 
@@ -300,16 +350,23 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 derived_key,
                 plan[0],
             )
+            runner._write_transport_capsule(
+                previous_private,
+                plan[1]["scheduled_unit_id"],
+                {"body": truncated_response, "http_status": 200, "provider_request_id": "private-2"},
+                derived_key,
+                plan[1],
+            )
             expected_resume = {
-                "policy": "hmac_verify_single_capsule_without_redispatch",
+                "failed_response_sha256": runner.sha256(truncated_response),
+                "policy": "hmac_verify_sealed_capsules_without_redispatch",
                 "previous_ledger_contract_sha256": runner.EXPECTED_RESUME[
                     "previous_ledger_contract_sha256"
                 ],
                 "previous_plan_sha256": plan_sha,
-                "previous_response_sha256": runner.sha256(response),
-                "sealed_unit_id": plan[0]["scheduled_unit_id"],
+                "sealed_provider_receipt_count": 2,
             }
-            runner._migrate_single_verified_capsule_core(
+            runner._migrate_verified_capsules_core(
                 contract=contract,
                 plan=plan,
                 previous_state_root=previous_state,
@@ -339,8 +396,9 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 ledger_key=registry_key,
             )
             self.assertEqual(result["status"], "completed")
-            self.assertEqual(len(calls), 287)
+            self.assertEqual(len(calls), 286)
             self.assertNotIn(plan[0]["scheduled_unit_id"], calls)
+            self.assertNotIn(plan[1]["scheduled_unit_id"], calls)
 
     def test_transport_captures_actual_request_id_header_privately(self) -> None:
         runner = load_runner()
@@ -545,14 +603,15 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_activation_binds_usage_shape_fix_and_exact_blobs(self) -> None:
+    def test_launcher_refuses_uncommitted_multi_capsule_core(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        launcher._verify_core_commit(ROOT)
+        with self.assertRaises(Exception):
+            launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
             "d65a33c438e773e4892bd94f4dc6dc4b0fbb7eb0",
@@ -1102,7 +1161,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     "body": response, "http_status": 200, "provider_request_id": None
                 }
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
-                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
+                mock.patch.object(runner, "_migrate_verified_capsules"), \
                 mock.patch.object(runner, "invoke_anthropic", side_effect=fake_invoke), \
                 mock.patch.object(runner, "_bound_scorer_loader", return_value=lambda: {
                     "unreachable": True
@@ -1199,7 +1258,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     }
                 return score
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
-                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
+                mock.patch.object(runner, "_migrate_verified_capsules"), \
                 mock.patch.object(runner, "_load_bound_approval_module", return_value=module), \
                 mock.patch.object(module, "authorize_and_consume", side_effect=crash_once), \
                 mock.patch.object(runner, "_bound_scorer_loader", side_effect=lambda **kwargs: fake_scorer):
@@ -1216,7 +1275,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 calls.append(item["scheduled_unit_id"])
                 return {"body": response, "http_status": 200, "provider_request_id": None}
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
-                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
+                mock.patch.object(runner, "_migrate_verified_capsules"), \
                 mock.patch.object(runner, "invoke_anthropic", side_effect=fake_invoke), \
                 mock.patch.object(runner, "_bound_scorer_loader", side_effect=lambda **kwargs: fake_scorer):
                 result = runner.run_live_authorized(
@@ -1606,7 +1665,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     signing_key=verification_key,
                 ))
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
-                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
+                mock.patch.object(runner, "_migrate_verified_capsules"), \
                 mock.patch.object(runner, "invoke_anthropic", return_value={
                     "body": response,
                     "http_status": 200,
