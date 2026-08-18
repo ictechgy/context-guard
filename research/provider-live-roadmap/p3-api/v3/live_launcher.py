@@ -20,9 +20,9 @@ import sys
 
 
 V3 = Path(__file__).resolve().parent
-EXPECTED_RUNNER_SHA256 = "332179a1d22deb11faff46e6671940601b6101dd91bf661c12aec82ac921380f"
-EXPECTED_CONTRACT_SHA256 = "ebbbdfe4a61d953e4f321d39003356d52a79c15c86216179e530b4e31c0cf50e"
-EXPECTED_CORE_COMMIT = "f7c687b6937b24da506360599988ef8e43f274d4"
+EXPECTED_RUNNER_SHA256 = "03086122a94c648cdcb372c81a57da53b3b649c6b3190da33c2b62f6740331e3"
+EXPECTED_CONTRACT_SHA256 = "e264eaf6724867ca22b2f7262cdfc736fdf14f20c3af27bdd9294b23551bb34a"
+EXPECTED_CORE_COMMIT = "f1ae619a5d0ebd751e6d1c7bd1fa8040bab24168"
 RUNNER_RELATIVE_PATH = "research/provider-live-roadmap/p3-api/v3/live_runner.py"
 CONTRACT_RELATIVE_PATH = "research/provider-live-roadmap/p3-api/v3/live-contract.json"
 MAX_BOUND_ARTIFACT_BYTES = 4 * 1024 * 1024
@@ -201,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--corpus-root", type=Path)
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--previous-output-root", type=Path)
+    parser.add_argument("--previous-state-root", type=Path)
     parser.add_argument("--approval-1", type=Path)
     parser.add_argument("--approval-2", type=Path)
     parser.add_argument("--verification-key-file", type=Path)
@@ -211,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     required = (
         args.contract, args.repo_root, args.corpus_root, args.output_root,
-        args.state_root, args.approval_1, args.approval_2,
+        args.state_root, args.previous_output_root, args.previous_state_root,
+        args.approval_1, args.approval_2,
         args.verification_key_file, args.registry_key_file,
     )
     if any(value is None for value in required):
@@ -237,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             corpus_root=args.corpus_root,
             output_root=args.output_root,
             state_root=args.state_root,
+            previous_output_root=args.previous_output_root,
+            previous_state_root=args.previous_state_root,
             approvals=approvals,
             verification_key=verification_key,
             registry_key=registry_key,
