@@ -143,7 +143,52 @@ private and are neither published nor scored. Recovery verifies all twelve
 prior HMAC-bound capsules, reclassifies the same bytes without redispatch, and
 continues only the remaining 276 calls. The lifetime cap remains 289.
 
-Regenerate and verify locally without provider or network access:
+## Observed live result
+
+The amended schedule completed with 288 HTTP 200 provider receipts and no
+technical missing unit. `provider-evidence.json` is the canonical minimized
+public projection: it contains per-unit usage, response hashes, and timing but
+no prompt, answer, thinking, signature, request ID, API key, or raw response.
+The private transport capsules remain outside the repository. `result.json` is
+recomputed solely from that public projection plus the frozen contract,
+schedule, corpus, and preregistration by `analyze_results.py`.
+
+Anthropic's response usage fields report 1,541,826 input tokens and 958,075
+output tokens, or 2,499,901 total provider tokens over 288 calls. Applying the
+frozen published list-price formula produces USD 12.664402. This is a
+calculation, not provider billing evidence: exact provider-billed USD and exact
+USD savings remain unavailable without request-level billing receipts.
+
+The primary preregistered comparison did not show a saving. The fully enabled
+`a111` arm averaged 9,255.333333 total provider tokens per task/repetition,
+versus 8,101.916667 for `a000`: an increase of 1,153.416667 tokens, reported as
+a -14.236343 percent reduction. Its calculated list price also increased by
+8.999180 percent. The adaptive main effect independently reduced total tokens
+by 1,076.395833 per unit on average across the other factors. The symbol-memory
+and graph-closure main effects instead increased them by 915.881944 and
+1,263.048611 respectively. These are finite-corpus descriptive factorial
+effects, not future-project estimates.
+
+The strict preregistered quality outcome failed for every unit: 0/288 responses
+exactly reproduced the selected historical patch and passed its source
+assertions. This includes 0/96 in each project and 0/72 in each taxonomy. The
+gate deliberately rejects semantically plausible alternative patches, so this
+does not prove that every response was useless; it does mean the registered
+quality-preserving-savings claim is false. No universal quality guarantee or
+long-project average-savings claim is supported by this run. Project rows,
+three leave-one-project-out rows, all 27 ordered project-cluster resamples, all
+eight arm rows, and all seven factorial effects are frozen in `result.json`.
+
+Verify the committed aggregate without network or credentials:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B \
+  research/provider-live-roadmap/p3-api/v3/analyze_results.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B \
+  tests/provider-live-roadmap/test_p3_factorial_results_v3.py
+```
+
+Regenerate the provider-free inputs locally without provider or network access:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B \
