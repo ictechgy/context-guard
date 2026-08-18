@@ -316,6 +316,49 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
+    def test_launcher_activation_binds_core_ancestor_and_exact_blobs(self) -> None:
+        spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
+        if spec is None or spec.loader is None:
+            raise AssertionError("launcher unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+
+        launcher._verify_core_commit(ROOT)
+        self.assertEqual(
+            launcher.EXPECTED_CORE_COMMIT,
+            "d8b82f019da60ee148456e2f01d3e15d453a63fd",
+        )
+        with mock.patch.object(launcher, "EXPECTED_CORE_COMMIT", "0" * 40):
+            with self.assertRaises(Exception):
+                launcher._verify_core_commit(ROOT)
+        with tempfile.TemporaryDirectory() as name:
+            with self.assertRaises(Exception):
+                launcher._verify_core_commit(Path(name))
+
+    def test_launcher_blob_identity_and_private_read_fail_closed(self) -> None:
+        spec = importlib.util.spec_from_file_location("p3_v3_launcher_blob_test", LAUNCHER)
+        if spec is None or spec.loader is None:
+            raise AssertionError("launcher unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        expected = b"committed-core"
+        digest = __import__("hashlib").sha256(expected).hexdigest()
+        launcher._verify_blob_triple(expected, expected, expected, digest)
+        for changed in (
+            (b"changed-core", expected, expected),
+            (expected, b"changed-head", expected),
+            (expected, expected, b"changed-worktree"),
+        ):
+            with self.assertRaises(Exception):
+                launcher._verify_blob_triple(*changed, digest)
+
+        with tempfile.TemporaryDirectory() as name:
+            private = Path(name) / "oversized.bin"
+            private.write_bytes(b"x" * (launcher.MAX_PRIVATE_INPUT_BYTES + 1))
+            private.chmod(0o600)
+            with self.assertRaises(Exception):
+                launcher._read_owner_file(private)
+
     def test_launcher_keychain_read_is_fixed_service_bounded_and_never_printed(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_keychain_test", LAUNCHER)
         if spec is None or spec.loader is None:

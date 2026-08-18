@@ -22,15 +22,55 @@ import sys
 V3 = Path(__file__).resolve().parent
 EXPECTED_RUNNER_SHA256 = "984608ff631d3c8f095a5471d0e52d3e040fc1c91ee12499467ff855057897f4"
 EXPECTED_CONTRACT_SHA256 = "c5da4a227f8b5e0388bd2e86427e4d93b9659535550c7dba5d1dcf96950125ec"
+EXPECTED_CORE_COMMIT = "d8b82f019da60ee148456e2f01d3e15d453a63fd"
+RUNNER_RELATIVE_PATH = "research/provider-live-roadmap/p3-api/v3/live_runner.py"
+CONTRACT_RELATIVE_PATH = "research/provider-live-roadmap/p3-api/v3/live-contract.json"
+MAX_BOUND_ARTIFACT_BYTES = 4 * 1024 * 1024
+MAX_PRIVATE_INPUT_BYTES = 1024 * 1024
+
+
+def _read_descriptor(path: Path, *, maximum_bytes: int, owner_private: bool) -> bytes:
+    if not path.is_absolute():
+        raise RuntimeError("private input unavailable" if owner_private else "bound core unavailable")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise RuntimeError("private input unavailable" if owner_private else "bound core unavailable") from None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size > maximum_bytes
+            or (
+                owner_private
+                and (
+                    metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                )
+            )
+        ):
+            raise RuntimeError("private input unavailable" if owner_private else "bound core unavailable")
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > maximum_bytes:
+            raise RuntimeError("private input unavailable" if owner_private else "bound core unavailable")
+        return raw
+    finally:
+        os.close(descriptor)
 
 
 def _read_bound(path: Path, expected_sha256: str) -> bytes:
-    if not path.is_absolute() or path.is_symlink():
-        raise RuntimeError("bound core unavailable")
-    metadata = path.stat()
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise RuntimeError("bound core unavailable")
-    raw = path.read_bytes()
+    raw = _read_descriptor(
+        path, maximum_bytes=MAX_BOUND_ARTIFACT_BYTES, owner_private=False
+    )
     if hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise RuntimeError("bound core unavailable")
     return raw
@@ -48,25 +88,83 @@ def _load_runner():
     return module
 
 
+def _git(repo_root: Path, *arguments: str) -> bytes:
+    environment = {
+        "GIT_ASKPASS": "/usr/bin/false",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_SSH_COMMAND": "/usr/bin/false",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "SSH_ASKPASS": "/usr/bin/false",
+    }
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/git", "-C", str(repo_root), *arguments],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError("bound core unavailable") from None
+    if completed.returncode:
+        raise RuntimeError("bound core unavailable")
+    return completed.stdout
+
+
+def _verify_blob_triple(
+    core_raw: bytes, head_raw: bytes, working_raw: bytes, expected_sha256: str
+) -> None:
+    if not all(isinstance(value, bytes) for value in (core_raw, head_raw, working_raw)):
+        raise RuntimeError("bound core unavailable")
+    if not (core_raw == head_raw == working_raw):
+        raise RuntimeError("bound core unavailable")
+    if hashlib.sha256(core_raw).hexdigest() != expected_sha256:
+        raise RuntimeError("bound core unavailable")
+
+
 def _verify_core_commit(repo_root: Path) -> None:
-    del repo_root
-    # Root activation replaces this fail-closed gate with an ancestor commit
-    # plus `git show <core>:runner/contract` blob equality checks.
-    raise RuntimeError("launcher activation unavailable")
+    if not repo_root.is_absolute() or repo_root.is_symlink():
+        raise RuntimeError("bound core unavailable")
+    try:
+        resolved_root = repo_root.resolve(strict=True)
+        expected_root = V3.parents[3].resolve(strict=True)
+    except OSError:
+        raise RuntimeError("bound core unavailable") from None
+    if resolved_root != expected_root:
+        raise RuntimeError("bound core unavailable")
+    top_level = _git(resolved_root, "rev-parse", "--show-toplevel")
+    try:
+        reported_root = Path(top_level.decode("utf-8").strip()).resolve(strict=True)
+    except (OSError, UnicodeError):
+        raise RuntimeError("bound core unavailable") from None
+    if reported_root != resolved_root:
+        raise RuntimeError("bound core unavailable")
+    _git(resolved_root, "merge-base", "--is-ancestor", EXPECTED_CORE_COMMIT, "HEAD")
+    for relative_path, expected_sha256 in (
+        (RUNNER_RELATIVE_PATH, EXPECTED_RUNNER_SHA256),
+        (CONTRACT_RELATIVE_PATH, EXPECTED_CONTRACT_SHA256),
+    ):
+        working_path = resolved_root / relative_path
+        _verify_blob_triple(
+            _git(resolved_root, "show", f"{EXPECTED_CORE_COMMIT}:{relative_path}"),
+            _git(resolved_root, "show", f"HEAD:{relative_path}"),
+            _read_bound(working_path, expected_sha256),
+            expected_sha256,
+        )
 
 
 def _read_owner_file(path: Path) -> bytes:
-    if not path.is_absolute() or path.is_symlink():
-        raise RuntimeError("private input unavailable")
-    metadata = path.stat()
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or metadata.st_nlink != 1
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-    ):
-        raise RuntimeError("private input unavailable")
-    return path.read_bytes()
+    return _read_descriptor(
+        path, maximum_bytes=MAX_PRIVATE_INPUT_BYTES, owner_private=True
+    )
 
 
 def _read_keychain_secret() -> bytes:
