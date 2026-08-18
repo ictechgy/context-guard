@@ -96,6 +96,10 @@ EXPECTED_ARTIFACTS = {
         "path": "research/provider-live-roadmap/p3-api/v3/protocol-amendment.json",
         "sha256": "7795f456bbe083f2776cee252463627c80245f2032dc7b7f1a5f8078f2b294bd",
     },
+    "response_amendment": {
+        "path": "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
+        "sha256": "5929e351c80b17d8207675ad31481769c5412196da133f0c7113ddd3a1783901",
+    },
 }
 EXPECTED_CLAIMS = {
     "activation": False,
@@ -116,7 +120,14 @@ EXPECTED_REQUEST = {
     "endpoint": "/v1/messages",
     "max_tokens": 4096,
     "sampling_parameters": "provider_default_unset",
-    "thinking": "disabled",
+    "thinking": "provider_default_private_ignored_for_scoring",
+}
+EXPECTED_RESUME = {
+    "policy": "hmac_verify_single_capsule_without_redispatch",
+    "previous_contract_sha256": "ebbbdfe4a61d953e4f321d39003356d52a79c15c86216179e530b4e31c0cf50e",
+    "previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
+    "previous_response_sha256": "5f4e79d9377f6c0dda14fb898d71d4e85bca999f44db2627e51f9fabfb8116d6",
+    "sealed_unit_id": "swift_argument_parser_boundary_hardening:r1:a010",
 }
 EXPECTED_LIMITS = {
     "batch_count": 2,
@@ -284,6 +295,7 @@ def validate_contract(contract: dict[str, object], *, repo_root: Path) -> None:
             "provider",
             "reservation",
             "request",
+            "resume",
             "runtime",
             "safety",
             "schema_version",
@@ -299,6 +311,8 @@ def validate_contract(contract: dict[str, object], *, repo_root: Path) -> None:
         refuse("invalid_provider")
     if top["request"] != EXPECTED_REQUEST:
         refuse("invalid_request")
+    if top["resume"] != EXPECTED_RESUME:
+        refuse("invalid_resume")
     if top["limits"] != EXPECTED_LIMITS:
         refuse("invalid_limits")
     if top["reservation"] != EXPECTED_RESERVATION:
@@ -411,10 +425,31 @@ def parse_anthropic_response(
     if type(content) is not list or not content:
         refuse("malformed_provider_result")
     answer_parts: list[str] = []
+    saw_text = False
     for block in content:
-        if type(block) is not dict or block.get("type") != "text" or not isinstance(block.get("text"), str):
+        if type(block) is not dict:
             refuse("unsupported_provider_content")
+        block_type = block.get("type")
+        if block_type == "thinking":
+            if (
+                saw_text
+                or set(block) != {"signature", "thinking", "type"}
+                or not isinstance(block.get("signature"), str)
+                or not isinstance(block.get("thinking"), str)
+            ):
+                refuse("unsupported_provider_content")
+            continue
+        if (
+            block_type != "text"
+            or saw_text
+            or set(block) != {"text", "type"}
+            or not isinstance(block.get("text"), str)
+        ):
+            refuse("unsupported_provider_content")
+        saw_text = True
         answer_parts.append(block["text"])
+    if not saw_text or content[-1].get("type") != "text":
+        refuse("unsupported_provider_content")
     answer = "".join(answer_parts)
     if not answer or len(answer.encode("utf-8")) > EXPECTED_LIMITS["max_answer_bytes"]:
         refuse("provider_answer_limit")
@@ -1141,6 +1176,202 @@ def _derive_ledger_key(registry_key: bytes) -> bytes:
         b"contextguard/p3-v3-ledger-hmac/v1\0",
         hashlib.sha256,
     ).digest()
+
+
+def _read_owner_private_bytes(path: Path, *, maximum_bytes: int) -> bytes:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        refuse("private_state_unavailable")
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > maximum_bytes
+        ):
+            refuse("private_state_unavailable")
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > maximum_bytes:
+            refuse("private_state_unavailable")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def _copy_owner_private_exact(source: Path, target: Path, *, maximum_bytes: int) -> None:
+    raw = _read_owner_private_bytes(source, maximum_bytes=maximum_bytes)
+    if target.exists() or target.is_symlink():
+        if _read_owner_private_bytes(target, maximum_bytes=maximum_bytes) != raw:
+            refuse("migration_target_mismatch")
+        return
+    _private_file(target, raw)
+
+
+def _migrate_single_verified_capsule_core(
+    *,
+    contract: Mapping[str, object],
+    plan: object,
+    previous_state_root: Path,
+    previous_output_root: Path,
+    state_root: Path,
+    output_root: Path,
+    registry_key: bytes,
+    expected_resume: Mapping[str, object],
+) -> None:
+    expected_keys = {
+        "policy", "previous_contract_sha256", "previous_plan_sha256",
+        "previous_response_sha256", "sealed_unit_id",
+    }
+    if (
+        type(expected_resume) is not dict
+        or set(expected_resume) != expected_keys
+        or expected_resume.get("policy")
+        != "hmac_verify_single_capsule_without_redispatch"
+    ):
+        refuse("invalid_resume")
+    validated_plan = _validate_plan(plan)
+    batches = build_batch_plans(validated_plan)
+    plan_sha = _plan_digest(batches)
+    if plan_sha != expected_resume["previous_plan_sha256"]:
+        refuse("migration_plan_mismatch")
+    item_by_id = {item["scheduled_unit_id"]: item for item in validated_plan}
+    unit_id = expected_resume["sealed_unit_id"]
+    item = item_by_id.get(unit_id)
+    if item is None:
+        refuse("migration_plan_mismatch")
+    if previous_state_root == state_root or previous_output_root == output_root:
+        refuse("migration_root_mismatch")
+    ledger_key = _derive_ledger_key(registry_key)
+    previous = _ledger_snapshot(previous_state_root, ledger_key)
+    if (
+        previous.get("schema_version") != "contextguard.p3-v3-ledger/v2"
+        or previous.get("contract_sha256")
+        != expected_resume["previous_contract_sha256"]
+        or previous.get("plan_sha256") != plan_sha
+        or previous.get("spend_status") != "unknown"
+    ):
+        refuse("migration_source_mismatch")
+    previous_units = previous.get("units")
+    if type(previous_units) is not dict or set(previous_units) != set(item_by_id):
+        refuse("migration_source_mismatch")
+    dispatched: list[tuple[str, dict[str, object]]] = []
+    for candidate_id, unit in previous_units.items():
+        terminal = unit.get("terminal") if type(unit) is dict else None
+        if type(terminal) is not dict:
+            refuse("migration_source_mismatch")
+        if terminal.get("dispatched"):
+            dispatched.append((candidate_id, terminal))
+        elif unit.get("status") != "not_dispatched_spend_unknown":
+            refuse("migration_source_mismatch")
+    if len(dispatched) != 1 or dispatched[0][0] != unit_id:
+        refuse("migration_source_mismatch")
+    terminal = dispatched[0][1]
+    if (
+        terminal.get("status") != "failed"
+        or terminal.get("completion_event") != "provider_receipt_missing"
+        or terminal.get("http_status") != 200
+        or terminal.get("response_sha256")
+        != expected_resume["previous_response_sha256"]
+    ):
+        refuse("migration_source_mismatch")
+    previous_private = previous_output_root / "private"
+    capsule = _read_transport_capsule(
+        previous_private, unit_id, ledger_key, item
+    )
+    if capsule is None or sha256(capsule["body"]) != expected_resume[
+        "previous_response_sha256"
+    ]:
+        refuse("migration_source_mismatch")
+    status, _error, parsed = _classify_capsule(capsule, contract=contract)
+    if status != "completed" or parsed is None:
+        refuse("migration_reclassification_failed")
+
+    _private_dir(state_root)
+    _private_dir(output_root)
+    private_root = output_root / "private"
+    _private_dir(private_root)
+    stem = _capsule_stem(unit_id)
+    _copy_owner_private_exact(
+        previous_private / (stem + ".body"),
+        private_root / (stem + ".body"),
+        maximum_bytes=EXPECTED_LIMITS["max_response_bytes"],
+    )
+    _copy_owner_private_exact(
+        previous_private / (stem + ".json"),
+        private_root / (stem + ".json"),
+        maximum_bytes=65536,
+    )
+    reservation = calculate_worst_case_reservation(
+        contract=contract, batches=batches
+    )
+    migration = {
+        "policy": expected_resume["policy"],
+        "previous_contract_sha256": expected_resume["previous_contract_sha256"],
+        "previous_response_sha256": expected_resume["previous_response_sha256"],
+        "sealed_unit_id": unit_id,
+        "status": "verified_capsule_ready_for_reclassification",
+    }
+
+    def initialize(state: dict[str, object], _key: bytes) -> None:
+        _initialize_ledger(
+            state,
+            contract=contract,
+            batches=batches,
+            plan_sha256=plan_sha,
+            reservation=reservation,
+        )
+        if state.get("migration") is not None:
+            if state["migration"] != migration:
+                refuse("migration_target_mismatch")
+            migrated_unit = state["units"].get(unit_id)
+            if type(migrated_unit) is not dict or migrated_unit.get("status") not in {
+                "reserved", "completed",
+            }:
+                refuse("migration_target_mismatch")
+            return
+        migrated_unit = state["units"].get(unit_id)
+        if type(migrated_unit) is not dict or migrated_unit.get("status") != "pending":
+            refuse("migration_target_mismatch")
+        migrated_unit["reserved"] = True
+        migrated_unit["status"] = "reserved"
+        state["migration"] = migration
+
+    _with_ledger(state_root, ledger_key, initialize)
+    if _read_transport_capsule(private_root, unit_id, ledger_key, item) is None:
+        refuse("migration_target_mismatch")
+
+
+def _migrate_single_verified_capsule(
+    *,
+    contract: Mapping[str, object],
+    plan: object,
+    previous_state_root: Path,
+    previous_output_root: Path,
+    state_root: Path,
+    output_root: Path,
+    registry_key: bytes,
+) -> None:
+    _migrate_single_verified_capsule_core(
+        contract=contract,
+        plan=plan,
+        previous_state_root=previous_state_root,
+        previous_output_root=previous_output_root,
+        state_root=state_root,
+        output_root=output_root,
+        registry_key=registry_key,
+        expected_resume=EXPECTED_RESUME,
+    )
 
 
 def _ledger_seal(value: Mapping[str, object], key: bytes) -> str:
@@ -1913,6 +2144,7 @@ def _execute_schedule_test_core(
         or contract_value.get("pricing") != EXPECTED_PRICING
         or contract_value.get("provider") != EXPECTED_PROVIDER
         or contract_value.get("request") != EXPECTED_REQUEST
+        or contract_value.get("resume") != EXPECTED_RESUME
         or contract_value.get("safety") != EXPECTED_SAFETY
         or contract_value.get("reservation") != EXPECTED_RESERVATION
         or contract_value.get("status") != "approved_scope_requires_two_use_external_envelopes"
@@ -2542,6 +2774,8 @@ def run_live_authorized(
     corpus_root: Path,
     output_root: Path,
     state_root: Path,
+    previous_output_root: Path,
+    previous_state_root: Path,
     approvals: Sequence[object],
     verification_key: bytes,
     registry_key: bytes,
@@ -2569,6 +2803,15 @@ def run_live_authorized(
     validate_pricing_window(contract)
     plan = prepare_live_plan(contract=contract, repo_root=repo_root, corpus_root=corpus_root)
     batches = build_batch_plans(plan)
+    _migrate_single_verified_capsule(
+        contract=contract,
+        plan=plan,
+        previous_state_root=previous_state_root,
+        previous_output_root=previous_output_root,
+        state_root=state_root,
+        output_root=output_root,
+        registry_key=registry_key,
+    )
     runner_sha = _runner_identity()
     approval_module = _load_bound_approval_module(
         contract=contract, repo_root=repo_root

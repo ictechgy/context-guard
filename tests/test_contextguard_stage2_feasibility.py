@@ -126,6 +126,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
         "research/provider-live-roadmap/p3-api/v3/protocol-amendment.json",
         "research/provider-live-roadmap/p3-api/v3/rehearsal-report.json",
+        "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
         "research/provider-live-roadmap/p3-api/v3/schedule.json",
         "research/provider-live-roadmap/p3-api/v3/scorer-only/checkers.json",
         "research/provider-free-roadmap/README.md",

@@ -18,6 +18,7 @@ RUNNER = V3 / "live_runner.py"
 CONTRACT = V3 / "live-contract.json"
 LAUNCHER = V3 / "live_launcher.py"
 PROTOCOL_AMENDMENT = V3 / "protocol-amendment.json"
+RESPONSE_AMENDMENT = V3 / "response-amendment.json"
 
 
 def load_runner():
@@ -60,7 +61,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 "endpoint": "/v1/messages",
                 "max_tokens": 4096,
                 "sampling_parameters": "provider_default_unset",
-                "thinking": "disabled",
+                "thinking": "provider_default_private_ignored_for_scoring",
             },
         )
         self.assertEqual(contract["destination_allowlist"], [{
@@ -167,6 +168,167 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         }, separators=(",", ":"), sort_keys=True).encode()
         parsed = runner.parse_anthropic_response(raw, contract=contract)
         self.assertEqual(parsed["usage"]["provider_total_tokens"], 12)
+
+    def test_response_amendment_accepts_private_thinking_and_scores_only_text(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        amendment = json.loads(RESPONSE_AMENDMENT.read_bytes())
+        raw = json.dumps({
+            "content": [
+                {"signature": "private-signature", "thinking": "private-reasoning", "type": "thinking"},
+                {"text": "PUBLIC-DIFF", "type": "text"},
+            ],
+            "id": "msg-thinking",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "stop_details": None,
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "type": "message",
+            "usage": {"input_tokens": 11, "output_tokens": 3},
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+        runner.validate_contract(contract, repo_root=ROOT)
+        parsed = runner.parse_anthropic_response(raw, contract=contract)
+        self.assertEqual(parsed["answer"], "PUBLIC-DIFF")
+        self.assertNotIn("thinking", parsed)
+        self.assertNotIn("private-reasoning", json.dumps(parsed))
+        self.assertEqual(
+            contract["artifacts"]["response_amendment"]["sha256"],
+            runner.sha256(RESPONSE_AMENDMENT.read_bytes()),
+        )
+        self.assertEqual(amendment["correction"]["remaining_measurement_calls"], 287)
+        self.assertFalse(amendment["correction"]["redispatch_sealed_unit"])
+        self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
+
+        malformed = json.loads(raw)
+        malformed["content"][0]["debug"] = "not-allowed"
+        with self.assertRaises(Exception):
+            runner.parse_anthropic_response(
+                json.dumps(malformed, separators=(",", ":"), sort_keys=True).encode(),
+                contract=contract,
+            )
+
+    def test_verified_capsule_migration_resumes_without_redispatch(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        prompt = "migration-prompt"
+        plan = []
+        for index in range(288):
+            item = {
+                "scheduled_unit_id": f"migration-unit-{index:03d}",
+                "prompt": prompt,
+                "payload_sha256": runner.sha256(prompt.encode()),
+                "task_id": "task",
+                "arm_id": "a010",
+                "repetition": index % 3,
+            }
+            item["request_id"] = runner._request_identity(item)
+            plan.append(item)
+        response = json.dumps({
+            "content": [
+                {"signature": "private-signature", "thinking": "private-reasoning", "type": "thinking"},
+                {"text": "READY", "type": "text"},
+            ],
+            "id": "msg-migration",
+            "model": "claude-sonnet-5",
+            "role": "assistant",
+            "stop_details": None,
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "type": "message",
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }, separators=(",", ":"), sort_keys=True).encode()
+        registry_key = bytes(range(32, 64))
+        derived_key = runner._derive_ledger_key(registry_key)
+        batches = runner.build_batch_plans(plan)
+        reservation = runner.calculate_worst_case_reservation(
+            contract=contract, batches=batches
+        )
+        plan_sha = runner._plan_digest(batches)
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            previous_state = root / "previous-state"
+            previous_output = root / "previous-output"
+            state = root / "state"
+            output = root / "output"
+            for path in (previous_state, previous_output, state, output):
+                path.mkdir(mode=0o700)
+            previous_private = previous_output / "private"
+            runner._private_dir(previous_private)
+
+            def initialize_previous(value, _key):
+                runner._initialize_ledger(
+                    value, contract=contract, batches=batches,
+                    plan_sha256=plan_sha, reservation=reservation,
+                )
+                value["contract_sha256"] = runner.EXPECTED_RESUME[
+                    "previous_contract_sha256"
+                ]
+                first = value["units"][plan[0]["scheduled_unit_id"]]
+                first["reserved"] = True
+                first["status"] = "reserved"
+                runner._mark_not_dispatched(value)
+                record = runner._terminal_record(
+                    item=plan[0],
+                    capsule={"body": response, "http_status": 200, "provider_request_id": "private"},
+                    status="failed", error="provider_receipt_missing", parsed=None,
+                    started=1, ended=2,
+                )
+                runner._apply_terminal(
+                    value, unit_id=plan[0]["scheduled_unit_id"], record=record
+                )
+                runner._mark_terminal_batches(value, batches)
+
+            runner._with_ledger(previous_state, derived_key, initialize_previous)
+            runner._write_transport_capsule(
+                previous_private,
+                plan[0]["scheduled_unit_id"],
+                {"body": response, "http_status": 200, "provider_request_id": "private"},
+                derived_key,
+                plan[0],
+            )
+            expected_resume = {
+                "policy": "hmac_verify_single_capsule_without_redispatch",
+                "previous_contract_sha256": runner.EXPECTED_RESUME[
+                    "previous_contract_sha256"
+                ],
+                "previous_plan_sha256": plan_sha,
+                "previous_response_sha256": runner.sha256(response),
+                "sealed_unit_id": plan[0]["scheduled_unit_id"],
+            }
+            runner._migrate_single_verified_capsule_core(
+                contract=contract,
+                plan=plan,
+                previous_state_root=previous_state,
+                previous_output_root=previous_output,
+                state_root=state,
+                output_root=output,
+                registry_key=registry_key,
+                expected_resume=expected_resume,
+            )
+            calls = []
+            result = runner._execute_schedule_test_core(
+                contract=contract,
+                plan=plan,
+                state_root=state,
+                output_root=output,
+                approval_consume=lambda scope: {"approved": scope["batch_id"]},
+                invoke=lambda item: (calls.append(item["scheduled_unit_id"]) or {
+                    "body": response, "http_status": 200, "provider_request_id": "private"
+                }),
+                scorer_loader=lambda: (lambda capsules, prepared: {
+                    "failed_units": 0,
+                    "passed_units": len(prepared),
+                    "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
+                    "status": "complete",
+                    "total_units": len(prepared),
+                }),
+                ledger_key=registry_key,
+            )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(calls), 287)
+            self.assertNotIn(plan[0]["scheduled_unit_id"], calls)
 
     def test_transport_captures_actual_request_id_header_privately(self) -> None:
         runner = load_runner()
@@ -371,14 +533,15 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_activation_binds_amended_core_ancestor_and_exact_blobs(self) -> None:
+    def test_launcher_remains_fail_closed_until_response_amendment_activation(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        launcher._verify_core_commit(ROOT)
+        with self.assertRaises(Exception):
+            launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
             "f7c687b6937b24da506360599988ef8e43f274d4",
@@ -928,6 +1091,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     "body": response, "http_status": 200, "provider_request_id": None
                 }
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
+                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
                 mock.patch.object(runner, "invoke_anthropic", side_effect=fake_invoke), \
                 mock.patch.object(runner, "_bound_scorer_loader", return_value=lambda: {
                     "unreachable": True
@@ -939,6 +1103,8 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                         corpus_root=root,
                         output_root=output,
                         state_root=state,
+                        previous_output_root=root,
+                        previous_state_root=root,
                         approvals=[approval, approval],
                         verification_key=verification_key,
                         registry_key=registry_key,
@@ -1022,6 +1188,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     }
                 return score
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
+                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
                 mock.patch.object(runner, "_load_bound_approval_module", return_value=module), \
                 mock.patch.object(module, "authorize_and_consume", side_effect=crash_once), \
                 mock.patch.object(runner, "_bound_scorer_loader", side_effect=lambda **kwargs: fake_scorer):
@@ -1029,6 +1196,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     runner.run_live_authorized(
                         contract_path=CONTRACT, repo_root=ROOT, corpus_root=root,
                         output_root=output, state_root=state, approvals=approvals,
+                        previous_output_root=root, previous_state_root=root,
                         verification_key=verification_key, registry_key=registry_key,
                         api_key=b"sk-ant-api03-test-secret-never-publish",
                     )
@@ -1037,11 +1205,13 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 calls.append(item["scheduled_unit_id"])
                 return {"body": response, "http_status": 200, "provider_request_id": None}
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
+                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
                 mock.patch.object(runner, "invoke_anthropic", side_effect=fake_invoke), \
                 mock.patch.object(runner, "_bound_scorer_loader", side_effect=lambda **kwargs: fake_scorer):
                 result = runner.run_live_authorized(
                     contract_path=CONTRACT, repo_root=ROOT, corpus_root=root,
                     output_root=output, state_root=state, approvals=approvals,
+                    previous_output_root=root, previous_state_root=root,
                     verification_key=verification_key, registry_key=registry_key,
                     api_key=b"sk-ant-api03-test-secret-never-publish",
                 )
@@ -1425,6 +1595,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     signing_key=verification_key,
                 ))
             with mock.patch.object(runner, "prepare_live_plan", return_value=plan), \
+                mock.patch.object(runner, "_migrate_single_verified_capsule"), \
                 mock.patch.object(runner, "invoke_anthropic", return_value={
                     "body": response,
                     "http_status": 200,
@@ -1445,6 +1616,8 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     corpus_root=root,
                     output_root=output,
                     state_root=state,
+                    previous_output_root=root,
+                    previous_state_root=root,
                     approvals=approvals,
                     verification_key=verification_key,
                     registry_key=registry_key,
