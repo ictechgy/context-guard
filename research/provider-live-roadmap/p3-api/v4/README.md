@@ -49,6 +49,21 @@ frozen capture bytes, task ID, and requested arm. The returned cell ID and
 prompt SHA identify the only permitted existing input. The report alone does
 not activate a provider call.
 
+`live_runner.py` applies that policy to the frozen 288-unit schedule before
+building any Anthropic request.  It seals both the requested arm and the
+policy-selected prompt identity into request IDs, approval scopes, transport
+capsules, the private ledger, and public evidence.  Selected prompt bytes are
+rechecked against the frozen capture and the same-task ordinary ceiling at the
+last request-building boundary.  V3 approvals, ledgers, and capsules cannot be
+migrated into this V4 protocol, and the historical V3 launcher now refuses
+before reading approval or credential material.
+
+Activation uses two commits.  The core commit leaves `live_launcher.py`
+fail-closed.  A separately reviewed follow-up commit may bind that exact core
+commit plus the exact runner and contract blobs; only then is the V4 launcher
+an executable production surface.  This changes no historical V3 call or
+result and performs no provider call by itself.
+
 Rebuild the metadata-only report without network or provider access:
 
 ```bash

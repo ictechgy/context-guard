@@ -642,6 +642,38 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
+    def test_historical_v3_launcher_refuses_execute_before_reading_live_inputs(self) -> None:
+        spec = importlib.util.spec_from_file_location("p3_v3_retired_launcher_test", LAUNCHER)
+        if spec is None or spec.loader is None:
+            raise AssertionError("launcher unavailable")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            arguments = [
+                "--execute",
+                "--contract", str(CONTRACT),
+                "--repo-root", str(ROOT),
+                "--corpus-root", str(root),
+                "--output-root", str(root / "output"),
+                "--state-root", str(root / "state"),
+                "--previous-output-root", str(root / "previous-output"),
+                "--previous-state-root", str(root / "previous-state"),
+                "--approval-1", str(root / "approval-1.json"),
+                "--approval-2", str(root / "approval-2.json"),
+                "--verification-key-file", str(root / "verification.key"),
+                "--registry-key-file", str(root / "registry.key"),
+            ]
+            with (
+                mock.patch.object(launcher, "_load_runner") as load_runner,
+                mock.patch.object(launcher, "_read_owner_file") as read_owner_file,
+                mock.patch.object(launcher, "_read_keychain_secret") as read_keychain,
+            ):
+                self.assertEqual(launcher.main(arguments), 2)
+            load_runner.assert_not_called()
+            read_owner_file.assert_not_called()
+            read_keychain.assert_not_called()
+
     def test_launcher_activation_binds_hardened_core(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:

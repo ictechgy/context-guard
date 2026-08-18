@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Explicit production launcher for the pinned v3 live gate.
+"""Retired launcher for the historical pinned v3 live gate.
 
-Nothing is read and no network-capable function is called unless ``--execute``
-is present. Approval and signing material are read only from explicit
-owner-only files; the API key is fetched from the fixed owner Keychain service
-and is never printed.
+The historical helpers remain available for evidence validation, but ``main``
+refuses execution before reading approval, signing, or credential material.
 """
 
 from __future__ import annotations
@@ -211,6 +209,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.execute:
         print("explicit --execute is required; no live inputs were read", file=sys.stderr)
         return 2
+    print("historical v3 execution is retired; use the v4 launcher", file=sys.stderr)
+    return 2
+
+    # Kept below as frozen historical implementation context. It is unreachable
+    # so the v3 launcher cannot read approvals, keys, or provider credentials.
     required = (
         args.contract, args.repo_root, args.corpus_root, args.output_root,
         args.state_root, args.previous_output_root, args.previous_state_root,
