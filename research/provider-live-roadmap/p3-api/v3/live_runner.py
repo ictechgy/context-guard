@@ -92,6 +92,10 @@ EXPECTED_ARTIFACTS = {
         "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
         "sha256": "a60429640b5c89ecae4febfb8da33616ba6ac909661fa393398ce17f55263cf1",
     },
+    "protocol_amendment": {
+        "path": "research/provider-live-roadmap/p3-api/v3/protocol-amendment.json",
+        "sha256": "7795f456bbe083f2776cee252463627c80245f2032dc7b7f1a5f8078f2b294bd",
+    },
 }
 EXPECTED_CLAIMS = {
     "activation": False,
@@ -111,7 +115,7 @@ EXPECTED_REQUEST = {
     "anthropic_version": "2023-06-01",
     "endpoint": "/v1/messages",
     "max_tokens": 4096,
-    "temperature": 0,
+    "sampling_parameters": "provider_default_unset",
     "thinking": "disabled",
 }
 EXPECTED_LIMITS = {
@@ -124,8 +128,10 @@ EXPECTED_LIMITS = {
     "max_request_bytes": 96000,
     "max_response_bytes": 4194304,
     "per_batch_spend_cap_usd": "20.00",
+    "prior_protocol_validation_calls": 1,
     "scheduled_units": 288,
     "timeout_seconds": 120,
+    "total_external_call_cap": 289,
 }
 EXPECTED_PRICING = {
     "authority": "published_list_price_not_billing_receipt",
@@ -148,6 +154,12 @@ EXPECTED_SAFETY = {
     "scorer_load_after_all_calls": True,
 }
 EXPECTED_RESERVATION = {
+    "prior_protocol_validation": {
+        "attempted_calls": 1,
+        "included_in_cumulative_cap": True,
+        "spend_status": "unknown",
+        "worst_case_list_price_micro_usd": 249344,
+    },
     "whole_batch_worst_case": {
         "body_bytes_per_unit": "exact_utf8_request_body_length",
         "input_overhead_tokens_per_unit": 8192,
@@ -365,7 +377,6 @@ def build_request_body(item: Mapping[str, object], *, contract: Mapping[str, obj
             "max_tokens": 4096,
             "messages": [{"content": prompt, "role": "user"}],
             "model": "claude-sonnet-5",
-            "temperature": 0,
         }
     )
     if len(raw) > EXPECTED_LIMITS["max_request_bytes"]:
@@ -722,7 +733,8 @@ def calculate_worst_case_reservation(
     if type(batches) not in {list, tuple} or len(batches) != EXPECTED_LIMITS["batch_count"]:
         refuse("invalid_batch_cardinality")
     batch_costs: list[dict[str, object]] = []
-    cumulative = 0
+    prior = EXPECTED_RESERVATION["prior_protocol_validation"]
+    cumulative = prior["worst_case_list_price_micro_usd"]
     for batch in batches:
         units = batch.get("items")
         if type(units) is not list or len(units) != EXPECTED_LIMITS["batch_units"]:
@@ -762,6 +774,7 @@ def calculate_worst_case_reservation(
         "batches": batch_costs,
         "cumulative_worst_case_list_price_micro_usd": cumulative,
         "formula": copy.deepcopy(EXPECTED_RESERVATION["whole_batch_worst_case"]),
+        "prior_protocol_validation": copy.deepcopy(prior),
     }
 
 

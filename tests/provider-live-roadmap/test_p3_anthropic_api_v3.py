@@ -17,6 +17,7 @@ V3 = ROOT / "research/provider-live-roadmap/p3-api/v3"
 RUNNER = V3 / "live_runner.py"
 CONTRACT = V3 / "live-contract.json"
 LAUNCHER = V3 / "live_launcher.py"
+PROTOCOL_AMENDMENT = V3 / "protocol-amendment.json"
 
 
 def load_runner():
@@ -46,6 +47,8 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         self.assertEqual(contract["limits"]["batch_count"], 2)
         self.assertEqual(contract["limits"]["per_batch_spend_cap_usd"], "20.00")
         self.assertEqual(contract["limits"]["cumulative_spend_cap_usd"], "40.00")
+        self.assertEqual(contract["limits"]["prior_protocol_validation_calls"], 1)
+        self.assertEqual(contract["limits"]["total_external_call_cap"], 289)
         self.assertIn("whole_batch_worst_case", contract["reservation"])
         self.assertEqual(contract["reservation"]["whole_batch_worst_case"]["output_tokens_per_unit"], 4096)
         self.assertEqual(contract["safety"]["retention"], "unavailable_manual_owner_cleanup")
@@ -56,7 +59,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                 "anthropic_version": "2023-06-01",
                 "endpoint": "/v1/messages",
                 "max_tokens": 4096,
-                "temperature": 0,
+                "sampling_parameters": "provider_default_unset",
                 "thinking": "disabled",
             },
         )
@@ -79,11 +82,63 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
                     "content": "Task and authenticated context", "role": "user"
                 }],
                 "model": "claude-sonnet-5",
-                "temperature": 0,
             },
         )
+        self.assertNotIn("temperature", json.loads(raw))
         self.assertNotIn("cache", raw.decode("ascii").lower())
         self.assertNotIn("tools", json.loads(raw))
+
+    def test_protocol_amendment_excludes_failed_preflight_and_reserves_unknown_spend(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        amendment = json.loads(PROTOCOL_AMENDMENT.read_bytes())
+
+        runner.validate_contract(contract, repo_root=ROOT)
+        self.assertEqual(
+            contract["artifacts"]["protocol_amendment"]["sha256"],
+            runner.sha256(PROTOCOL_AMENDMENT.read_bytes()),
+        )
+        self.assertEqual(amendment["failed_preflight"]["attempted_calls"], 1)
+        self.assertEqual(amendment["failed_preflight"]["http_status"], 400)
+        self.assertEqual(amendment["failed_preflight"]["provider_usage"], "unavailable")
+        self.assertEqual(amendment["failed_preflight"]["spend_status"], "unknown")
+        self.assertFalse(amendment["failed_preflight"]["included_in_analysis"])
+        self.assertFalse(amendment["failed_preflight"]["retried"])
+        self.assertEqual(amendment["correction"]["removed_request_fields"], ["temperature"])
+        self.assertEqual(amendment["correction"]["measurement_calls"], 288)
+        self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
+        self.assertTrue(amendment["authorization"]["fresh_approval_required"])
+        prior = contract["reservation"]["prior_protocol_validation"]
+        self.assertEqual(prior["attempted_calls"], 1)
+        self.assertEqual(prior["spend_status"], "unknown")
+        self.assertEqual(prior["worst_case_list_price_micro_usd"], 249344)
+        self.assertTrue(prior["included_in_cumulative_cap"])
+
+        plan = []
+        for index in range(288):
+            prompt = "bounded-protocol-amendment-prompt"
+            item = {
+                "scheduled_unit_id": f"amended-unit-{index:03d}",
+                "prompt": prompt,
+                "payload_sha256": runner.sha256(prompt.encode()),
+                "task_id": "task",
+                "arm_id": "a000",
+                "repetition": index % 3,
+            }
+            item["request_id"] = runner._request_identity(item)
+            plan.append(item)
+        reservation = runner.calculate_worst_case_reservation(
+            contract=contract,
+            batches=runner.build_batch_plans(plan),
+        )
+        batch_total = sum(
+            batch["worst_case_list_price_micro_usd"]
+            for batch in reservation["batches"]
+        )
+        self.assertEqual(
+            reservation["cumulative_worst_case_list_price_micro_usd"],
+            batch_total + prior["worst_case_list_price_micro_usd"],
+        )
 
     def test_usage_parser_accepts_bounded_current_optional_fields(self) -> None:
         runner = load_runner()
@@ -316,14 +371,15 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_activation_binds_core_ancestor_and_exact_blobs(self) -> None:
+    def test_launcher_remains_fail_closed_until_protocol_amendment_activation(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        launcher._verify_core_commit(ROOT)
+        with self.assertRaises(Exception):
+            launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
             "d8b82f019da60ee148456e2f01d3e15d453a63fd",

@@ -116,6 +116,18 @@ Its activation is intentionally separate from the core contract: it pins the
 core commit, runner bytes, and contract bytes and must be refreshed after the
 core commit is created.
 
+The first production protocol-validation request on 2026-08-18 was rejected
+before model output with HTTP 400 because `temperature` is deprecated for the
+selected model. It returned no usable provider usage receipt, was not retried,
+and is excluded from every benchmark outcome. Its spend is therefore unknown,
+not zero. `protocol-amendment.json` freezes this fact without storing the raw
+private response, removes `temperature` from future request bodies, leaves the
+288-unit schedule and all estimands unchanged, and reserves the failed call at
+the conservative maximum-request bound inside the existing USD 40 cumulative
+ceiling. A fresh approval must raise the lifetime external-call cap from 288 to
+289 before a new balanced 288-unit run may be activated; until then the old
+launcher hashes deliberately fail closed.
+
 Regenerate and verify locally without provider or network access:
 
 ```sh
