@@ -84,6 +84,38 @@ records only the provider-free audit probes and the 12 historical-checker
 rehearsals. Provider quality, token, cost, and savings evidence all remain
 explicitly unavailable, and provider execution remains unauthorized.
 
+## v3 live gate
+
+`live_runner.py` is a fail-closed, two-envelope gate for the frozen 288-unit
+schedule: two immutable 144-unit batches, a USD 20.00 ceiling per batch and
+USD 40.00 cumulative, one HTTPS `POST /v1/messages` request per unit, and no
+retry. Before either approval is consumed, it sums a conservative whole-batch
+list-price reservation from each exact request body plus 8,192 input-token
+overhead and 4,096 output tokens. It binds prompt preparation to this committed
+evaluator, the metadata-only capture, and an explicit captured-corpus root; it
+does not accept arbitrary prompt builders. A real run requires two exact
+one-use external approval envelopes, with the pinned approval module/schema and
+separate verification and registry keys.
+
+Batch authorization and each unit reservation are durable. The owner-only
+0700/0600 HMAC ledger is keyed by a domain-separated derivation of the external
+registry key and stores no key beside the ledger. A reserved unit with a sealed
+private transport capsule is reconstructed without replay; a reserved unit
+without one is recorded as ambiguous and all later units are marked
+not-dispatched/spend-unknown. Scoring is opened only after 288 terminal units;
+until bound patch/postimage/assertion scoring completes, public status remains
+`provider_receipts_sealed_pending_scoring`. Raw responses and provider request
+IDs remain private, and public evidence reports scheduled/reserved/provider-
+receipt/usage-complete counts rather than a hard-coded call count. Evidence
+retention is explicitly unavailable/manual-owner cleanup. Direct CLI invocation
+refuses; `live_launcher.py` is the separately bound production entry point and
+reads owner-only approval/verification/registry files and the fixed
+`contextguard-anthropic-p3` Keychain service only after an explicit
+`--execute`.
+Its activation is intentionally separate from the core contract: it pins the
+core commit, runner bytes, and contract bytes and must be refreshed after the
+core commit is created.
+
 Regenerate and verify locally without provider or network access:
 
 ```sh

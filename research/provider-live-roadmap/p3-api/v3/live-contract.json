@@ -1,0 +1,154 @@
+{
+  "artifacts": {
+    "approval_module": {
+      "path": "packages/context-guard-receipt/python/context_guard_receipt/external_approval.py",
+      "sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0"
+    },
+    "approval_schema": {
+      "path": "packages/context-guard-receipt/schemas/external-approval.schema.json",
+      "sha256": "c535d464311d9f7dd5b326face7596e6b930da4fb3e0350a5d3e0942e735eb69"
+    },
+    "canonical_credential_policy": {
+      "path": "context-guard-kit/credential_policy.py",
+      "sha256": "c7322d6d9fb1db0f294205fddd664137b9d797b9c8636db7cd3353fc986c15e6"
+    },
+    "evaluator": {
+      "path": "research/provider-live-roadmap/p3-api/v3/evaluator.py",
+      "sha256": "0db688ebb441b29ebb36d69e5ee3a8ffa169a8d637eb0c4e230be6fd9ad57c67"
+    },
+    "preregistration": {
+      "path": "research/provider-live-roadmap/p3-api/v3/preregistration.json",
+      "sha256": "9ee7eeada34ccc836326ef2451e061c99084ffdfb60852f1e96d9c9d5c278a83"
+    },
+    "provider_input_capture": {
+      "path": "research/provider-live-roadmap/p3-api/v3/provider-input-freeze.json",
+      "sha256": "314f018111f417ee8892ede95da97e407a81926c43a072bcd70658fa144034cd"
+    },
+    "canonical_packer": {
+      "path": "context-guard-kit/context_pack.py",
+      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+    },
+    "canonical_sanitizer": {
+      "path": "context-guard-kit/sanitize_output.py",
+      "sha256": "9d587ccde725492e081a43e988f95e4b6187c6eedf4044c2914c04688282903a"
+    },
+    "corpus": {
+      "path": "research/provider-live-roadmap/p3-api/v3/corpus-manifest.json",
+      "sha256": "9bcb35534348c631aa6eed49effa7d8d534fe755d1e7367a57f618d817007d63"
+    },
+    "rehearsal_report": {
+      "path": "research/provider-live-roadmap/p3-api/v3/rehearsal-report.json",
+      "sha256": "b7440d238e76aed229c240eceb12dd3cbc67fe71508dc86a34870ac8324e7204"
+    },
+    "schedule": {
+      "path": "research/provider-live-roadmap/p3-api/v3/schedule.json",
+      "sha256": "5ca56b87906b72384fe8d3e7e643cb50502befd8c5d7ad3632a977846a5001fc"
+    },
+    "plugin_credential_policy": {
+      "path": "plugins/context-guard/lib/credential_policy.py",
+      "sha256": "c7322d6d9fb1db0f294205fddd664137b9d797b9c8636db7cd3353fc986c15e6"
+    },
+    "plugin_packer": {
+      "path": "plugins/context-guard/bin/context-guard-pack",
+      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+    },
+    "plugin_sanitizer": {
+      "path": "plugins/context-guard/bin/context-guard-sanitize-output",
+      "sha256": "9d587ccde725492e081a43e988f95e4b6187c6eedf4044c2914c04688282903a"
+    },
+    "prompt_template": {
+      "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
+      "sha256": "a60429640b5c89ecae4febfb8da33616ba6ac909661fa393398ce17f55263cf1"
+    }
+  },
+  "claims": {
+    "activation": false,
+    "authoritative_provider_cost": false,
+    "external_validity": false,
+    "generalization": false,
+    "production_readiness": false,
+    "provider_cost_savings": false,
+    "token_savings": false
+  },
+  "destination_allowlist": [
+    {
+      "host": "api.anthropic.com",
+      "port": 443,
+      "scheme": "https"
+    }
+  ],
+  "limits": {
+    "batch_count": 2,
+    "batch_units": 144,
+    "call_cap": 288,
+    "currency": "USD",
+    "cumulative_spend_cap_usd": "40.00",
+    "max_answer_bytes": 32768,
+    "max_request_bytes": 96000,
+    "max_response_bytes": 4194304,
+    "per_batch_spend_cap_usd": "20.00",
+    "scheduled_units": 288,
+    "timeout_seconds": 120
+  },
+  "observer": {
+    "id": "anthropic-messages-json-v1",
+    "phase": "P3",
+    "schema": "contextguard.g5-authoritative-observation/v1",
+    "surface": "anthropic-messages-api/v1"
+  },
+  "operation": {
+    "receipt_schema": "contextguard.g5-authoritative-observation/v1",
+    "surface": "p3-g5-fixed-schedule-anthropic-api-v3-live",
+    "version": "v3"
+  },
+  "pricing": {
+    "authority": "published_list_price_not_billing_receipt",
+    "currency": "USD",
+    "effective_end": "2026-08-31",
+    "effective_start": "2026-07-01",
+    "input_micro_usd_per_token": 2,
+    "output_micro_usd_per_token": 10,
+    "source": "anthropic_sonnet_5_introductory_pricing"
+  },
+  "provider": {
+    "auth_method": "standard_api_key_in_memory",
+    "id": "anthropic-first-party",
+    "model_id": "claude-sonnet-5"
+  },
+  "reservation": {
+    "whole_batch_worst_case": {
+      "body_bytes_per_unit": "exact_utf8_request_body_length",
+      "input_overhead_tokens_per_unit": 8192,
+      "input_tokens_formula": "body_bytes_per_unit+input_overhead_tokens_per_unit",
+      "list_price_micro_usd_formula": "input_tokens*input_micro_usd_per_token+output_tokens*output_micro_usd_per_token",
+      "output_tokens_per_unit": 4096,
+      "sum_all_144_units_before_approval": true
+    }
+  },
+  "request": {
+    "anthropic_version": "2023-06-01",
+    "endpoint": "/v1/messages",
+    "max_tokens": 4096,
+    "temperature": 0,
+    "thinking": "disabled"
+  },
+  "runtime": {
+    "client": "python-http.client",
+    "proxies": false,
+    "redirects": false,
+    "tls": "default_verified"
+  },
+  "safety": {
+    "ledger_file_mode": "0600",
+    "ledger_hmac": "sha256",
+    "ledger_root_mode": "0700",
+    "network_proxies": false,
+    "network_redirects": false,
+    "output_mode": "owner_private",
+    "raw_content_publication": false,
+    "retention": "unavailable_manual_owner_cleanup",
+    "scorer_load_after_all_calls": true
+  },
+  "schema_version": "contextguard.p3-anthropic-api-live-contract/v3",
+  "status": "approved_scope_requires_two_use_external_envelopes"
+}
