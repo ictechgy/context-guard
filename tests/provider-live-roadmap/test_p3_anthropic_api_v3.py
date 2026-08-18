@@ -545,18 +545,17 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_remains_fail_closed_until_usage_shape_activation(self) -> None:
+    def test_launcher_activation_binds_usage_shape_fix_and_exact_blobs(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        with self.assertRaises(Exception):
-            launcher._verify_core_commit(ROOT)
+        launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
-            "b850c06901b6f5e643173d6331b05b1b47c5c1c0",
+            "d65a33c438e773e4892bd94f4dc6dc4b0fbb7eb0",
         )
         with mock.patch.object(launcher, "EXPECTED_CORE_COMMIT", "0" * 40):
             with self.assertRaises(Exception):
