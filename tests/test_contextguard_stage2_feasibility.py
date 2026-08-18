@@ -132,6 +132,9 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-live-roadmap/p3-api/v3/result.json",
         "research/provider-live-roadmap/p3-api/v3/schedule.json",
         "research/provider-live-roadmap/p3-api/v3/scorer-only/checkers.json",
+        "research/provider-live-roadmap/p3-api/v4/README.md",
+        "research/provider-live-roadmap/p3-api/v4/budget-policy-report.json",
+        "research/provider-live-roadmap/p3-api/v4/budget_policy.py",
         "research/provider-free-roadmap/README.md",
         "research/provider-free-roadmap/boundary-contract.json",
         "research/provider-free-roadmap/g2/freeze-lock.json",
@@ -253,6 +256,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/provider-live-roadmap/test_p3_factorial_evaluator_v3.py",
         "tests/provider-live-roadmap/test_p3_factorial_preregistration_v3.py",
         "tests/provider-live-roadmap/test_p3_factorial_results_v3.py",
+        "tests/provider-live-roadmap/test_p3_budget_policy_v4.py",
         "tests/test_release_candidate_smoke.py",
         "tests/test_workflows.py",
     }

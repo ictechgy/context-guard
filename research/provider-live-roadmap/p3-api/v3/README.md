@@ -169,6 +169,13 @@ and graph-closure main effects instead increased them by 915.881944 and
 1,263.048611 respectively. These are finite-corpus descriptive factorial
 effects, not future-project estimates.
 
+The corrective v4 policy in `../v4/` does not rewrite this result. It explains
+the additive Symbol/Graph composition and requires future orchestration to
+select only an existing frozen prompt that fits the task's ordinary `a000`
+prompt-byte ceiling. That prevents the measured input-byte growth mechanism by
+construction, while leaving output-token, total-token, cost, and quality claims
+unproven until a new provider run.
+
 The strict preregistered quality outcome failed for every unit: 0/288 responses
 exactly reproduced the selected historical patch and passed its source
 assertions. This includes 0/96 in each project and 0/72 in each taxonomy. The
