@@ -23,6 +23,9 @@
       "thinking",
       "text"
     ],
+    "provider_output_token_detail_fields": [
+      "thinking_tokens"
+    ],
     "provider_usage_fields_present": true,
     "raw_evidence": "owner_private_uncommitted",
     "response_bytes": 1340,

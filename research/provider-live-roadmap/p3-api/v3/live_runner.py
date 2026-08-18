@@ -98,7 +98,7 @@ EXPECTED_ARTIFACTS = {
     },
     "response_amendment": {
         "path": "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
-        "sha256": "a8df109295b6a45632b0dfdea90b525c34f45add8ec8e79b8c075691c7354415",
+        "sha256": "75bee28235d978a2ea94155b235204b819aae9c8d71ee30eab256874bd105c61",
     },
 }
 EXPECTED_CLAIMS = {
@@ -488,7 +488,9 @@ def parse_anthropic_response(
             refuse("prompt_cache_observed")
     output_detail = usage.get("output_tokens_details")
     if output_detail is not None:
-        if type(output_detail) is not dict or not set(output_detail) <= {"text_tokens"}:
+        if type(output_detail) is not dict or not set(output_detail) <= {
+            "text_tokens", "thinking_tokens"
+        }:
             refuse("malformed_provider_usage")
         for value in output_detail.values():
             _nonnegative_int(value, "malformed_provider_usage")
