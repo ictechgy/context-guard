@@ -110,7 +110,7 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
         self.assertEqual(
             contract["resume"]["previous_ledger_contract_sha256"],
-            "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
+            "35e71624f630a2b28cde91a60e6e6eede448dd61c9bd078642a7e39f25496a76",
         )
         self.assertNotEqual(
             contract["resume"]["previous_ledger_contract_sha256"],
@@ -223,6 +223,12 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
             contract["resume"]["failed_response_sha256"],
             "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
         )
+        for field in (
+            "failed_response_sha256",
+            "previous_ledger_contract_sha256",
+            "previous_plan_sha256",
+        ):
+            self.assertRegex(contract["resume"][field], r"\A[0-9a-f]{64}\Z")
         self.assertEqual(amendment["authorization"]["total_external_call_cap"], 289)
 
         malformed = json.loads(raw)
@@ -603,14 +609,15 @@ class P3AnthropicAPIV3Tests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         self.assertEqual(launcher.main([]), 2)
 
-    def test_launcher_activation_binds_multi_capsule_core_and_exact_blobs(self) -> None:
+    def test_launcher_refuses_uncommitted_resume_digest_correction(self) -> None:
         spec = importlib.util.spec_from_file_location("p3_v3_launcher_activation_test", LAUNCHER)
         if spec is None or spec.loader is None:
             raise AssertionError("launcher unavailable")
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
 
-        launcher._verify_core_commit(ROOT)
+        with self.assertRaises(Exception):
+            launcher._verify_core_commit(ROOT)
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
             "898ed99bcdb0910a1883e8863a530af71d5c2d36",

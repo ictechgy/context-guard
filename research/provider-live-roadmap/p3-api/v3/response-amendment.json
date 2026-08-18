@@ -40,7 +40,7 @@
     "expected_previous_http_status": 200,
     "expected_completed_provider_receipts": 11,
     "expected_failed_response_sha256": "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
-    "expected_previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
+    "expected_previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6e6eede448dd61c9bd078642a7e39f25496a76",
     "expected_previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
     "expected_reclassified_provider_receipts": 12,
     "policy": "hmac_verify_reclassify_all_sealed_capsules_without_redispatch",

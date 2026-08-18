@@ -98,7 +98,7 @@ EXPECTED_ARTIFACTS = {
     },
     "response_amendment": {
         "path": "research/provider-live-roadmap/p3-api/v3/response-amendment.json",
-        "sha256": "fecbe0f8cb4161ca962c74d7ecf28e9ef64d8e0f78c4422632fc424cacbce87c",
+        "sha256": "2e41c5d35a3f8746944f746a9eb740779d0dc5f97c8fd209ed179a17c1f98c4c",
     },
 }
 EXPECTED_CLAIMS = {
@@ -125,7 +125,7 @@ EXPECTED_REQUEST = {
 EXPECTED_RESUME = {
     "failed_response_sha256": "5efb901f46dc8f3526ba5e3e6ea04f85dbe71b5353a4077984eeec1a69c40e9c",
     "policy": "hmac_verify_sealed_capsules_without_redispatch",
-    "previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6eede448dd61c9bd078642a7e39f25496a76",
+    "previous_ledger_contract_sha256": "35e71624f630a2b28cde91a60e6e6eede448dd61c9bd078642a7e39f25496a76",
     "previous_plan_sha256": "95506014ebd8d14007a03b665536114112e35791017d0c4db48e17b524a8df90",
     "sealed_provider_receipt_count": 12,
 }
