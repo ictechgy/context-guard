@@ -2826,16 +2826,6 @@ def ensure_post_tool_hook(settings: dict[str, Any], hook: dict[str, Any], comman
     _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUse")
 
 
-def ensure_post_tool_failure_hook(
-    settings: dict[str, Any],
-    hook: dict[str, Any],
-    command: str,
-    label: str,
-    actions: list[str],
-) -> None:
-    _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUseFailure")
-
-
 def _ensure_tool_hook(
     settings: dict[str, Any],
     hook: dict[str, Any],
@@ -3385,13 +3375,6 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
         nudge_hook = failed_nudge_setting(allow_path_fallback=allow_path_fallback)
         nudge_command = nudge_hook["hooks"][0]["command"]
         ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt /clear nudge", actions)
-        ensure_post_tool_failure_hook(
-            settings,
-            nudge_hook,
-            nudge_command,
-            "failed-attempt /clear nudge",
-            actions,
-        )
     return actions
 
 
@@ -3776,7 +3759,7 @@ def interactive_choices(defaults: Choices) -> Choices:
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
-            "Enable failed-attempt /clear nudge? (Bash terminal-event hooks; recommended default)",
+            "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; recommended default)",
             defaults.failed_attempt_nudge,
         ),
     )
@@ -4327,7 +4310,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="failed_attempt_nudge",
         action="store_true",
         default=None,
-        help="enable Bash terminal-event hooks that suggest /clear when the same command fails twice in a row (recommended default)",
+        help="enable PostToolUse Bash hook that suggests /clear when the same command fails twice in a row (recommended default)",
     )
     nudge_group.add_argument(
         "--no-failed-attempt-nudge",
