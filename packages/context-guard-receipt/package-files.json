@@ -13,7 +13,7 @@
     {
       "mode": "0644",
       "path": "README.md",
-      "sha256": "cd8c45e3ed5524b08753502cf3c189aa5a56d3822cc3256584bc757a565b57f2"
+      "sha256": "9320520b5cdb52836a30b7c52e0b9b99c41a422c869578946599adbe0e5e610d"
     },
     {
       "mode": "0755",
@@ -28,12 +28,12 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "a415c117abc2cc05408e1d4efa61608199a3ef7953688b2caadcf074d06b87e2"
+      "sha256": "39de8e0b5a4bd8fa34ec21bbe608021098b54abec52624de9b212f054bd32a24"
     },
     {
       "mode": "0644",
       "path": "package.json",
-      "sha256": "daf789323e9b194943b7222bd0bf112432460afe0174d0a3363cbadbbd37c475"
+      "sha256": "0d030838d8f42024789aa202faa1b30defd59c778e0a4fa1cbd9e0e6d9346dc5"
     },
     {
       "mode": "0644",
@@ -104,6 +104,11 @@
       "mode": "0644",
       "path": "python/context_guard_receipt/external_approval.py",
       "sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0"
+    },
+    {
+      "mode": "0644",
+      "path": "python/context_guard_receipt/external_approval_v2.py",
+      "sha256": "67e3d487a3df42bb30d7debf8f7fa7e85d62c75c62cd3a7308babaa92fae189a"
     },
     {
       "mode": "0644",
@@ -239,6 +244,11 @@
       "mode": "0644",
       "path": "schemas/expansion-refusal.schema.json",
       "sha256": "c5196da89d9b96349deb4c2c0ad2970d6f27d7760f9236b6d07d702443ee9da0"
+    },
+    {
+      "mode": "0644",
+      "path": "schemas/external-approval-v2.schema.json",
+      "sha256": "d82bf2ea94d63bc6f1840b607167167891e767a13839d52c9debbbe046c62158"
     },
     {
       "mode": "0644",

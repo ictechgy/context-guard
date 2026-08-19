@@ -1,12 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This script is also callable directly, so do not let workspace-controlled
+# command lookup or Python startup hooks select its runtime dependencies.
+PATH=/usr/bin:/bin
+export PATH
+unset BASH_ENV ENV CDPATH PYTHONHOME PYTHONPATH PYTHONSTARTUP
+
+approved_python=''
+statusline_args=()
+while (( $# > 0 )); do
+  case "$1" in
+    --approved-python)
+      if (( $# < 2 )); then
+        printf '[runtime-error] missing approved Python path\n'
+        exit 0
+      fi
+      approved_python=$2
+      shift 2
+      ;;
+    *)
+      statusline_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
 if [[ -t 0 ]]; then
   echo "usage: pass Claude Code statusline JSON on stdin"
   exit 0
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
+if [[ -z "$approved_python" ]]; then
+  approved_python=$(command -v python3 2>/dev/null || true)
+fi
+if [[ "$approved_python" != /* || ! -f "$approved_python" || -L "$approved_python" || ! -x "$approved_python" ]]; then
   echo "[needs-python3] install python3 for Claude token statusline"
   exit 0
 fi
@@ -643,4 +671,7 @@ except BrokenPipeError:
     raise SystemExit(0)
 PYEOF
 
-exec python3 -I -c "$CONTEXT_GUARD_STATUSLINE_PY" "$@"
+if (( ${#statusline_args[@]} > 0 )); then
+  exec "$approved_python" -I -c "$CONTEXT_GUARD_STATUSLINE_PY" "${statusline_args[@]}"
+fi
+exec "$approved_python" -I -c "$CONTEXT_GUARD_STATUSLINE_PY"

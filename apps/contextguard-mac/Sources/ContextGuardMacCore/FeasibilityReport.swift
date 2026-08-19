@@ -444,10 +444,10 @@ public struct Totals: Decodable, Equatable {
 }
 
 public struct TokenTotals: Decodable, Equatable {
-    public let input: Int
-    public let output: Int
-    public let cacheRead: Int
-    public let cacheCreation: Int
+    public let input: Int?
+    public let output: Int?
+    public let cacheRead: Int?
+    public let cacheCreation: Int?
 
     private enum CodingKeys: String, CodingKey {
         case input
@@ -458,9 +458,9 @@ public struct TokenTotals: Decodable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        input = try container.decodeIfPresent(Int.self, forKey: .input) ?? 0
-        output = try container.decodeIfPresent(Int.self, forKey: .output) ?? 0
-        cacheRead = try container.decodeIfPresent(Int.self, forKey: .cacheRead) ?? 0
-        cacheCreation = try container.decodeIfPresent(Int.self, forKey: .cacheCreation) ?? 0
+        input = try container.decodeIfPresent(Int.self, forKey: .input)
+        output = try container.decodeIfPresent(Int.self, forKey: .output)
+        cacheRead = try container.decodeIfPresent(Int.self, forKey: .cacheRead)
+        cacheCreation = try container.decodeIfPresent(Int.self, forKey: .cacheCreation)
     }
 }

@@ -23,6 +23,7 @@ import posixpath
 from pathlib import Path
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -67,10 +68,24 @@ DEFAULT_SUGGEST_CONTEXT_LINES = 20
 MAX_SUGGEST_CONTEXT_LINES = 120
 SUGGEST_WHOLE_FILE_MAX_LINES = 120
 MAX_SUGGEST_INPUT_BYTES = 256_000
+MAX_GIT_DIFF_STDERR_BYTES = 16_000
+GIT_DIFF_TIMEOUT_SECONDS = 10.0
 MAX_QUERY_SCAN_FILES = 2_000
 MAX_QUERY_SCAN_BYTES_PER_FILE = 200_000
 MAX_GIT_LS_FILES_OUTPUT_BYTES = MAX_QUERY_SCAN_FILES * 512
 GIT_LS_FILES_READ_CHUNK_BYTES = 64 * 1024
+MAX_GIT_ATTR_INPUT_BYTES = MAX_GIT_LS_FILES_OUTPUT_BYTES
+MAX_GIT_ATTR_OUTPUT_BYTES = MAX_GIT_ATTR_INPUT_BYTES * 2
+GIT_ATTR_TIMEOUT_SECONDS = 10.0
+MAX_QUERY_WALK_DIRS = 2_000
+MAX_QUERY_WALK_ENTRIES = 10_000
+MAX_QUERY_WALK_DEPTH = 32
+MAX_QUERY_WALK_SECONDS = 2.0
+MAX_SOURCE_INPUT_BYTES = 4_000_000
+MAX_SOURCE_INPUT_LINES = 100_000
+MAX_SOURCE_LINE_BYTES = 256_000
+MAX_TOTAL_SOURCE_INPUT_BYTES = 16_000_000
+MAX_TOTAL_SOURCE_INPUT_LINES = 400_000
 MAX_REPO_MAP_FILES = 1_000
 MAX_REPO_MAP_SCAN_FILES = 160
 MAX_REPO_MAP_BYTES_PER_FILE = 120_000
@@ -182,6 +197,97 @@ class ResolvedSource:
     selected_lines: list[str]
     total_lines: int
     redacted_lines: int
+    total_lines_exact: bool = True
+    input_bytes_read: int = 0
+    input_lines_read: int = 0
+    sanitized_through_line: int = 0
+    input_limit_reason: str | None = None
+    redacted_lines_exact: bool = True
+
+
+@dataclass(frozen=True)
+class _SourceScanResult:
+    selected_lines: tuple[str, ...]
+    total_lines: int
+    redacted_lines: int
+    total_lines_exact: bool
+    input_bytes_read: int
+    input_lines_read: int
+    sanitized_through_line: int
+    limit_reason: str | None
+    selection_complete: bool
+    redacted_lines_exact: bool
+
+
+@dataclass(frozen=True)
+class _SourceSnapshot:
+    identity: tuple[int, int, int, int, int, int, int, int]
+    display_path: str
+    redacted_path: bool
+    requested_lines: LineRange
+    selected_lines: tuple[str, ...]
+    total_lines: int
+    redacted_lines: int
+    total_lines_exact: bool
+    input_bytes_read: int
+    input_lines_read: int
+    sanitized_through_line: int
+    input_limit_reason: str | None
+    redacted_lines_exact: bool
+
+
+class _SourceInputBudget:
+    def __init__(self) -> None:
+        self.bytes_read = 0
+        self.lines_read = 0
+        self.bytes_attempted = 0
+        self.lines_attempted = 0
+        self.bytes_charged = 0
+        self.lines_charged = 0
+        self.capped = (
+            MAX_TOTAL_SOURCE_INPUT_BYTES <= 0
+            or MAX_TOTAL_SOURCE_INPUT_LINES <= 0
+        )
+
+    def remaining_bytes(self) -> int:
+        return max(0, MAX_TOTAL_SOURCE_INPUT_BYTES - self.bytes_charged)
+
+    def remaining_lines(self) -> int:
+        return max(0, MAX_TOTAL_SOURCE_INPUT_LINES - self.lines_charged)
+
+    def record_read(self, bytes_count: int) -> str | None:
+        bytes_remaining = self.remaining_bytes()
+        lines_remaining = self.remaining_lines()
+        self.bytes_read += bytes_count
+        self.lines_read += 1
+        self.bytes_attempted += bytes_count
+        self.lines_attempted += 1
+        self.bytes_charged = min(
+            MAX_TOTAL_SOURCE_INPUT_BYTES,
+            self.bytes_charged + bytes_count,
+        )
+        self.lines_charged = min(
+            MAX_TOTAL_SOURCE_INPUT_LINES,
+            self.lines_charged + 1,
+        )
+        self.capped = (
+            self.bytes_charged >= MAX_TOTAL_SOURCE_INPUT_BYTES
+            or self.lines_charged >= MAX_TOTAL_SOURCE_INPUT_LINES
+        )
+        if lines_remaining <= 0:
+            return "cumulative_input_lines_exceeded"
+        if bytes_count > bytes_remaining:
+            return "cumulative_input_bytes_exceeded"
+        return None
+
+
+class _SourceSnapshotCache:
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, str, str], _SourceSnapshot] = {}
+
+    @staticmethod
+    def key(rel: Path, requested: LineRange | None, context: str) -> tuple[str, str, str]:
+        return (rel.as_posix(), requested.identity() if requested is not None else "all", context)
 
 
 @dataclass
@@ -358,12 +464,33 @@ def sanitize_source_lines(
     context: str = "source_code",
     private_roots: tuple[str, ...] = (),
 ) -> tuple[list[str], int, int]:
-    """Sanitize a source stream while retaining only the requested line window.
+    """Compatibility wrapper for the bounded source scanner."""
+    scan = _scan_source_lines(
+        handle,
+        requested,
+        context=context,
+        private_roots=private_roots,
+        input_budget=_SourceInputBudget(),
+    )
+    return list(scan.selected_lines), scan.total_lines, scan.redacted_lines
 
-    Explicit line-window retrieval still scans the complete file so global
-    redaction counts and total line counts stay compatible with previous
-    outputs, but it no longer materializes a sanitized all-lines list before
-    slicing.
+
+def _scan_source_lines(
+    handle: Any,
+    requested: LineRange | None,
+    *,
+    context: str,
+    private_roots: tuple[str, ...],
+    input_budget: _SourceInputBudget,
+    expected_size_bytes: int | None = None,
+) -> _SourceScanResult:
+    """Read with byte/line caps and sanitize only the required prefix.
+
+    Stateful sanitizers still see every line through ``requested.end``. The
+    remaining tail is counted without invoking the sanitizer so range requests
+    do not pay sanitizer cost for irrelevant content. If counting reaches a
+    cap, the selected range remains usable and the total is explicitly marked
+    as a lower bound.
     """
     sanitizer = load_line_sanitizer(
         context=context,
@@ -372,16 +499,95 @@ def sanitize_source_lines(
     selected: list[str] = []
     redacted = 0
     total_lines = 0
+    input_bytes = 0
+    input_lines = 0
     collect_all = requested is None
     start = requested.start if requested is not None else 1
     end = requested.end if requested is not None else 0
-    for total_lines, raw_line in enumerate(handle, start=1):
-        sanitized, did_redact = sanitizer.sanitize(raw_line)  # type: ignore[attr-defined]
-        if did_redact:
-            redacted += 1
-        if collect_all or start <= total_lines <= end:
-            selected.append(sanitized)
-    return selected, total_lines, redacted
+    total_lines_exact = False
+    limit_reason: str | None = None
+    redacted_lines_exact = True
+    iterator = None if callable(getattr(handle, "readline", None)) else iter(handle)
+
+    while True:
+        boundary_reason: str | None = None
+        if total_lines >= MAX_SOURCE_INPUT_LINES:
+            boundary_reason = "source_input_lines_exceeded"
+        elif input_budget.remaining_lines() <= 0:
+            boundary_reason = "cumulative_input_lines_exceeded"
+        source_remaining = MAX_SOURCE_INPUT_BYTES - input_bytes
+        cumulative_remaining = input_budget.remaining_bytes()
+        if boundary_reason is None and source_remaining <= 0:
+            boundary_reason = "source_input_bytes_exceeded"
+        elif boundary_reason is None and cumulative_remaining <= 0:
+            boundary_reason = "cumulative_input_bytes_exceeded"
+        if boundary_reason is not None:
+            if expected_size_bytes is not None:
+                try:
+                    if handle.tell() == expected_size_bytes:
+                        total_lines_exact = True
+                        break
+                except (AttributeError, OSError):
+                    pass
+            limit_reason = boundary_reason
+            break
+        read_char_cap = min(MAX_SOURCE_LINE_BYTES, source_remaining, cumulative_remaining)
+        try:
+            if iterator is None:
+                raw_line = handle.readline(read_char_cap + 1)
+            else:
+                raw_line = next(iterator, "")
+        except (OSError, UnicodeError):
+            limit_reason = "unsafe_path"
+            break
+        if raw_line == "":
+            total_lines_exact = True
+            break
+        raw_bytes = byte_len(raw_line)
+        cumulative_reason = input_budget.record_read(raw_bytes)
+        input_bytes += raw_bytes
+        input_lines += 1
+        if len(raw_line) > MAX_SOURCE_LINE_BYTES or raw_bytes > MAX_SOURCE_LINE_BYTES:
+            limit_reason = "source_line_bytes_exceeded"
+            break
+        if raw_bytes > source_remaining:
+            limit_reason = "source_input_bytes_exceeded"
+            break
+        if cumulative_reason is not None:
+            limit_reason = cumulative_reason
+            break
+        total_lines += 1
+
+        must_sanitize = collect_all or total_lines <= end
+        if must_sanitize:
+            sanitized, did_redact = sanitizer.sanitize(raw_line)  # type: ignore[attr-defined]
+            if did_redact:
+                redacted += 1
+            if collect_all or start <= total_lines <= end:
+                selected.append(sanitized)
+        else:
+            redacted_lines_exact = False
+            if SECRET_CONTENT_RE.search(raw_line):
+                redacted += 1
+
+    selection_complete = (
+        total_lines_exact
+        if collect_all
+        else total_lines >= end or (total_lines_exact and total_lines >= start)
+    )
+    sanitized_through = total_lines if collect_all else min(total_lines, end)
+    return _SourceScanResult(
+        selected_lines=tuple(selected),
+        total_lines=total_lines,
+        redacted_lines=redacted,
+        total_lines_exact=total_lines_exact,
+        input_bytes_read=input_bytes,
+        input_lines_read=input_lines,
+        sanitized_through_line=sanitized_through,
+        limit_reason=limit_reason,
+        selection_complete=selection_complete,
+        redacted_lines_exact=redacted_lines_exact,
+    )
 
 
 def byte_len(text: str) -> int:
@@ -1169,7 +1375,69 @@ def open_regular_under_root(root: Path, rel: Path) -> tuple[Any | None, str]:
     return None, "unsafe_path"
 
 
-def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None, dict[str, Any] | None]:
+def _open_source_identity(handle: Any) -> tuple[int, int, int, int, int, int, int, int] | None:
+    try:
+        st = os.fstat(handle.fileno())
+    except (AttributeError, OSError):
+        return None
+    return (
+        st.st_dev,
+        st.st_ino,
+        st.st_mode,
+        st.st_uid,
+        st.st_nlink,
+        st.st_size,
+        int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
+        int(getattr(st, "st_ctime_ns", int(st.st_ctime * 1_000_000_000))),
+    )
+
+
+def _input_limit_metadata(reason: str) -> dict[str, Any]:
+    caps = {
+        "source_line_bytes_exceeded": ("source_line_bytes", MAX_SOURCE_LINE_BYTES),
+        "source_input_bytes_exceeded": ("source_bytes", MAX_SOURCE_INPUT_BYTES),
+        "source_input_lines_exceeded": ("source_lines", MAX_SOURCE_INPUT_LINES),
+        "cumulative_input_bytes_exceeded": ("cumulative_bytes", MAX_TOTAL_SOURCE_INPUT_BYTES),
+        "cumulative_input_lines_exceeded": ("cumulative_lines", MAX_TOTAL_SOURCE_INPUT_LINES),
+    }
+    kind, cap = caps.get(reason, ("unknown", 0))
+    return {"kind": kind, "cap_bytes" if "bytes" in kind else "cap_lines": cap}
+
+
+def _snapshot_to_source(
+    snapshot: _SourceSnapshot,
+    *,
+    root: Path,
+    rel: Path,
+    spec: SourceSpec,
+) -> ResolvedSource:
+    return ResolvedSource(
+        spec=spec,
+        abs_path=root / rel,
+        display_path=snapshot.display_path,
+        redacted_path=snapshot.redacted_path,
+        requested_lines=spec.lines or snapshot.requested_lines,
+        selected_lines=list(snapshot.selected_lines),
+        total_lines=snapshot.total_lines,
+        redacted_lines=snapshot.redacted_lines,
+        total_lines_exact=snapshot.total_lines_exact,
+        input_bytes_read=snapshot.input_bytes_read,
+        input_lines_read=snapshot.input_lines_read,
+        sanitized_through_line=snapshot.sanitized_through_line,
+        input_limit_reason=snapshot.input_limit_reason,
+        redacted_lines_exact=snapshot.redacted_lines_exact,
+    )
+
+
+def resolve_source(
+    root: Path,
+    spec: SourceSpec,
+    *,
+    source_cache: _SourceSnapshotCache | None = None,
+    input_budget: _SourceInputBudget | None = None,
+    expected_identity: tuple[int, int, int, int, int, int, int, int] | None = None,
+    require_cached: bool = False,
+) -> tuple[ResolvedSource | None, dict[str, Any] | None]:
     if spec.lines is not None and spec.lines.start < 1:
         return None, omission(spec, "invalid_lines")
     rel, reason = lexical_rel(spec.path)
@@ -1179,10 +1447,45 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
     handle, reason = open_regular_under_root(root, rel)
     if handle is None:
         return None, omission(spec, reason, path=display, redacted_path=redacted_path)
+    scan_budget = input_budget if input_budget is not None else _SourceInputBudget()
+    requested = spec.lines
+    cache_key = _SourceSnapshotCache.key(rel, requested, spec.sanitization_context)
     try:
         with handle:
-            requested = spec.lines
-            selected, total_lines, redacted_lines = sanitize_source_lines(
+            before_identity = _open_source_identity(handle)
+            if expected_identity is not None and before_identity != expected_identity:
+                return None, omission(
+                    spec,
+                    "graph_source_changed_since_repo_map_snapshot",
+                    path=display,
+                    redacted_path=redacted_path,
+                )
+            cached = source_cache.entries.get(cache_key) if source_cache is not None else None
+            if require_cached and cached is None:
+                return None, omission(
+                    spec,
+                    "graph_source_snapshot_unavailable",
+                    path=display,
+                    redacted_path=redacted_path,
+                )
+            if cached is not None:
+                if before_identity != cached.identity:
+                    return None, omission(
+                        spec,
+                        "source_changed_during_auto",
+                        path=display,
+                        redacted_path=redacted_path,
+                    )
+                source = _snapshot_to_source(cached, root=root, rel=rel, spec=spec)
+                if _open_source_identity(handle) != before_identity:
+                    return None, omission(
+                        spec,
+                        "source_changed_during_auto",
+                        path=display,
+                        redacted_path=redacted_path,
+                    )
+                return source, None
+            scan = _scan_source_lines(
                 handle,
                 requested,
                 context=spec.sanitization_context,
@@ -1191,17 +1494,38 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
                     if spec.sanitization_context == "filesystem_listing"
                     else ()
                 ),
+                input_budget=scan_budget,
+                expected_size_bytes=before_identity[5] if before_identity is not None else None,
             )
+            after_identity = _open_source_identity(handle)
     except OSError:
         return None, omission(spec, "unsafe_path", path=display, redacted_path=redacted_path)
+    if before_identity is not None and after_identity != before_identity:
+        return None, omission(spec, "source_changed_during_read", path=display, redacted_path=redacted_path)
+    if scan.limit_reason == "unsafe_path":
+        return None, omission(spec, "unsafe_path", path=display, redacted_path=redacted_path)
+    if scan.limit_reason is not None and not scan.selection_complete:
+        item = omission(spec, scan.limit_reason, path=display, redacted_path=redacted_path)
+        item["input_limit"] = _input_limit_metadata(scan.limit_reason)
+        item["input_observed"] = {
+            "bytes": scan.input_bytes_read,
+            "lines": scan.input_lines_read,
+            "bytes_attempted": scan.input_bytes_read,
+            "lines_attempted": scan.input_lines_read,
+            "capped": True,
+        }
+        return None, item
+    selected = list(scan.selected_lines)
+    total_lines = scan.total_lines
+    redacted_lines = scan.redacted_lines
     if total_lines <= 0:
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
     requested = requested or LineRange(1, total_lines)
-    if requested.start > total_lines:
+    if scan.total_lines_exact and requested.start > total_lines:
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
     if not selected:
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
-    return ResolvedSource(
+    source = ResolvedSource(
         spec=spec,
         abs_path=root / rel,
         display_path=display,
@@ -1210,7 +1534,33 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
         selected_lines=selected,
         total_lines=total_lines,
         redacted_lines=redacted_lines,
-    ), None
+        total_lines_exact=scan.total_lines_exact,
+        input_bytes_read=scan.input_bytes_read,
+        input_lines_read=scan.input_lines_read,
+        sanitized_through_line=scan.sanitized_through_line,
+        input_limit_reason=scan.limit_reason,
+        redacted_lines_exact=scan.redacted_lines_exact,
+    )
+    if source_cache is not None and before_identity is not None:
+        snapshot = _SourceSnapshot(
+            identity=before_identity,
+            display_path=display,
+            redacted_path=redacted_path,
+            requested_lines=requested,
+            selected_lines=tuple(selected),
+            total_lines=total_lines,
+            redacted_lines=redacted_lines,
+            total_lines_exact=scan.total_lines_exact,
+            input_bytes_read=scan.input_bytes_read,
+            input_lines_read=scan.input_lines_read,
+            sanitized_through_line=scan.sanitized_through_line,
+            input_limit_reason=scan.limit_reason,
+            redacted_lines_exact=scan.redacted_lines_exact,
+        )
+        source_cache.entries[cache_key] = snapshot
+        canonical_key = _SourceSnapshotCache.key(rel, source_selected_range(source), spec.sanitization_context)
+        source_cache.entries[canonical_key] = snapshot
+    return source, None
 
 
 def retrieval_cli(root_arg: str, display_path: str, lines: LineRange) -> str:
@@ -1249,31 +1599,99 @@ def retrieval_for(root_arg: str, display_path: str, lines: LineRange, *, redacte
     return retrieval_cli(safe_root, display_path, lines), None
 
 
-BLOCK_OPEN = "\n\n```text\n"
-BLOCK_CLOSE = "```\n\n"
+def markdown_metadata_text(value: object) -> str:
+    out: list[str] = []
+    for char in str(value):
+        code = ord(char)
+        if not char.isprintable():
+            out.append(f"\\u{code:04X}" if code <= 0xFFFF else f"\\U{code:08X}")
+        elif char == "&":
+            out.append("&amp;")
+        elif char == "<":
+            out.append("&lt;")
+        elif char == ">":
+            out.append("&gt;")
+        elif char in {"[", "]", "(", ")", "!"}:
+            out.append("\\" + char)
+        elif char in {"`", "\\"}:
+            out.append("\\" + char)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def markdown_inline_code(value: object) -> str:
+    text = "".join(
+        (f"\\u{ord(char):04X}" if ord(char) <= 0xFFFF else f"\\U{ord(char):08X}")
+        if not char.isprintable()
+        else char
+        for char in str(value)
+    )
+    max_run = max((len(match.group(0)) for match in re.finditer(r"`+", text)), default=0)
+    delimiter = "`" * max(1, max_run + 1)
+    padding = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{delimiter}{padding}{text}{padding}{delimiter}"
+
+
+def markdown_block_delimiters(lines: list[str]) -> tuple[str, str]:
+    max_run = 0
+    for line in lines:
+        line_max = max((len(match.group(0)) for match in re.finditer(r"`+", line)), default=0)
+        max_run = max(max_run, line_max)
+    fence = "`" * max(3, max_run + 1)
+    return f"\n\n{fence}text\n", f"{fence}\n\n"
 
 
 def render_block_header(source: ResolvedSource, *, root_arg: str, status: str, included: LineRange) -> str:
-    title = source.spec.label or source.display_path
+    title = markdown_metadata_text(source.spec.label or source.display_path)
     requested = source.requested_lines or LineRange(1, source.total_lines)
     retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, included, redacted_path=source.redacted_path)
     header = [
         f"## {title}",
-        f"Source: `{source.display_path}`",
+        f"Source: {markdown_inline_code(source.display_path)}",
         f"Priority: {source.spec.priority}",
         f"Status: {status}",
         f"Included lines: {included.start}:{included.end}",
         f"Requested lines: {requested.start}:{requested.end}",
     ]
     if retrieval:
-        header.append(f"Retrieval: `{retrieval}`")
+        header.append(f"Retrieval: {markdown_inline_code(retrieval)}")
     elif retrieval_omitted_reason:
         header.append(f"Retrieval omitted: {retrieval_omitted_reason}")
     return "\n".join(header)
 
 
 def render_block(source: ResolvedSource, lines: list[str], *, root_arg: str, status: str, included: LineRange) -> str:
-    return render_block_header(source, root_arg=root_arg, status=status, included=included) + BLOCK_OPEN + "".join(lines) + ("" if not lines or lines[-1].endswith("\n") else "\n") + BLOCK_CLOSE
+    block_open, block_close = markdown_block_delimiters(lines)
+    return render_block_header(source, root_arg=root_arg, status=status, included=included) + block_open + "".join(lines) + ("" if not lines or lines[-1].endswith("\n") else "\n") + block_close
+
+
+def source_input_metadata(source: ResolvedSource) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "bytes_read": source.input_bytes_read,
+        "lines_read": source.input_lines_read,
+        "bytes_attempted": source.input_bytes_read,
+        "lines_attempted": source.input_lines_read,
+        "capped": source.input_limit_reason is not None,
+        "total_lines_exact": source.total_lines_exact,
+        "truncated": not source.total_lines_exact,
+        "sanitized_through_line": source.sanitized_through_line,
+        "redacted_lines_exact": source.redacted_lines_exact,
+        "limits": {
+            "source_bytes": MAX_SOURCE_INPUT_BYTES,
+            "source_lines": MAX_SOURCE_INPUT_LINES,
+            "source_line_bytes": MAX_SOURCE_LINE_BYTES,
+            "cumulative_bytes": MAX_TOTAL_SOURCE_INPUT_BYTES,
+            "cumulative_lines": MAX_TOTAL_SOURCE_INPUT_LINES,
+        },
+    }
+    if source.total_lines_exact:
+        item["total_lines"] = source.total_lines
+    else:
+        item["total_lines_lower_bound"] = source.total_lines
+    if source.input_limit_reason is not None:
+        item["limit_reason"] = source.input_limit_reason
+    return item
 
 
 def source_metadata(source: ResolvedSource, *, status: str, lines: list[str], included: LineRange, root_arg: str) -> dict[str, Any]:
@@ -1289,6 +1707,7 @@ def source_metadata(source: ResolvedSource, *, status: str, lines: list[str], in
     }
     if source.spec.label:
         item["label"] = source.spec.label
+    item["input"] = source_input_metadata(source)
     retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, included, redacted_path=source.redacted_path)
     if retrieval:
         item["retrieval_cli"] = retrieval
@@ -1303,7 +1722,11 @@ def budget_omission(source: ResolvedSource, *, root_arg: str) -> dict[str, Any]:
     requested = source.requested_lines or LineRange(1, source.total_lines)
     item = omission(source.spec, "budget_exhausted", path=source.display_path, redacted_path=source.redacted_path)
     item["requested_lines"] = requested.as_dict()
-    item["total_lines"] = source.total_lines
+    if source.total_lines_exact:
+        item["total_lines"] = source.total_lines
+    else:
+        item["total_lines_lower_bound"] = source.total_lines
+    item["input"] = source_input_metadata(source)
     retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, requested, redacted_path=source.redacted_path)
     if retrieval:
         item["retrieval_cli"] = retrieval
@@ -1339,7 +1762,8 @@ def render_block_byte_len(
     body_bytes = line_prefixes[line_count]
     if line_count > 0 and not source.selected_lines[line_count - 1].endswith("\n"):
         body_bytes += 1
-    return byte_len(render_block_header(source, root_arg=root_arg, status=status, included=included)) + byte_len(BLOCK_OPEN) + body_bytes + byte_len(BLOCK_CLOSE)
+    block_open, block_close = markdown_block_delimiters(source.selected_lines[:line_count])
+    return byte_len(render_block_header(source, root_arg=root_arg, status=status, included=included)) + byte_len(block_open) + body_bytes + byte_len(block_close)
 
 
 def fit_partial_lines(
@@ -1838,7 +2262,13 @@ def build_pack(
     store_artifact: bool,
     delta_from_pack_id: str | None = None,
     sketch_duplicate_veto: bool = False,
+    _source_cache: _SourceSnapshotCache | None = None,
+    _input_budget: _SourceInputBudget | None = None,
+    _required_snapshot_sources: set[tuple[str, str]] | None = None,
+    _expected_source_identities: dict[str, tuple[int, int, int, int, int, int, int, int]] | None = None,
+    _snapshot_rejections: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    input_budget = _input_budget if _input_budget is not None else _SourceInputBudget()
     seen: set[tuple[str, str]] = set()
     resolved: list[ResolvedSource] = []
     paired_candidates: list[_PairedCandidate] = []
@@ -1865,7 +2295,55 @@ def build_pack(
             continue
         if rel is not None:
             seen.add(identity)
-        source, omitted_item = resolve_source(root, spec)
+        rel_path = rel.as_posix() if rel is not None else ""
+        require_cached = bool(
+            _required_snapshot_sources
+            and (rel_path, identity_lines) in _required_snapshot_sources
+        )
+        expected_identity = (
+            _expected_source_identities.get(rel_path)
+            if require_cached and _expected_source_identities is not None
+            else None
+        )
+        if require_cached and expected_identity is None:
+            display, redacted = display_rel_path(rel_path)
+            omitted_item = omission(
+                spec,
+                "graph_source_not_in_repo_map_snapshot",
+                path=display,
+                redacted_path=redacted,
+            )
+            omitted.append(omitted_item)
+            canonical_specs.append({
+                "path": display,
+                "priority": spec.priority,
+                "lines": identity_lines,
+                "status": omitted_item.get("reason"),
+            })
+            continue
+        cached_rejection = (
+            _snapshot_rejections.get((rel_path, identity_lines))
+            if require_cached and _snapshot_rejections is not None
+            else None
+        )
+        if cached_rejection is not None:
+            omitted_item = copy.deepcopy(cached_rejection)
+            omitted.append(omitted_item)
+            canonical_specs.append({
+                "path": omitted_item.get("path"),
+                "priority": spec.priority,
+                "lines": identity_lines,
+                "status": omitted_item.get("reason"),
+            })
+            continue
+        source, omitted_item = resolve_source(
+            root,
+            spec,
+            source_cache=_source_cache,
+            input_budget=input_budget,
+            expected_identity=expected_identity,
+            require_cached=require_cached,
+        )
         if omitted_item is not None:
             omitted.append(omitted_item)
             canonical_specs.append({"path": omitted_item.get("path"), "priority": spec.priority, "lines": identity_lines, "status": omitted_item.get("reason")})
@@ -1940,7 +2418,27 @@ def build_pack(
         "sources": {"total": len(specs), "included": len(included) - partial_count, "partial": partial_count, "omitted": len(omitted_sorted)},
         "included_sources": included,
         "omitted_sources": omitted_sorted,
-        "redaction": {"redacted_lines": redacted_lines, "redacted_before_pack": True},
+        "redaction": {
+            "redacted_lines": redacted_lines,
+            "redacted_lines_exact": all(source.redacted_lines_exact for source in all_resolved),
+            "redacted_before_pack": True,
+        },
+        "input": {
+            "bytes_read": input_budget.bytes_read,
+            "lines_read": input_budget.lines_read,
+            "bytes_attempted": input_budget.bytes_attempted,
+            "lines_attempted": input_budget.lines_attempted,
+            "bytes_charged": input_budget.bytes_charged,
+            "lines_charged": input_budget.lines_charged,
+            "capped": input_budget.capped,
+            "limits": {
+                "source_bytes": MAX_SOURCE_INPUT_BYTES,
+                "source_lines": MAX_SOURCE_INPUT_LINES,
+                "source_line_bytes": MAX_SOURCE_LINE_BYTES,
+                "cumulative_bytes": MAX_TOTAL_SOURCE_INPUT_BYTES,
+                "cumulative_lines": MAX_TOTAL_SOURCE_INPUT_LINES,
+            },
+        },
         "artifact": {"stored": False, "path": None, "bytes": 0, "capped": False, "cap_bytes": MAX_RECEIPT_BYTES},
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -1986,7 +2484,12 @@ def slice_source(root: Path, *, raw_path: str, lines: LineRange) -> tuple[dict[s
         "query": {"type": "lines", "start": lines.start, "end": min(lines.end, source.total_lines), "returned_lines": len(source.selected_lines)},
         "content": content,
         "bytes": byte_len(content),
-        "redaction": {"redacted_lines": source.redacted_lines, "redacted_before_pack": True},
+        "redaction": {
+            "redacted_lines": source.redacted_lines,
+            "redacted_lines_exact": source.redacted_lines_exact,
+            "redacted_before_pack": True,
+        },
+        "input": source_input_metadata(source),
     }
     return payload, 0
 
@@ -2056,32 +2559,245 @@ def add_suggest_candidate(
     )
 
 
+def trusted_git_executable() -> str:
+    if os.name != "posix":
+        raise OSError("Git execution is unavailable on this platform")
+    executable_names = ("git",)
+    for directory in os.defpath.split(os.pathsep):
+        if not directory:
+            continue
+        for name in executable_names:
+            candidate = Path(directory) / name
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+            except OSError:
+                continue
+    raise OSError("trusted system git executable unavailable")
+
+
+def guarded_git_environment() -> dict[str, str]:
+    return {
+        "PATH": os.defpath,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": os.devnull,
+        "SSH_ASKPASS": os.devnull,
+        "GCM_INTERACTIVE": "Never",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
+        "PAGER": "cat",
+    }
+
+
+def guarded_git_command(root: Path, *args: str) -> list[str]:
+    return [
+        trusted_git_executable(),
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        f"core.attributesFile={os.devnull}",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.askPass=",
+        "-c",
+        "credential.interactive=never",
+        "-c",
+        "filter.unset.clean=",
+        "-c",
+        "filter.unset.process=",
+        "-c",
+        "filter.unset.required=false",
+        "-c",
+        "filter.unspecified.clean=",
+        "-c",
+        "filter.unspecified.process=",
+        "-c",
+        "filter.unspecified.required=false",
+        "-C",
+        str(root),
+        *args,
+    ]
+
+
+def _signal_process_group(proc: subprocess.Popen[Any], *, force: bool) -> None:
+    requested_signal = getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM
+    if os.name == "posix" and hasattr(os, "killpg"):
+        try:
+            os.killpg(proc.pid, requested_signal)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    if proc.poll() is not None:
+        return
+    try:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except OSError:
+        pass
+
+
+def _run_process_capped(
+    command: list[str],
+    *,
+    stdout_cap: int,
+    stderr_cap: int,
+    timeout_seconds: float,
+    environment: dict[str, str] | None = None,
+    stdin_data: bytes | None = None,
+    stdin_cap_bytes: int | None = None,
+) -> tuple[int, bytes, bytes, bool, bool]:
+    if stdin_data is not None and (
+        stdin_cap_bytes is None or len(stdin_data) > stdin_cap_bytes
+    ):
+        raise PackError("process stdin exceeds cap")
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        start_new_session=os.name == "posix",
+        env=environment,
+    )
+    buffers: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    capped = {"stdout": False, "stderr": False}
+    stop = threading.Event()
+
+    def drain(name: str, stream: Any, cap: int) -> None:
+        total = 0
+        try:
+            while not stop.is_set() and total <= cap:
+                chunk = stream.read(min(64 * 1024, cap + 1 - total))
+                if not chunk:
+                    break
+                buffers[name].append(chunk)
+                total += len(chunk)
+                if total > cap:
+                    capped[name] = True
+                    stop.set()
+                    _signal_process_group(proc, force=False)
+                    break
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    threads = [
+        threading.Thread(target=drain, args=("stdout", proc.stdout, stdout_cap), daemon=True),
+        threading.Thread(target=drain, args=("stderr", proc.stderr, stderr_cap), daemon=True),
+    ]
+    if stdin_data is not None:
+        def write_stdin() -> None:
+            try:
+                assert proc.stdin is not None
+                view = memoryview(stdin_data)
+                for offset in range(0, len(view), 64 * 1024):
+                    if stop.is_set():
+                        break
+                    proc.stdin.write(view[offset : offset + 64 * 1024])
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+            finally:
+                if proc.stdin is not None:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+
+        threads.append(threading.Thread(target=write_stdin, daemon=True))
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        stop.set()
+        _signal_process_group(proc, force=False)
+        try:
+            proc.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(proc, force=True)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+    if capped["stdout"] or capped["stderr"] or timed_out:
+        _signal_process_group(proc, force=True)
+    for thread in threads:
+        thread.join(0.5)
+    if any(thread.is_alive() for thread in threads):
+        stop.set()
+        _signal_process_group(proc, force=True)
+        for thread in threads:
+            thread.join(0.2)
+    stdout = b"".join(buffers["stdout"])[:stdout_cap]
+    stderr = b"".join(buffers["stderr"])[:stderr_cap]
+    return proc.returncode if proc.returncode is not None else -1, stdout, stderr, capped["stdout"], capped["stderr"] or timed_out
+
+
 def run_git_diff(root: Path, diff_ref: str) -> str:
     ref = diff_ref.strip()
     if not ref:
         raise PackError("empty --diff")
-    command = ["git", "-C", str(root), "diff", "--no-ext-diff", "--no-textconv", "--unified=3"]
+    git_args = [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=all",
+        "--unified=3",
+    ]
     if ref in {"staged", "--staged", "cached", "--cached"}:
-        command.extend(["--cached"])
+        git_args.append("--cached")
     elif ref in {"worktree", "unstaged", "working-tree"}:
         pass
     elif ref.startswith("-"):
         raise PackError("invalid --diff: revision must not start with '-'")
     else:
-        command.append(ref)
+        git_args.append(ref)
     try:
-        proc = subprocess.run(command, text=True, errors="replace", capture_output=True, timeout=10, check=False)
+        reject_configured_git_filters(root)
+        command = guarded_git_command(root, *git_args)
+        returncode, stdout, stderr, stdout_capped, stderr_capped_or_timeout = _run_process_capped(
+            command,
+            stdout_cap=MAX_SUGGEST_INPUT_BYTES,
+            stderr_cap=MAX_GIT_DIFF_STDERR_BYTES,
+            timeout_seconds=GIT_DIFF_TIMEOUT_SECONDS,
+            environment=guarded_git_environment(),
+        )
     except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise PackError(f"could not read diff: {exc.__class__.__name__}") from exc
-    if proc.returncode != 0:
+    if stdout_capped:
+        raise PackError(f"could not read diff: diff output exceeds cap ({MAX_SUGGEST_INPUT_BYTES} bytes)")
+    if stderr_capped_or_timeout:
+        raise PackError("could not read diff: stderr cap or timeout exceeded")
+    stdout_text = stdout.decode("utf-8", "replace")
+    stderr_text = stderr.decode("utf-8", "replace")
+    if returncode != 0:
         detail = sanitize_text(
-            proc.stderr or proc.stdout or "git diff failed",
+            stderr_text or stdout_text or "git diff failed",
             context="command_search_diff",
         )[0].strip().splitlines()
         message = detail[0] if detail else "git diff failed"
         raise PackError(f"could not read diff: {cap_label(message, default='git diff failed', limit=160)}")
     return sanitize_text(
-        proc.stdout[:MAX_SUGGEST_INPUT_BYTES],
+        stdout_text,
         context="command_search_diff",
     )[0]
 
@@ -2194,100 +2910,269 @@ def collect_output_candidates(
     return candidates, omitted
 
 
-def git_ls_files(root: Path) -> list[str]:
-    def read_stdout_capped(proc: subprocess.Popen[bytes], limit: int, timeout_seconds: float) -> tuple[bytes, bool]:
-        if proc.stdout is None:
-            return b"", False
-        chunks: list[bytes] = []
-        total = 0
-        capped = False
-        timed_out = False
+def _read_git_stdout_capped(
+    proc: subprocess.Popen[bytes],
+    limit: int,
+    timeout_seconds: float,
+) -> tuple[bytes, bool]:
+    if proc.stdout is None:
+        return b"", False
+    chunks: list[bytes] = []
+    total = 0
+    capped = False
+    timed_out = False
 
-        def reader() -> None:
-            nonlocal total, capped
+    def reader() -> None:
+        nonlocal total, capped
+        try:
+            while total <= limit:
+                chunk = proc.stdout.read(min(GIT_LS_FILES_READ_CHUNK_BYTES, limit + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > limit:
+                    capped = True
+                    break
+        finally:
+            if capped:
+                _signal_process_group(proc, force=False)
             try:
-                while total <= limit:
-                    chunk = proc.stdout.read(min(GIT_LS_FILES_READ_CHUNK_BYTES, limit + 1 - total))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > limit:
-                        capped = True
-                        break
-            finally:
-                if capped and proc.poll() is None:
-                    try:
-                        proc.terminate()
-                    except OSError:
-                        pass
-                try:
-                    proc.stdout.close()
-                except OSError:
-                    pass
-
-        thread = threading.Thread(target=reader, daemon=True)
-        thread.start()
-        thread.join(timeout_seconds)
-        if thread.is_alive() and proc.poll() is None:
-            timed_out = True
-            try:
-                proc.kill()
+                proc.stdout.close()
             except OSError:
                 pass
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        timed_out = True
+        _signal_process_group(proc, force=False)
+    try:
+        proc.wait(timeout=0.2 if timed_out else 2)
+    except subprocess.TimeoutExpired:
+        _signal_process_group(proc, force=True)
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-        thread.join(0.2)
-        raw_output = b"".join(chunks)[:limit]
-        complete = proc.returncode == 0 and not capped and not timed_out and raw_output.endswith(b"\0")
-        return raw_output, complete
+            pass
+    if capped or timed_out:
+        _signal_process_group(proc, force=True)
+    thread.join(0.5)
+    raw_output = b"".join(chunks)[:limit]
+    complete = (
+        proc.returncode == 0
+        and not capped
+        and not timed_out
+        and (not raw_output or raw_output.endswith(b"\0"))
+    )
+    return raw_output, complete
 
-    raw = b""
-    git_returncode: int | None = None
+
+def _git_ls_files_raw(root: Path) -> tuple[bytes, bool, int | None]:
     try:
         proc = subprocess.Popen(
-            ["git", "-C", str(root), "ls-files", "-z"],
+            guarded_git_command(root, "ls-files", "-z"),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=False,
+            start_new_session=os.name == "posix",
+            env=guarded_git_environment(),
         )
-        raw, _git_complete = read_stdout_capped(proc, MAX_GIT_LS_FILES_OUTPUT_BYTES, 10)
-        git_returncode = proc.returncode
+        raw, complete = _read_git_stdout_capped(
+            proc,
+            MAX_GIT_LS_FILES_OUTPUT_BYTES,
+            10,
+        )
+        return raw, complete, proc.returncode
     except (OSError, subprocess.TimeoutExpired):
-        proc = None
+        return b"", False, None
+
+
+def _iter_nul_fields(raw: bytes):
+    view = memoryview(raw)
+    start = 0
+    while start < len(raw):
+        end = raw.find(b"\0", start)
+        if end < 0:
+            return
+        yield view[start:end]
+        start = end + 1
+
+
+def git_ls_files(root: Path, diagnostics: dict[str, Any] | None = None) -> list[str]:
+    raw, git_complete, git_returncode = _git_ls_files_raw(root)
     if raw:
         if not raw.endswith(b"\0"):
             raw = raw.rsplit(b"\0", 1)[0] if b"\0" in raw else b""
-        return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part][:MAX_QUERY_SCAN_FILES]
-    if git_returncode == 0 or (git_returncode is not None and git_returncode < 0):
+        retained_parts: list[bytes] = []
+        file_cap_reached = False
+        for part_view in _iter_nul_fields(raw):
+            if not part_view:
+                continue
+            if len(retained_parts) >= MAX_QUERY_SCAN_FILES:
+                file_cap_reached = True
+                break
+            retained_parts.append(bytes(part_view))
+        if diagnostics is not None:
+            diagnostics.update({
+                "mode": "git",
+                "truncated": not git_complete or file_cap_reached,
+                "truncation_reason": (
+                    "git_output_cap_or_timeout"
+                    if not git_complete
+                    else "file_cap" if file_cap_reached else None
+                ),
+            })
+        return [part.decode("utf-8", "replace") for part in retained_parts]
+    if git_returncode == 0:
+        if diagnostics is not None:
+            diagnostics.update({"mode": "git", "truncated": False, "truncation_reason": None})
+        return []
+    if git_returncode is not None and git_returncode < 0:
+        if diagnostics is not None:
+            diagnostics.update({
+                "mode": "git",
+                "truncated": True,
+                "truncation_reason": "git_output_cap_or_timeout",
+            })
         return []
     out: list[str] = []
     skip_dirs = {".git", ".omx", ".context-guard", "node_modules", "dist", "build", "__pycache__"}
-    for current, dirs, files in os.walk(root):
-        dirs[:] = [name for name in dirs if name not in skip_dirs and not name.startswith(".pytest")]
-        current_path = Path(current)
-        for name in files:
-            rel = (current_path / name).relative_to(root).as_posix()
-            out.append(rel)
-            if len(out) >= MAX_QUERY_SCAN_FILES:
-                return out
+    started = time.monotonic()
+    visited_dirs = 0
+    visited_entries = 0
+    truncation_reason: str | None = None
+    pending: deque[tuple[Path, int]] = deque([(root, 0)])
+    while pending:
+        if time.monotonic() - started > MAX_QUERY_WALK_SECONDS:
+            truncation_reason = "time_cap"
+            break
+        if visited_dirs >= MAX_QUERY_WALK_DIRS:
+            truncation_reason = "directory_cap"
+            break
+        current_path, depth = pending.popleft()
+        visited_dirs += 1
+        try:
+            iterator = os.scandir(current_path)
+        except OSError:
+            truncation_reason = "unsafe_path"
+            break
+        child_dirs: list[Path] = []
+        try:
+            with iterator:
+                for entry in iterator:
+                    if time.monotonic() - started > MAX_QUERY_WALK_SECONDS:
+                        truncation_reason = "time_cap"
+                        break
+                    if visited_entries >= MAX_QUERY_WALK_ENTRIES:
+                        truncation_reason = "entry_cap"
+                        break
+                    visited_entries += 1
+                    name = entry.name
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        is_file = entry.is_file(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_dir:
+                        if name in skip_dirs or name.startswith(".pytest"):
+                            continue
+                        if depth >= MAX_QUERY_WALK_DEPTH:
+                            truncation_reason = truncation_reason or "depth_cap"
+                            continue
+                        child_dirs.append(current_path / name)
+                    elif is_file:
+                        try:
+                            rel = (current_path / name).relative_to(root).as_posix()
+                        except ValueError:
+                            truncation_reason = "unsafe_path"
+                            break
+                        out.append(rel)
+                        if len(out) >= MAX_QUERY_SCAN_FILES:
+                            truncation_reason = "file_cap"
+                            break
+        except OSError:
+            truncation_reason = "unsafe_path"
+            break
+        if truncation_reason in {"time_cap", "entry_cap", "file_cap", "unsafe_path"}:
+            break
+        for child in reversed(sorted(child_dirs, key=lambda path: path.name)):
+            pending.appendleft((child, depth + 1))
+    if diagnostics is not None:
+        diagnostics.update({
+            "mode": "walk",
+            "truncated": truncation_reason is not None,
+            "truncation_reason": truncation_reason,
+            "visited_dirs": min(visited_dirs, MAX_QUERY_WALK_DIRS),
+            "visited_entries": min(visited_entries, MAX_QUERY_WALK_ENTRIES),
+        })
     return out
 
 
-def collect_query_candidates(root: Path, query_terms: set[str], context_lines: int) -> list[SuggestCandidate]:
+def reject_configured_git_filters(root: Path) -> None:
+    raw_paths, complete, returncode = _git_ls_files_raw(root)
+    if returncode != 0 or not complete:
+        raise PackError("could not verify git filters: tracked path scan failed or truncated")
+    if not raw_paths:
+        return
+    if len(raw_paths) > MAX_GIT_ATTR_INPUT_BYTES:
+        raise PackError("could not verify git filters: tracked path input exceeds cap")
+
+    try:
+        command = guarded_git_command(
+            root,
+            "check-attr",
+            "-z",
+            "--stdin",
+            "filter",
+        )
+        returncode, stdout, _stderr, stdout_capped, failed_or_timed_out = _run_process_capped(
+            command,
+            stdout_cap=MAX_GIT_ATTR_OUTPUT_BYTES,
+            stderr_cap=MAX_GIT_DIFF_STDERR_BYTES,
+            timeout_seconds=GIT_ATTR_TIMEOUT_SECONDS,
+            environment=guarded_git_environment(),
+            stdin_data=raw_paths,
+            stdin_cap_bytes=MAX_GIT_ATTR_INPUT_BYTES,
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        raise PackError(f"could not verify git filters: {exc.__class__.__name__}") from exc
+    if stdout_capped or failed_or_timed_out or returncode != 0:
+        raise PackError("could not verify git filters: check-attr failed or exceeded cap")
+    if not stdout.endswith(b"\0"):
+        raise PackError("could not verify git filters: malformed check-attr output")
+    output_fields = iter(_iter_nul_fields(stdout))
+    for expected_path in _iter_nul_fields(raw_paths):
+        try:
+            path = next(output_fields)
+            attribute = next(output_fields)
+            value = next(output_fields)
+        except StopIteration as exc:
+            raise PackError("could not verify git filters: incomplete check-attr output") from exc
+        if path != expected_path or bytes(attribute) != b"filter":
+            raise PackError("could not verify git filters: mismatched check-attr output")
+        if bytes(value) not in {b"unspecified", b"unset"}:
+            raise PackError("git diff blocked: configured filter attribute")
+    try:
+        next(output_fields)
+    except StopIteration:
+        return
+    raise PackError("could not verify git filters: excess check-attr output")
+
+
+def collect_query_candidates(
+    root: Path,
+    query_terms: set[str],
+    context_lines: int,
+    *,
+    diagnostics: dict[str, Any] | None = None,
+) -> list[SuggestCandidate]:
     if not query_terms:
         return []
     candidates: list[SuggestCandidate] = []
-    for rel_path in git_ls_files(root):
+    for rel_path in git_ls_files(root, diagnostics):
         rel, reason = lexical_rel(rel_path)
         if rel is None or reason:
             continue
@@ -2377,16 +3262,28 @@ def suggested_source_payload(source: ResolvedSource, candidate: SuggestCandidate
     return payload
 
 
-def normalize_suggest_source(root: Path, candidate: SuggestCandidate) -> tuple[ResolvedSource | None, dict[str, Any] | None]:
+def normalize_suggest_source(
+    root: Path,
+    candidate: SuggestCandidate,
+    *,
+    source_cache: _SourceSnapshotCache | None = None,
+    input_budget: _SourceInputBudget | None = None,
+) -> tuple[ResolvedSource | None, dict[str, Any] | None]:
+    effective_lines = candidate.lines or LineRange(1, SUGGEST_WHOLE_FILE_MAX_LINES)
     spec = SourceSpec(
         path=candidate.path,
         priority=candidate.score,
-        lines=candidate.lines,
+        lines=effective_lines,
         label=candidate.label,
         input_index=candidate.input_index,
         origin="suggest",
     )
-    source, omitted_item = resolve_source(root, spec)
+    source, omitted_item = resolve_source(
+        root,
+        spec,
+        source_cache=source_cache,
+        input_budget=input_budget,
+    )
     if omitted_item is not None:
         omitted_item["reason"] = omitted_item.get("reason") or candidate.reason
         omitted_item["suggest_reason"] = candidate.reason
@@ -2394,20 +3291,6 @@ def normalize_suggest_source(root: Path, candidate: SuggestCandidate) -> tuple[R
     assert source is not None
     if source.redacted_path:
         return None, omission(spec, "redacted_path", path=source.display_path, redacted_path=True)
-    if spec.lines is None and source.total_lines > SUGGEST_WHOLE_FILE_MAX_LINES:
-        capped = SourceSpec(
-            path=candidate.path,
-            priority=candidate.score,
-            lines=LineRange(1, min(SUGGEST_WHOLE_FILE_MAX_LINES, source.total_lines)),
-            label=candidate.label,
-            input_index=candidate.input_index,
-            origin="suggest",
-        )
-        source, omitted_item = resolve_source(root, capped)
-        if omitted_item is not None:
-            omitted_item["suggest_reason"] = candidate.reason
-            return None, omitted_item
-        assert source is not None
     return source, None
 
 
@@ -2947,7 +3830,15 @@ def build_adaptive_k_advisory(
     }
 
 
-def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+def suggest_pack(
+    root: Path,
+    args: argparse.Namespace,
+    *,
+    root_arg: str,
+    _source_cache: _SourceSnapshotCache | None = None,
+    _input_budget: _SourceInputBudget | None = None,
+) -> tuple[dict[str, Any], int]:
+    input_budget = _input_budget if _input_budget is not None else _SourceInputBudget()
     query_text, _query_redactions = sanitize_text(args.query or "")
     query = " ".join(query_text.split())
     query_terms = suggest_tokens(query)
@@ -2977,7 +3868,23 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     candidates.extend(test_candidates)
     omitted.extend(output_omitted)
     omitted.extend(test_omitted)
-    candidates.extend(collect_query_candidates(root, query_terms, context_lines))
+    query_scan: dict[str, Any] = {}
+    candidates.extend(
+        collect_query_candidates(
+            root,
+            query_terms,
+            context_lines,
+            diagnostics=query_scan,
+        )
+    )
+    if query_scan.get("truncated"):
+        omitted.append({
+            "path": "repository",
+            "status": "omitted",
+            "reason": "query_scan_truncated",
+            "scan_truncation_reason": query_scan.get("truncation_reason"),
+            "priority": 0,
+        })
 
     candidates.sort(key=lambda item: (-item.score, item.input_index, item.path, item.lines.identity() if item.lines else "0:0"))
     seen: set[tuple[str, str]] = set()
@@ -3004,7 +3911,12 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
             continue
         if rel is not None:
             seen.add(identity)
-        source, omitted_item = normalize_suggest_source(root, candidate)
+        source, omitted_item = normalize_suggest_source(
+            root,
+            candidate,
+            source_cache=_source_cache,
+            input_budget=input_budget,
+        )
         if omitted_item is not None:
             omitted_item["priority"] = candidate.score
             omitted_item["suggest_reason"] = candidate.reason
@@ -3044,7 +3956,12 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
                         input_index=candidate.input_index,
                         origin="suggest",
                     )
-                    source, omitted_item = resolve_source(root, partial_spec)
+                    source, omitted_item = resolve_source(
+                        root,
+                        partial_spec,
+                        source_cache=_source_cache,
+                        input_budget=input_budget,
+                    )
                     if omitted_item is not None:
                         omitted_item["priority"] = candidate.score
                         omitted_item["suggest_reason"] = candidate.reason
@@ -3103,6 +4020,17 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
             "Byte and token values are pack-size proxies, not billing claims.",
         ],
     }
+    if query_scan:
+        payload["query_scan"] = {
+            **query_scan,
+            "limits": {
+                "files": MAX_QUERY_SCAN_FILES,
+                "directories": MAX_QUERY_WALK_DIRS,
+                "entries": MAX_QUERY_WALK_ENTRIES,
+                "depth": MAX_QUERY_WALK_DEPTH,
+                "seconds": MAX_QUERY_WALK_SECONDS,
+            },
+        }
     if build_hint_omitted_reason:
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
     if getattr(args, "adaptive_k", False):
@@ -3248,7 +4176,12 @@ def is_repo_map_text_path(path: str) -> bool:
     return Path(path).suffix.lower() in REPO_MAP_TEXT_EXTENSIONS
 
 
-def read_repo_map_text(root: Path, rel_path: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def read_repo_map_text(
+    root: Path,
+    rel_path: str,
+    *,
+    source_identities_out: dict[str, tuple[int, int, int, int, int, int, int, int]] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     rel, reason = lexical_rel(rel_path)
     if rel is None:
         return None, {"path": repo_map_safe_raw_path_label(rel_path), "reason": reason}
@@ -3260,14 +4193,24 @@ def read_repo_map_text(root: Path, rel_path: str) -> tuple[dict[str, Any] | None
         return None, {"path": display, "reason": open_reason, "retrieval_omitted_reason": "redacted_path" if redacted_path else None}
     try:
         with handle:
+            before_identity = _open_source_identity(handle)
             text = handle.read(MAX_REPO_MAP_BYTES_PER_FILE + 1)
+            after_identity = _open_source_identity(handle)
     except (OSError, UnicodeError):
         return None, {"path": display, "reason": "unsafe_path", "retrieval_omitted_reason": "redacted_path" if redacted_path else None}
+    if before_identity is None or after_identity != before_identity:
+        return None, {
+            "path": display,
+            "reason": "source_changed_during_repo_map",
+            "retrieval_omitted_reason": "redacted_path" if redacted_path else None,
+        }
     capped = byte_len(text) > MAX_REPO_MAP_BYTES_PER_FILE
     if capped:
         text = text.encode("utf-8", errors="replace")[:MAX_REPO_MAP_BYTES_PER_FILE].decode("utf-8", errors="ignore")
     risk_counts = secret_risk_counts(text)
     sanitized_text, redacted_lines = sanitize_text(text)
+    if source_identities_out is not None:
+        source_identities_out[rel.as_posix()] = before_identity
     return {
         "path": display,
         "raw_path": rel.as_posix(),
@@ -3306,7 +4249,13 @@ def repo_map_scan_paths(paths: list[str], *, seed_paths: set[str], query_terms: 
     return [path for _index, path in ranked[:MAX_REPO_MAP_SCAN_FILES]]
 
 
-def repo_map_records(root: Path, *, seed_paths: set[str], query_terms: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def repo_map_records(
+    root: Path,
+    *,
+    seed_paths: set[str],
+    query_terms: set[str],
+    source_identities_out: dict[str, tuple[int, int, int, int, int, int, int, int]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     paths = git_ls_files(root)
     candidate_paths = paths[:MAX_REPO_MAP_FILES]
     path_cap_reached = len(paths) > MAX_REPO_MAP_FILES
@@ -3315,7 +4264,14 @@ def repo_map_records(root: Path, *, seed_paths: set[str], query_terms: set[str])
     records: list[dict[str, Any]] = []
     omitted: list[dict[str, Any]] = []
     for rel_path in scan_paths:
-        record, omission_item = read_repo_map_text(root, rel_path)
+        if source_identities_out is None:
+            record, omission_item = read_repo_map_text(root, rel_path)
+        else:
+            record, omission_item = read_repo_map_text(
+                root,
+                rel_path,
+                source_identities_out=source_identities_out,
+            )
         if record is not None:
             records.append(record)
         elif omission_item is not None and omission_item.get("reason") != "unsupported_file_type":
@@ -3686,10 +4642,16 @@ def build_repo_map_payload(
     *,
     root_arg: str,
     complete_secret_paths_out: set[str] | None = None,
+    source_identities_out: dict[str, tuple[int, int, int, int, int, int, int, int]] | None = None,
 ) -> dict[str, Any]:
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
-    records, omitted, caps = repo_map_records(root, seed_paths=seed_paths, query_terms=query_terms)
+    records, omitted, caps = repo_map_records(
+        root,
+        seed_paths=seed_paths,
+        query_terms=query_terms,
+        source_identities_out=source_identities_out,
+    )
     record_by_path = {str(record["path"]): record for record in records}
     signatures = extract_signatures(records)
     secret_scan = build_secret_scan(records)
@@ -3865,6 +4827,41 @@ def apply_symbol_memory_graph(
         "deterministic_local_only": True,
         "provider_token_or_cost_savings_claim_allowed": False,
     }
+
+
+def bind_graph_sources_to_repo_snapshot(
+    root: Path,
+    specs: list[SourceSpec],
+    required_sources: set[tuple[str, str]],
+    source_identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    *,
+    source_cache: _SourceSnapshotCache,
+    input_budget: _SourceInputBudget,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Warm immutable source snapshots only for repo-map-bound graph additions."""
+
+    rejections: dict[tuple[str, str], dict[str, Any]] = {}
+    for spec in specs:
+        rel, _reason = lexical_rel(spec.path)
+        if rel is None:
+            continue
+        lines_identity = spec.lines.identity() if spec.lines is not None else "all"
+        source_identity = (rel.as_posix(), lines_identity)
+        if source_identity not in required_sources:
+            continue
+        expected_identity = source_identities.get(rel.as_posix())
+        if expected_identity is None:
+            continue
+        _source, omitted_item = resolve_source(
+            root,
+            spec,
+            source_cache=source_cache,
+            input_budget=input_budget,
+            expected_identity=expected_identity,
+        )
+        if omitted_item is not None:
+            rejections[source_identity] = copy.deepcopy(omitted_item)
+    return rejections
 
 
 def build_symbol_memory_payload(
@@ -4098,6 +5095,8 @@ def build_auto_explain_payload(
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    source_cache = _SourceSnapshotCache()
+    input_budget = _SourceInputBudget()
     manifest_rel = output_rel_for_collision_check(args.manifest_out, "--manifest-out") if args.manifest_out else None
     pack_rel = output_rel_for_collision_check(args.pack_out, "--pack-out") if args.pack_out else None
     if manifest_rel is not None and pack_rel is not None:
@@ -4117,7 +5116,13 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     apply_adaptive_k = bool(getattr(args, "apply_adaptive_k", False))
     if apply_adaptive_k:
         suggest_args.adaptive_k = True
-    suggest_payload, rc = suggest_pack(root, suggest_args, root_arg=root_arg)
+    suggest_payload, rc = suggest_pack(
+        root,
+        suggest_args,
+        root_arg=root_arg,
+        _source_cache=source_cache,
+        _input_budget=input_budget,
+    )
     manifest = suggest_payload["manifest"]
     adaptive_k_application: dict[str, Any] | None = None
     if apply_adaptive_k and isinstance(suggest_payload.get("adaptive_k"), dict):
@@ -4151,6 +5156,8 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         store_artifact=False,
         delta_from_pack_id=args.delta_from_pack_id,
         sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
+        _source_cache=source_cache,
+        _input_budget=input_budget,
     )
     if apply_adaptive_k:
         suggest_payload["estimated_pack_bytes"] = build_payload.get("pack_bytes", 0)
@@ -4161,6 +5168,10 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     graph_application: dict[str, Any] | None = None
     apply_symbol_memory = bool(getattr(args, "apply_symbol_memory", False))
     complete_secret_paths: set[str] | None = set() if apply_symbol_memory else None
+    repo_map_source_identities: dict[
+        str,
+        tuple[int, int, int, int, int, int, int, int],
+    ] = {}
     if getattr(args, "symbol_memory", False) or apply_symbol_memory or args.explain:
         repo_map_payload = build_repo_map_payload(
             root,
@@ -4169,6 +5180,9 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             build_payload,
             root_arg=root_arg,
             complete_secret_paths_out=complete_secret_paths,
+            source_identities_out=(
+                repo_map_source_identities if apply_symbol_memory else None
+            ),
         )
     if apply_symbol_memory and isinstance(repo_map_payload, dict):
         repo_map_payload["safety"]["explain_only"] = False
@@ -4176,6 +5190,11 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             "Repo-map bytes are local sampled UTF-8 bytes and estimated chars_div_4 token proxies, not provider-token or savings claims.",
             "Graph ranking is applied only to the bounded direct-neighbor expansion recorded in graph_application; exact source retrieval remains available.",
         ]
+        pre_graph_sources = {
+            (str(item.get("path", "")), line_range_identity(item.get("lines")))
+            for item in manifest.get("sources", [])
+            if isinstance(item, dict) and item.get("path")
+        }
         manifest, graph_application = apply_symbol_memory_graph(
             manifest,
             repo_map_payload,
@@ -4183,6 +5202,19 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         )
         suggest_payload["manifest"] = manifest
         specs = manifest_to_source_specs(manifest)
+        graph_snapshot_sources = {
+            (str(item.get("path", "")), line_range_identity(item.get("lines")))
+            for item in manifest.get("sources", [])
+            if isinstance(item, dict) and item.get("path")
+        } - pre_graph_sources
+        graph_snapshot_rejections = bind_graph_sources_to_repo_snapshot(
+            root,
+            specs,
+            graph_snapshot_sources,
+            repo_map_source_identities,
+            source_cache=source_cache,
+            input_budget=input_budget,
+        )
         build_payload = build_pack(
             root,
             specs,
@@ -4191,6 +5223,11 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             store_artifact=False,
             delta_from_pack_id=args.delta_from_pack_id,
             sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
+            _source_cache=source_cache,
+            _input_budget=input_budget,
+            _required_snapshot_sources=graph_snapshot_sources,
+            _expected_source_identities=repo_map_source_identities,
+            _snapshot_rejections=graph_snapshot_rejections,
         )
         suggest_payload["estimated_pack_bytes"] = build_payload.get("pack_bytes", 0)
         suggest_payload["token_proxy"] = copy.deepcopy(

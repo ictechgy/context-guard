@@ -35,17 +35,17 @@ G5_LOCK = REPO_ROOT / "research/provider-free-roadmap/g5/freeze-lock.json"
 G5_TEST = REPO_ROOT / "tests/provider-free-roadmap/test_g5_p2_preregistration.py"
 G6_LOCK = REPO_ROOT / "research/provider-free-roadmap/g6/freeze-lock.json"
 G6_TEST = REPO_ROOT / "tests/provider-free-roadmap/test_g6_approval_packet.py"
-PINNED_G2_LOCK_SHA256 = "8f5c0cc432b4b7fe5b917158be191e0e631b25fec5f29ba3519322efe83d5283"
-PINNED_G2_TREE_ROOT_SHA256 = "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc"
-PINNED_G2_VERIFIER_SHA256 = "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
-PINNED_G3_LOCK_SHA256 = "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
-PINNED_G3_TREE_ROOT_SHA256 = "ef13371780b940826dd5a1134777e1bae84b578702ee1fe5c83fa6698032fa6b"
-PINNED_G4_LOCK_SHA256 = "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
-PINNED_G4_TREE_ROOT_SHA256 = "ad18cc7cf413dff75999aa3c9d258c25205cc5f8e393b7c1fa961b1bc813bda4"
-PINNED_G5_LOCK_SHA256 = "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
-PINNED_G5_TREE_ROOT_SHA256 = "2125e12cd82d8f0b8fe156a59c706cf389117864f2d76d5962a47dfcdb9b54f8"
-PINNED_G6_LOCK_SHA256 = "cce80538f5c47248c59cd9df6b0748bba825bdd5c8a8327011b71e2edbe8e64c"
-PINNED_G6_TREE_ROOT_SHA256 = "392639bf52d9a9b37c7a9b3edde2beb06b51cc4cec6003c716c36db0f3d05f43"
+PINNED_G2_LOCK_SHA256 = "9044c0b0d4729457b0b9dea6534a9131156b3df54f032633244172454f4bea70"
+PINNED_G2_TREE_ROOT_SHA256 = "87f4e1306c27ab22227cf7e5056851c30ca2955e6eb736a2e2c7051d15e9922e"
+PINNED_G2_VERIFIER_SHA256 = "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
+PINNED_G3_LOCK_SHA256 = "6db85291e05de462e7fa234e38f5139737677a19c70fc1da26d35cbcf8bb6ba1"
+PINNED_G3_TREE_ROOT_SHA256 = "c32a94f183c5c5f840e93fa19be75d153c62b6c5a6851b1a48fed45ec672161a"
+PINNED_G4_LOCK_SHA256 = "7ab02731ef1f012826e349c06207e4d59442bfb10f2b3c8984d45712862ddeb6"
+PINNED_G4_TREE_ROOT_SHA256 = "bc375532a5ee0d5878609ce27d98b2c8454754ec2d4dc3747ce4ac95d2629553"
+PINNED_G5_LOCK_SHA256 = "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89"
+PINNED_G5_TREE_ROOT_SHA256 = "c2e3f47526f31b55cb6d806257d40baa3eb542e3c1b760598e90b422385b7dc8"
+PINNED_G6_LOCK_SHA256 = "4842f2a9c775b48dd9dea478a015955169862469b0864f5e36f7dbe6c2775830"
+PINNED_G6_TREE_ROOT_SHA256 = "3ada580da4c4ca672925d9fcd77af0b167d08f248eb81f45e193ad33a3a696ac"
 
 
 class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
@@ -573,7 +573,7 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         self.assertEqual(lock["tree_root_sha256"], PINNED_G4_TREE_ROOT_SHA256)
         self.assertEqual(lock["g3_source"], {
             "lock_sha256": PINNED_G3_LOCK_SHA256,
-            "manifest_sha256": "ceb3c9807dad9f5ddc501f3439ac0bc5e7350e67e5c56ac27aa84e80cbd5d677",
+            "manifest_sha256": "e970a970bf5c0af1313e26a8218fcddd4eb8ce516d4b388dadc30c706eda52a8",
             "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
             "schema_set_bytes": 25254,
             "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
@@ -670,12 +670,12 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), PINNED_G5_LOCK_SHA256)
         self.assertEqual(lock["tree_root_sha256"], PINNED_G5_TREE_ROOT_SHA256)
         self.assertEqual(lock["g4_source"], {
-            "claim_policy_sha256": "1d8990fe47208c360ef47b2ba2cbba963cf60c10f1aeef3e82833ba9d38d3d46",
+            "claim_policy_sha256": "e90cc27b7f64016ea2749e06417f83dccb74eb23ec851efb04886a69a87d594e",
             "lock_sha256": PINNED_G4_LOCK_SHA256,
             "schema_set_bytes": 6533,
-            "schema_set_sha256": "d17b2f510d501902c14fb0b346b7c1e20f05f4fa83f94db0316f06b4705b0fb0",
+            "schema_set_sha256": "e59aa4a13a228fb6ebd8a54fa55ac77c26b044d4ccbc5ddd53511d0355a4db83",
             "tree_root_sha256": PINNED_G4_TREE_ROOT_SHA256,
-            "verifier_sha256": "acc5c26cfefc6b145626ec04d34e4c9acb32a88ac5c81b3f930f583dd778cd09",
+            "verifier_sha256": "827a92307d7b08999eb3e2dc5fe4c037a73658d472163e0b75e5ac8c10156f75",
         })
         inventory = {entry["path"]: entry for entry in lock["inventory"]}
         expected = {
@@ -774,12 +774,12 @@ class ProviderFreeRoadmapBoundaryTests(unittest.TestCase):
         self.assertEqual(lock["tree_root_sha256"], PINNED_G6_TREE_ROOT_SHA256)
         self.assertEqual(lock["g5_source"], {
             "lock_sha256": PINNED_G5_LOCK_SHA256,
-            "preregistration_sha256": "9d306a6a1ab85a79d562fed611ab55471ec678630a590843eb4a19ca959498bf",
+            "preregistration_sha256": "e702e48b7ace9ece0c3295195070c2853505a16b7af037ab93459d175ece5c69",
             "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
             "schema_set_bytes": 41710,
-            "schema_set_sha256": "c98921e1fc29345eafe22f58a3e5f14f0be357a3e086aeaaa0e2932cafc8ab98",
+            "schema_set_sha256": "cd95559d7e1020e63cc98d64ae741ac58a358f60a80b55fb40baf8bf14164239",
             "tree_root_sha256": PINNED_G5_TREE_ROOT_SHA256,
-            "verifier_sha256": "520ad6e66cb8116afcb128e49812511297844571103a39f11ea50262d437a686",
+            "verifier_sha256": "b0baa4b6bff36f51c80e897cee56947fe1226f51a03d24453d4152336e342246",
         })
         inventory = {entry["path"]: entry for entry in lock["inventory"]}
         expected = {

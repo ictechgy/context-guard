@@ -224,13 +224,13 @@ npm exec @ictechgy/context-guard -- --version
 ### Claude Code용 선택적 Bash reference
 
 `bash_reference_v1` 경로는 정확한 프로젝트 로컬 npm 설치에서만 사용할 수
-있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.2.0`을 정확히
+있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.2.1`을 정확히
 고정합니다. global npm, `npx`, 소스 체크아웃, Homebrew, Claude marketplace
 plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 reference 경로를
 사용할 수 없다고 알립니다.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.5.0
+npm install --save-exact @ictechgy/context-guard@0.5.1
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -471,7 +471,7 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
 [Sonnet] repo | main | ctx 86% ⚠ | cost $0.123 | cache 80% | reuse 8.0x
 ```
 
-`cache N%`는 최근 일정 범위의 대화 기록에서 관찰된 입력 토큰 중 cache read가 차지하는 비율이며, cache read가 1회 이상 있을 때만 표시됩니다. `reuse X.Yx`는 `cache_read / cache_creation` 값이며, cache read가 양수이고 cache creation이 0이 아닐 때만 표시됩니다. `⚠` 표시는 컨텍스트 사용률이 경고 기준에 도달했을 때 나타나며 기본값은 80%입니다. 프로젝트나 셸에서 `CONTEXT_GUARD_STATUSLINE_CTX_WARN=90`처럼 조정할 수 있습니다.
+`cache N%`는 최근 일정 범위의 대화 기록에서 관찰된 입력 토큰 중 cache read가 차지하는 비율이며, cache read가 1회 이상 있을 때만 표시됩니다. `reuse X.Yx`는 `cache_read / cache_creation` 값이며, cache read가 양수이고 cache creation이 0이 아닐 때만 표시됩니다. `⚠` 표시는 컨텍스트 사용률이 경고 기준에 도달했을 때 나타나며 기본값은 80%입니다. 자동 훅은 격리된 환경에서 실행되므로 `CONTEXT_GUARD_STATUSLINE_CTX_WARN=90`을 설정한 뒤 setup을 다시 실행해 이 안전한 동작 설정을 설치 명령에 고정하세요. Python·shell loader 변수는 전달하지 않습니다.
 
 ### 반복 가능한 벤치마크 실행
 

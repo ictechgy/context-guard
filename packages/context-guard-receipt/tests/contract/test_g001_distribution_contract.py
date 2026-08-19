@@ -90,7 +90,7 @@ EXPECTED_MCP_HELP = (
 )
 EXPECTED_PACKAGE = {
     "name": "@ictechgy/context-guard-receipt",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
     "license": "Apache-2.0",
     "type": "commonjs",
@@ -143,6 +143,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/diagnostics.py": 0o644,
     "python/context_guard_receipt/execution_twin.py": 0o644,
     "python/context_guard_receipt/external_approval.py": 0o644,
+    "python/context_guard_receipt/external_approval_v2.py": 0o644,
     "python/context_guard_receipt/evidence_pack.py": 0o644,
     "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
@@ -171,6 +172,7 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/evidence-pack.schema.json": 0o644,
     "schemas/evidence-reference.schema.json": 0o644,
     "schemas/external-approval.schema.json": 0o644,
+    "schemas/external-approval-v2.schema.json": 0o644,
     "schemas/expansion-envelope.schema.json": 0o644,
     "schemas/expansion-refusal.schema.json": 0o644,
     "schemas/phase-evaluation-p2.schema.json": 0o644,

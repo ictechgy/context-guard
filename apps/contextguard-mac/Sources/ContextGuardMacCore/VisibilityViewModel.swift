@@ -122,12 +122,23 @@ public enum VisibilityViewModel {
             : "Snapshot scan generated at \(report.generatedAt); not a live statusline signal."
         let contextMessage = contextCopy(report.contextAvailability)
 
+        let tokenAvailability = report.metricAvailability.tokens
+        let totalTokenValue = aggregateTokenValue(
+            report.totals.totalTokens,
+            tokens: tokens,
+            availability: tokenAvailability
+        )
         var cards: [MetricCard] = [
-            MetricCard(title: "Total tokens", value: formatInteger(report.totals.totalTokens), detail: "input + output + cache read + cache creation"),
-            MetricCard(title: "Input", value: formatInteger(tokens.input)),
-            MetricCard(title: "Output", value: formatInteger(tokens.output)),
-            MetricCard(title: "Cache read", value: formatInteger(tokens.cacheRead), detail: availabilityDetail(report.metricAvailability.cache)),
-            MetricCard(title: "Cache creation", value: formatInteger(tokens.cacheCreation)),
+            MetricCard(
+                title: "Total tokens",
+                value: formatInteger(totalTokenValue),
+                detail: "input + output + cache read + cache creation",
+                isAvailable: totalTokenValue != nil
+            ),
+            tokenCard(title: "Input", field: .input, tokens: tokens, availability: tokenAvailability),
+            tokenCard(title: "Output", field: .output, tokens: tokens, availability: tokenAvailability),
+            tokenCard(title: "Cache read", field: .cacheRead, tokens: tokens, availability: tokenAvailability, detail: availabilityDetail(report.metricAvailability.cache)),
+            tokenCard(title: "Cache creation", field: .cacheCreation, tokens: tokens, availability: tokenAvailability),
             MetricCard(title: "Cache-read share", value: formatPercent(report.totals.cacheReadShare), detail: "cache_read / (input + cache_read + cache_creation)", isAvailable: report.totals.cacheReadShare != nil),
             MetricCard(title: "Reuse ratio", value: formatRatio(report.totals.cacheReuseRatio), detail: "cache_read / cache_creation", isAvailable: report.totals.cacheReuseRatio != nil),
             MetricCard(title: "Observed cost", value: formatCost(report.totals.costUSDObserved), detail: "Observed transcript field; not invoice-grade billing", isAvailable: report.totals.costUSDObserved != nil),
@@ -173,6 +184,77 @@ public enum VisibilityViewModel {
         }
         let fields = status.presentFields.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
         return "Availability: \(status.status) (\(fields))"
+    }
+
+    private enum TokenField: String {
+        case input
+        case output
+        case cacheRead = "cache_read"
+        case cacheCreation = "cache_creation"
+    }
+
+    private static func tokenCard(
+        title: String,
+        field: TokenField,
+        tokens: TokenTotals,
+        availability: MetricStatus?,
+        detail: String? = nil
+    ) -> MetricCard {
+        let value = tokenValue(field, tokens: tokens, availability: availability)
+        return MetricCard(
+            title: title,
+            value: formatInteger(value),
+            detail: detail,
+            isAvailable: value != nil
+        )
+    }
+
+    private static func aggregateTokenValue(
+        _ total: Int,
+        tokens: TokenTotals,
+        availability: MetricStatus?
+    ) -> Int? {
+        guard let availability else {
+            return total
+        }
+        let normalizedStatus = availability.status.lowercased()
+        guard normalizedStatus == "available" || normalizedStatus == "partial" else {
+            return nil
+        }
+        let hasObservedBucket = tokens.input != nil
+            || tokens.output != nil
+            || tokens.cacheRead != nil
+            || tokens.cacheCreation != nil
+        return availability.presentFields.isEmpty && !hasObservedBucket ? nil : total
+    }
+
+    private static func tokenValue(_ field: TokenField, tokens: TokenTotals, availability: MetricStatus?) -> Int? {
+        let decodedValue: Int?
+        switch field {
+        case .input:
+            decodedValue = tokens.input
+        case .output:
+            decodedValue = tokens.output
+        case .cacheRead:
+            decodedValue = tokens.cacheRead
+        case .cacheCreation:
+            decodedValue = tokens.cacheCreation
+        }
+
+        guard let availability else {
+            return decodedValue
+        }
+        let normalizedStatus = availability.status.lowercased()
+        guard normalizedStatus == "available" || normalizedStatus == "partial" else {
+            return nil
+        }
+        if availability.presentFields.isEmpty {
+            return decodedValue
+        }
+        guard (availability.presentFields[field.rawValue] ?? 0) > 0 else {
+            return nil
+        }
+        return decodedValue ?? 0
     }
 
     private static func scanDetail(_ integrity: ScanIntegrity) -> String {
@@ -243,7 +325,8 @@ public enum VisibilityViewModel {
         return parts.joined(separator: " ")
     }
 
-    private static func formatInteger(_ value: Int) -> String {
+    private static func formatInteger(_ value: Int?) -> String {
+        guard let value else { return "Unavailable" }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: value)) ?? String(value)

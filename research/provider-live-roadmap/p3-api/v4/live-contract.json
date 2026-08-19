@@ -1,12 +1,16 @@
 {
   "artifacts": {
-    "approval_module": {
+    "approval_core_v1": {
       "path": "packages/context-guard-receipt/python/context_guard_receipt/external_approval.py",
       "sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0"
     },
+    "approval_module": {
+      "path": "packages/context-guard-receipt/python/context_guard_receipt/external_approval_v2.py",
+      "sha256": "67e3d487a3df42bb30d7debf8f7fa7e85d62c75c62cd3a7308babaa92fae189a"
+    },
     "approval_schema": {
-      "path": "packages/context-guard-receipt/schemas/external-approval.schema.json",
-      "sha256": "c535d464311d9f7dd5b326face7596e6b930da4fb3e0350a5d3e0942e735eb69"
+      "path": "packages/context-guard-receipt/schemas/external-approval-v2.schema.json",
+      "sha256": "d82bf2ea94d63bc6f1840b607167167891e767a13839d52c9debbbe046c62158"
     },
     "budget_policy": {
       "path": "research/provider-live-roadmap/p3-api/v4/budget_policy.py",
@@ -42,11 +46,11 @@
     },
     "canonical_packer": {
       "path": "context-guard-kit/context_pack.py",
-      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+      "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
     },
     "canonical_sanitizer": {
       "path": "context-guard-kit/sanitize_output.py",
-      "sha256": "9d587ccde725492e081a43e988f95e4b6187c6eedf4044c2914c04688282903a"
+      "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e"
     },
     "corpus": {
       "path": "research/provider-live-roadmap/p3-api/v3/corpus-manifest.json",
@@ -66,11 +70,11 @@
     },
     "plugin_packer": {
       "path": "plugins/context-guard/bin/context-guard-pack",
-      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+      "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
     },
     "plugin_sanitizer": {
       "path": "plugins/context-guard/bin/context-guard-sanitize-output",
-      "sha256": "9d587ccde725492e081a43e988f95e4b6187c6eedf4044c2914c04688282903a"
+      "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e"
     },
     "prompt_template": {
       "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
@@ -165,6 +169,7 @@
     "thinking": "provider_default_private_ignored_for_scoring"
   },
   "resume": {
+    "approval_schema_migration": false,
     "fresh_external_approvals_required": true,
     "policy": "fresh_v4_state_no_cross_version_capsule_migration",
     "previous_capsule_migration": false
@@ -183,7 +188,10 @@
     "network_redirects": false,
     "output_mode": "owner_private",
     "raw_content_publication": false,
-    "retention": "unavailable_manual_owner_cleanup",
+    "retention": {
+      "maximum_seconds": null,
+      "mode": "manual_owner_cleanup"
+    },
     "scorer_load_after_all_calls": true
   },
   "schema_version": "contextguard.p3-anthropic-api-live-contract/v4",

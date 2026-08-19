@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -83,6 +84,403 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
         self.assertEqual(artifacts["schedule"]["path"], "research/provider-live-roadmap/p3-api/v3/schedule.json")
         self.assertEqual(artifacts["budget_policy"]["path"], str(POLICY.relative_to(ROOT)))
         self.assertEqual(artifacts["budget_policy_report"]["path"], str(REPORT.relative_to(ROOT)))
+
+    def test_external_scope_describes_actual_manual_evidence_retention(self) -> None:
+        """A finite-looking retention duration must not mask manual cleanup."""
+
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        with mock.patch.object(
+            runner, "_bound_selection_identity", return_value=selection
+        ):
+            batch = runner.build_batch_plans(plan)[0]
+            scope = runner.build_external_approval_scope(
+                contract=contract,
+                batch=batch,
+                plan_sha256=runner.request_plan_sha256(plan),
+                runner_sha256="f" * 64,
+                output_root=Path("/private/tmp/contextguard-v4-output"),
+            )
+
+        self.assertEqual(
+            scope["retention"],
+            {
+                "mode": "manual_owner_cleanup",
+                "maximum_seconds": None,
+            },
+        )
+
+    def test_v1_approval_refuses_before_state_or_provider_preparation(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            state = root / "state"
+            output = root / "output"
+            with mock.patch.object(runner, "prepare_live_plan") as prepare:
+                with self.assertRaisesRegex(
+                    runner.LiveRunError, "approval_unavailable"
+                ):
+                    runner.run_live_authorized(
+                        contract_path=root / "missing-contract.json",
+                        repo_root=ROOT,
+                        corpus_root=root,
+                        output_root=output,
+                        state_root=state,
+                        approvals=[
+                            {"schema_version": "contextguard.external-approval/v1"},
+                            {"schema_version": "contextguard.external-approval/v1"},
+                        ],
+                        verification_key=b"v" * 32,
+                        registry_key=b"r" * 32,
+                        api_key=b"sk-ant-api03-test-value",
+                    )
+            prepare.assert_not_called()
+            self.assertFalse(state.exists())
+            self.assertFalse(output.exists())
+
+    def test_authorized_v2_envelopes_execute_each_unit_once(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        verification_key = b"v" * 32
+        registry_key = b"r" * 32
+        response = {
+            "body": json.dumps(
+                {
+                    "content": [{"text": "READY", "type": "text"}],
+                    "id": "msg-v4-v2-approval",
+                    "model": "claude-sonnet-5",
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "type": "message",
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode(),
+            "http_status": 200,
+            "provider_request_id": None,
+        }
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            state, output = root / "state", root / "output"
+            state.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            with mock.patch.object(
+                runner, "_bound_selection_identity", return_value=selection
+            ), mock.patch.object(
+                runner, "_expected_bound_selection", return_value=selection
+            ):
+                batches = runner.build_batch_plans(plan)
+                plan_sha = runner.request_plan_sha256(plan)
+                runner_sha = runner._runner_identity()
+                approval_module = runner._load_bound_approval_module(
+                    contract=contract, repo_root=ROOT
+                )
+                now = int(time.time())
+                approvals = []
+                for index, batch in enumerate(batches):
+                    scope = runner.build_external_approval_scope(
+                        contract=contract,
+                        batch=batch,
+                        plan_sha256=plan_sha,
+                        runner_sha256=runner_sha,
+                        output_root=output,
+                    )
+                    approvals.append(
+                        approval_module.create_approval(
+                            scope=scope,
+                            issued_at=now - 1,
+                            expires_at=now + 3600,
+                            nonce=f"{index + 1:064x}",
+                            revocation_handle=f"{index + 3:064x}",
+                            signing_key=verification_key,
+                        )
+                    )
+                calls: list[str] = []
+                with mock.patch.object(
+                    runner, "prepare_live_plan", return_value=plan
+                ), mock.patch.object(
+                    runner,
+                    "invoke_anthropic",
+                    side_effect=lambda item, **kwargs: (
+                        calls.append(item["scheduled_unit_id"]) or response
+                    ),
+                ), mock.patch.object(
+                    runner,
+                    "_bound_scorer_loader",
+                    return_value=lambda: (
+                        lambda capsules, prepared: {
+                            "failed_units": 0,
+                            "passed_units": len(prepared),
+                            "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
+                            "status": "complete",
+                            "total_units": len(prepared),
+                        }
+                    ),
+                ):
+                    result = runner.run_live_authorized(
+                        contract_path=CONTRACT,
+                        repo_root=ROOT,
+                        corpus_root=root,
+                        output_root=output,
+                        state_root=state,
+                        approvals=approvals,
+                        verification_key=verification_key,
+                        registry_key=registry_key,
+                        api_key=b"sk-ant-api03-test-value",
+                    )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(calls), 288)
+
+    def test_registry_commit_crash_restarts_same_v2_approvals_without_redispatch(self) -> None:
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        verification_key = b"v" * 32
+        registry_key = b"r" * 32
+        response = {
+            "body": json.dumps(
+                {
+                    "content": [{"text": "READY", "type": "text"}],
+                    "id": "msg-v4-crash-recovery",
+                    "model": "claude-sonnet-5",
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "type": "message",
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode(),
+            "http_status": 200,
+            "provider_request_id": None,
+        }
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            state, output = root / "state", root / "output"
+            state.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            with mock.patch.object(
+                runner, "_bound_selection_identity", return_value=selection
+            ), mock.patch.object(
+                runner, "_expected_bound_selection", return_value=selection
+            ):
+                batches = runner.build_batch_plans(plan)
+                plan_sha = runner.request_plan_sha256(plan)
+                runner_sha = runner._runner_identity()
+                approval_module = runner._load_bound_approval_module(
+                    contract=contract, repo_root=ROOT
+                )
+                now = int(time.time())
+                approvals = []
+                for index, batch in enumerate(batches):
+                    scope = runner.build_external_approval_scope(
+                        contract=contract,
+                        batch=batch,
+                        plan_sha256=plan_sha,
+                        runner_sha256=runner_sha,
+                        output_root=output,
+                    )
+                    approvals.append(
+                        approval_module.create_approval(
+                            scope=scope,
+                            issued_at=now - 1,
+                            expires_at=now + 3600,
+                            nonce=f"{index + 11:064x}",
+                            revocation_handle=f"{index + 21:064x}",
+                            signing_key=verification_key,
+                        )
+                    )
+
+                original_authorize = approval_module.authorize_and_consume
+                crashed = False
+
+                def crash_once(**kwargs):
+                    nonlocal crashed
+                    if crashed:
+                        return original_authorize(**kwargs)
+                    crashed = True
+                    without_materialize = {
+                        key: value
+                        for key, value in kwargs.items()
+                        if key != "materialize"
+                    }
+                    return original_authorize(
+                        **without_materialize,
+                        materialize=lambda scope: (_ for _ in ()).throw(
+                            SystemExit("crash after registry commit")
+                        ),
+                    )
+
+                with mock.patch.object(
+                    runner, "prepare_live_plan", return_value=plan
+                ), mock.patch.object(
+                    runner, "_load_bound_approval_module", return_value=approval_module
+                ), mock.patch.object(
+                    approval_module, "authorize_and_consume", side_effect=crash_once
+                ):
+                    with self.assertRaises(SystemExit):
+                        runner.run_live_authorized(
+                            contract_path=CONTRACT,
+                            repo_root=ROOT,
+                            corpus_root=root,
+                            output_root=output,
+                            state_root=state,
+                            approvals=approvals,
+                            verification_key=verification_key,
+                            registry_key=registry_key,
+                            api_key=b"sk-ant-api03-test-value",
+                        )
+
+                calls: list[str] = []
+                with mock.patch.object(
+                    runner, "prepare_live_plan", return_value=plan
+                ), mock.patch.object(
+                    runner, "_load_bound_approval_module", return_value=approval_module
+                ), mock.patch.object(
+                    runner,
+                    "invoke_anthropic",
+                    side_effect=lambda item, **kwargs: (
+                        calls.append(item["scheduled_unit_id"]) or response
+                    ),
+                ), mock.patch.object(
+                    runner,
+                    "_bound_scorer_loader",
+                    return_value=lambda: (
+                        lambda capsules, prepared: {
+                            "failed_units": 0,
+                            "passed_units": len(prepared),
+                            "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
+                            "status": "complete",
+                            "total_units": len(prepared),
+                        }
+                    ),
+                ):
+                    result = runner.run_live_authorized(
+                        contract_path=CONTRACT,
+                        repo_root=ROOT,
+                        corpus_root=root,
+                        output_root=output,
+                        state_root=state,
+                        approvals=approvals,
+                        verification_key=verification_key,
+                        registry_key=registry_key,
+                        api_key=b"sk-ant-api03-test-value",
+                    )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(calls), 288)
+            ledger = json.loads((state / "ledger.json").read_bytes())
+            self.assertTrue(
+                all(
+                    batch["authorization_journal"]["status"] == "committed"
+                    for batch in ledger["batches"].values()
+                )
+            )
+
+    def test_selection_artifacts_are_parsed_once_per_unchanged_snapshot(self) -> None:
+        """Removing the selection snapshot cache must increase bound file reads."""
+
+        runner = load_runner()
+        with mock.patch.object(
+            runner, "_read_bound", wraps=runner._read_bound
+        ) as read_bound:
+            first = runner._expected_bound_selection(
+                "requests_boundary_hardening", "a111"
+            )
+            second = runner._expected_bound_selection(
+                "requests_boundary_hardening", "a111"
+            )
+
+        self.assertEqual(first, second)
+        self.assertEqual(read_bound.call_count, 3)
+
+    def test_reservation_builds_each_request_body_once(self) -> None:
+        """A duplicate request-body pass must fail this call-count contract."""
+
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        plan, selection = self._plan(runner)
+        with mock.patch.object(
+            runner, "_bound_selection_identity", return_value=selection
+        ):
+            batches = runner.build_batch_plans(plan)
+            with mock.patch.object(
+                runner, "build_request_body", wraps=runner.build_request_body
+            ) as build_body:
+                runner.calculate_worst_case_reservation(
+                    contract=contract, batches=batches
+                )
+
+        self.assertEqual(build_body.call_count, len(plan))
+
+    def test_ledger_snapshot_does_not_rewrite_durable_state(self) -> None:
+        """A logical read must preserve ledger inode, bytes, and timestamps."""
+
+        runner = load_runner()
+        key = b"l" * 32
+        with tempfile.TemporaryDirectory() as name:
+            state_root = Path(name) / "state"
+            state_root.mkdir(mode=0o700)
+            runner._ledger_write(
+                state_root,
+                {"schema_version": "snapshot-test", "value": 1},
+                key,
+            )
+            path = state_root / "ledger.json"
+            before_stat = path.stat()
+            before_bytes = path.read_bytes()
+
+            snapshot = runner._ledger_snapshot(state_root, key)
+
+            after_stat = path.stat()
+            self.assertEqual(snapshot["value"], 1)
+            self.assertEqual(path.read_bytes(), before_bytes)
+            self.assertEqual(after_stat.st_ino, before_stat.st_ino)
+            self.assertEqual(after_stat.st_mtime_ns, before_stat.st_mtime_ns)
+
+    def test_authorized_lock_refuses_within_a_bounded_wait(self) -> None:
+        """A second launcher must fail fast instead of waiting for a live run."""
+
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as name:
+            output_root = Path(name) / "output"
+            output_root.mkdir(mode=0o700)
+            entered = threading.Event()
+            release = threading.Event()
+            errors: list[BaseException] = []
+
+            def hold() -> None:
+                entered.set()
+                if not release.wait(timeout=5):
+                    raise AssertionError("lock holder was not released")
+
+            def first() -> None:
+                try:
+                    runner._with_authorized_run_lock(output_root, hold)
+                except BaseException as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=first)
+            worker.start()
+            self.assertTrue(entered.wait(timeout=2))
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(
+                    runner.LiveRunError, "authorization_busy"
+                ):
+                    runner._with_authorized_run_lock(
+                        output_root,
+                        lambda: None,
+                        wait_timeout_seconds=0.05,
+                    )
+            finally:
+                release.set()
+                worker.join(timeout=5)
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
 
     def test_selection_is_sealed_into_request_batch_and_approval_identities(self) -> None:
         runner = load_runner()

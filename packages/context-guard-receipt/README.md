@@ -31,16 +31,16 @@ project, then invoke the two installed binaries directly:
 
 ```text
 npm pack --ignore-scripts
-npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.0.tgz
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.1.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root --state-dir /absolute/private-state
 ```
 
-Any downgrade to `0.1.x` is an external package-manager/release gate requiring
-an independently retained immutable published artifact. This package does not
-simulate or reconstruct an older release from the `0.2.0` runtime tree.
+Any downgrade to an earlier release is an external package-manager/release gate
+requiring an independently retained immutable published artifact. This package
+does not simulate or reconstruct an older release from the `0.2.1` runtime tree.
 
 The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or
@@ -75,6 +75,17 @@ semantics must place it on a separately protected monotonic store. The caller
 must also implement the bound network/runtime/output controls; this module is
 an authorization gate, not an OS sandbox or an execution engine. An approval
 does not grant npm publication or evidence-claim authority.
+
+`context_guard_receipt.external_approval_v2` is a parallel, versioned adapter
+for callers whose evidence lifecycle is honestly manual. It leaves the v1
+module, schema, HMAC domain, and existing consumers byte-compatible, while its
+closed scope binds retention exactly as
+`{"mode":"manual_owner_cleanup","maximum_seconds":null}` and authenticates
+the envelope under `contextguard/external-approval/v2`. V1 and v2 share the
+same authenticated one-use/revocation registry, so changing envelope versions
+cannot make a consumed nonce reusable. V2 does not claim finite retention or
+automatic deletion; systems requiring a deletion deadline need a separate
+durable lifecycle authority and receipt before approval.
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
 evidence and cannot close the provider join. It does not observe a host, read

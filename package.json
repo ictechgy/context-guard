@@ -1,6 +1,6 @@
 {
   "name": "@ictechgy/context-guard",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "ContextGuard CLI helpers for keeping AI coding agent context focused and local-first.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/ictechgy/context-guard#readme",
@@ -13,7 +13,7 @@
   },
   "type": "commonjs",
   "dependencies": {
-    "@ictechgy/context-guard-receipt": "0.2.0"
+    "@ictechgy/context-guard-receipt": "0.2.1"
   },
   "bin": {
     "context-guard": "plugins/context-guard/bin/context-guard",

@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 
@@ -29,8 +30,21 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 NPM_PACKAGE = ROOT / "package.json"
 HOMEBREW_TEMPLATE = ROOT / "packaging" / "homebrew" / "context-guard.rb.template"
 TESTS_DIR = ROOT / "tests"
+PROVIDER_LIVE_TESTS_DIR = TESTS_DIR / "provider-live-roadmap"
 BRIEF_MODE_SNIPPET_TEST = TESTS_DIR / "test_brief_mode_snippets.py"
+PROVIDER_LIVE_V4_TEST = PROVIDER_LIVE_TESTS_DIR / "test_p3_anthropic_api_v4.py"
 TEST_DISCOVERY_PATTERN = "test_*.py"
+PROVIDER_LIVE_TEST_DISCOVERY_PATTERN = "test_p3_*v4.py"
+PROVIDER_LIVE_REQUIRED_TEST_IDS = frozenset(
+    {
+        "test_p3_anthropic_api_v4.P3AnthropicAPIV4Tests.test_authorized_v2_envelopes_execute_each_unit_once",
+        "test_p3_anthropic_api_v4.P3AnthropicAPIV4Tests.test_launcher_activation_binds_exact_core_commit_and_blobs",
+        "test_p3_anthropic_api_v4.P3AnthropicAPIV4Tests.test_registry_commit_crash_restarts_same_v2_approvals_without_redispatch",
+        "test_p3_live_runner_conformance_v4.LiveRunnerConformanceTests.test_ledger_tamper_and_capsule_substitution_fail_closed",
+        "test_p3_live_runner_conformance_v4.LiveRunnerConformanceTests.test_recovered_over_cap_ledger_refuses_before_approval_or_dispatch",
+        "test_p3_live_runner_conformance_v4.LiveRunnerConformanceTests.test_unknown_receipt_and_timeout_stop_after_one_dispatch",
+    }
+)
 # 이 값은 성능 예산이 아니라 **행(hang) 감시견**이다 — 걸려도 실패한 테스트는 없고,
 # 목적은 멈춰버린 실행이 CI 잡 전체를 잡아먹는 것을 막는 것뿐이다.
 #
@@ -42,6 +56,7 @@ TEST_DISCOVERY_PATTERN = "test_*.py"
 # 25분 상한보다 2분 먼저 종료하는 23분 감시견은 정리 시간을 남기면서도 행을 유한하게
 # 차단한다. 장기적으로는 스위트 실행 시간을 줄여야 한다.
 TEST_DISCOVERY_TIMEOUT_SECONDS = 1380
+PROVIDER_LIVE_TEST_TIMEOUT_SECONDS = 600
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
 PATH_OVERRIDE_ENVS = (
@@ -891,8 +906,62 @@ def check_test_discovery_includes_brief_mode_snippets() -> None:
         )
 
 
+def provider_live_test_ids() -> frozenset[str]:
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        suite = unittest.TestLoader().discover(
+            str(PROVIDER_LIVE_TESTS_DIR),
+            pattern=PROVIDER_LIVE_TEST_DISCOVERY_PATTERN,
+            top_level_dir=str(PROVIDER_LIVE_TESTS_DIR),
+        )
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
+
+    collected: set[str] = set()
+    pending: list[unittest.TestSuite | unittest.TestCase] = [suite]
+    while pending:
+        candidate = pending.pop()
+        if isinstance(candidate, unittest.TestSuite):
+            pending.extend(candidate)
+            continue
+        test_id = candidate.id()
+        if not isinstance(test_id, str) or not test_id:
+            fail("provider-live discovery produced a test without a stable ID")
+        collected.add(test_id)
+    return frozenset(collected)
+
+
+def check_provider_live_test_discovery() -> None:
+    if not PROVIDER_LIVE_TESTS_DIR.is_dir():
+        fail(
+            "missing provider-live tests directory: "
+            f"{safe_path_label(PROVIDER_LIVE_TESTS_DIR)}"
+        )
+    tests = sorted(
+        path
+        for path in PROVIDER_LIVE_TESTS_DIR.glob(
+            PROVIDER_LIVE_TEST_DISCOVERY_PATTERN
+        )
+        if path.is_file()
+    )
+    if PROVIDER_LIVE_V4_TEST not in tests:
+        fail(
+            "provider-live discovery does not include active V4 tests: "
+            f"{safe_path_label(PROVIDER_LIVE_V4_TEST)}"
+        )
+    collected_ids = provider_live_test_ids()
+    missing_ids = sorted(PROVIDER_LIVE_REQUIRED_TEST_IDS - collected_ids)
+    if missing_ids:
+        fail(
+            "provider-live discovery is missing required test IDs: "
+            + ", ".join(missing_ids)
+        )
+
+
 def run_tests() -> None:
     check_test_discovery_includes_brief_mode_snippets()
+    check_provider_live_test_discovery()
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
@@ -907,6 +976,33 @@ def run_tests() -> None:
         fail(f"test discovery timed out after {TEST_DISCOVERY_TIMEOUT_SECONDS}s")
     if proc.returncode != 0:
         fail(f"test discovery failed with exit code {proc.returncode}")
+    try:
+        provider_live = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests/provider-live-roadmap",
+                "-p",
+                PROVIDER_LIVE_TEST_DISCOVERY_PATTERN,
+            ],
+            cwd=ROOT,
+            text=True,
+            env=env,
+            timeout=PROVIDER_LIVE_TEST_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail(
+            "provider-live test discovery timed out after "
+            f"{PROVIDER_LIVE_TEST_TIMEOUT_SECONDS}s"
+        )
+    if provider_live.returncode != 0:
+        fail(
+            "provider-live test discovery failed with exit code "
+            f"{provider_live.returncode}"
+        )
 
 
 def main() -> int:

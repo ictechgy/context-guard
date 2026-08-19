@@ -585,17 +585,23 @@ class UsageReducerConsumerTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 token_statusline.chmod(0o755)
-                env = os.environ.copy()
-                env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
-                env["OMC_HUD_SCRIPT"] = str(omc)
-                env["CONTEXT_GUARD_STATUSLINE_BIN"] = str(token_statusline)
                 proc = subprocess.run(
-                    ["bash", str(MERGED_STATUSLINE_PATH)],
+                    [
+                        "/bin/bash",
+                        "--noprofile",
+                        "--norc",
+                        str(MERGED_STATUSLINE_PATH),
+                        "--approved-node",
+                        str(node),
+                        "--approved-omc-script",
+                        str(omc),
+                        "--approved-token-statusline",
+                        str(token_statusline),
+                    ],
                     input='{"session_id":"test"}',
                     text=True,
                     capture_output=True,
                     check=True,
-                    env=env,
                 )
                 self.assertIn("[omc] hud", proc.stdout)
                 self.assertIn("cache 80%", proc.stdout)
