@@ -23340,7 +23340,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(command=command):
                 out = hook_json(KIT_REWRITE, command)
                 wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
-                self.assertIn("bash -c", wrapped)
+                self.assertIn("--noprofile --norc -p -c", wrapped)
+                self.assertNotIn(" bash -c ", wrapped)
                 self.assertIn(command, wrapped)
                 self.assertTrue("trim_command_output.py" in wrapped or "context-guard-trim-output" in wrapped)
 
