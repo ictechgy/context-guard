@@ -1,16 +1,16 @@
 {
   "packer_bindings": {
     "canonical": {
-      "bytes": 248045,
+      "bytes": 257840,
       "mode": "0755",
       "path": "context-guard-kit/context_pack.py",
-      "sha256": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0"
+      "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"
     },
     "plugin": {
-      "bytes": 248045,
+      "bytes": 257840,
       "mode": "0755",
       "path": "plugins/context-guard/bin/context-guard-pack",
-      "sha256": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0"
+      "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"
     },
     "require_byte_equality": true
   },
@@ -31,7 +31,7 @@
       "bytes": 2458,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g2/v1/contract.json",
-      "sha256": "473755072c4e216a997db582a6dd1920220936dbcefb474e14e2f1272504688d"
+      "sha256": "0c72b39104238039b051ee7421c0f8a81f782e6516801e883191506997516fd2"
     },
     {
       "bytes": 135,
@@ -295,10 +295,10 @@
       "bytes": 81832,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g2/v1/verify.py",
-      "sha256": "17fbb7d3d070b1887fc4aa52a9e4203a2c4223377aa0bc8f8c2bd018a7fdb02b"
+      "sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
     }
   ],
-  "public_tree_root_sha256": "5f7bd226317dd1396c9d89188be466aaca589dfaf71b955a3e496b800e48d64a",
+  "public_tree_root_sha256": "44c5f0816192db446ec104e885ddf309c77f6bd55e6ac7cea2534d055af44106",
   "python_binding": {
     "bytes": 52448,
     "implementation": "cpython",
@@ -323,5 +323,5 @@
   ],
   "scorer_tree_root_sha256": "6e349c75476fd18facd6770c51aae151449e79ae2bb20a2c149b6f736b328921",
   "tree_algorithm": "sha256-domain-separated-length-prefixed-v2",
-  "tree_root_sha256": "15d7729c86098427ec013993abbb919fdc750935c7b27cc3761229ab094c4d3a"
+  "tree_root_sha256": "27568e5c8488c6dd5c99665d770d11115f8048e0787675a6574daf7328a13811"
 }
