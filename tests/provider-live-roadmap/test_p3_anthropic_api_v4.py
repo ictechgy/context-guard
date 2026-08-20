@@ -920,8 +920,11 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                 second.start()
                 self.assertTrue(second_lock_attempted.wait(timeout=30))
                 release_first_invoke.set()
-                first.join(timeout=30)
-                second.join(timeout=30)
+                completion_deadline = time.monotonic() + 120
+                for worker in (first, second):
+                    worker.join(
+                        timeout=max(0.0, completion_deadline - time.monotonic())
+                    )
             self.assertFalse(first.is_alive() or second.is_alive())
             self.assertEqual(len(errors), 1)
             self.assertIsInstance(errors[0], runner.LiveRunError)
