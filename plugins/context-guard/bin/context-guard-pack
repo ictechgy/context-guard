@@ -53,6 +53,7 @@ ADAPTIVE_K_APPLICATION_SCHEMA_VERSION = "contextguard.pack-adaptive-k-applicatio
 SYMBOL_MEMORY_SCHEMA_VERSION = "contextguard.pack-symbol-memory.v1"
 GRAPH_APPLICATION_SCHEMA_VERSION = "contextguard.pack-graph-application.v1"
 SELF_FINANCING_SELECTION_SCHEMA_VERSION = "contextguard.pack-self-financing-selection.v1"
+SELECTION_PLAN_SCHEMA_VERSION = "contextguard.pack-selection-plan.v1"
 CONTENT_ADDRESS_SCHEMA_VERSION = "contextguard.pack-content-address.v1"
 ROLLING_DELTA_SCHEMA_VERSION = "contextguard.pack-rolling-delta.v1"
 SKETCH_DUPLICATE_SHINGLE_WIDTH = 5
@@ -4832,6 +4833,159 @@ def self_financing_candidate_receipt(
     }
 
 
+def selection_plan_source(
+    item: dict[str, Any], identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    source_cache: _SourceSnapshotCache, root_arg: str,
+) -> dict[str, Any]:
+    path = str(item.get("path", ""))
+    lines = copy.deepcopy(item.get("requested_lines", item.get("lines")))
+    content_sha256 = frozen_source_content_sha256(path, lines, source_cache)
+    fallback = exact_source_fallback(
+        root_arg, path, lines, expected_content_sha256=content_sha256
+    )
+    if fallback.get("kind") != "exact_source_slice":
+        raise PackError("selection plan missing exact recovery")
+    return {
+        "path": path,
+        "lines": lines,
+        "identity": frozen_source_identity(path, lines, identities, source_cache),
+        "content_sha256": content_sha256,
+        "exact_fallback": fallback,
+    }
+
+
+def build_selection_plan(
+    args: argparse.Namespace, ordinary_build: dict[str, Any], selected_build: dict[str, Any],
+    receipt: dict[str, Any], repo_map: dict[str, Any], suggest_payload: dict[str, Any],
+    identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    source_cache: _SourceSnapshotCache, *, root_arg: str,
+) -> dict[str, Any]:
+    if getattr(args, "selection_plan", False) and (args.manifest_out or args.pack_out):
+        raise PackError("selection planning is read-only; output paths are unsupported")
+    if not args.json:
+        raise PackError("selection planning requires --json")
+    if getattr(args, "selection_plan", False) and getattr(args, "apply_selection_plan", None):
+        raise PackError("selection plan and apply are mutually exclusive")
+    if args.delta_from_pack_id:
+        raise PackError("selection plan does not cross private receipt boundaries")
+    explicit_paths = split_suggest_files(args.files) + list(args.output or []) + list(args.test_output or [])
+    if any(repo_map_path_has_sensitive_evidence(path) or re.search(r"(?i)(?:^|[-_/.])(scorer|private)(?:[-_/.]|$)", path) for path in explicit_paths):
+        raise PackError("selection plan refuses scorer/private data")
+    if any(
+        isinstance(item, dict) and str(item.get("path", "")).startswith("redacted-path#")
+        for item in repo_map.get("token_tree", [])
+    ):
+        raise PackError("selection plan refuses scorer/private data")
+    caps = repo_map.get("caps", {}) if isinstance(repo_map.get("caps"), dict) else {}
+    summary = repo_map.get("summary", {}) if isinstance(repo_map.get("summary"), dict) else {}
+    graph = repo_map.get("graph", {}) if isinstance(repo_map.get("graph"), dict) else {}
+    if SECRET_CONTENT_RE.search(str(args.query)):
+        raise PackError("selection plan refuses secret-risk input")
+    if (
+        any(bool(caps.get(key)) for key in ("files_capped", "candidate_files_capped", "scan_files_capped"))
+        or int(summary.get("bytes_per_file_capped_count", 0) or 0) != 0
+        or bool(repo_map.get("omitted_files"))
+        or int(graph.get("edges_omitted_by_cap", 0) or 0) != 0
+        or bool(ordinary_build.get("input", {}).get("capped"))
+        or bool(selected_build.get("input", {}).get("capped"))
+        or any(
+            isinstance(item, dict) and item.get("reason") == "query_scan_truncated"
+            for item in suggest_payload.get("omitted_sources", [])
+        )
+    ):
+        raise PackError("selection plan requires a complete scan")
+    secret_scan = repo_map.get("secret_scan", {}) if isinstance(repo_map.get("secret_scan"), dict) else {}
+    if (
+        int(ordinary_build.get("redaction", {}).get("redacted_lines", 0) or 0) != 0
+        or int(selected_build.get("redaction", {}).get("redacted_lines", 0) or 0) != 0
+        or bool(secret_scan.get("files_with_risks"))
+        or int(secret_scan.get("files_omitted_by_cap", 0) or 0) != 0
+    ):
+        raise PackError("selection plan refuses secret-risk input")
+
+    ordinary = [
+        selection_plan_source(item, identities, source_cache, root_arg)
+        for item in ordinary_build.get("included_sources", []) if isinstance(item, dict)
+    ]
+    decisions = [copy.deepcopy(item) for item in receipt.get("decisions", []) if isinstance(item, dict)]
+    for decision in decisions:
+        fallback = decision.get("exact_fallback", {})
+        if fallback.get("kind") != "exact_source_slice":
+            raise PackError("selection plan missing exact recovery")
+        recovered_removed = []
+        for removed in decision.get("removed_sources", []):
+            if not isinstance(removed, dict):
+                raise PackError("selection plan missing exact recovery")
+            recovered = copy.deepcopy(removed)
+            if recovered.get("exact_fallback", {}).get("kind") != "exact_source_slice":
+                source = selection_plan_source(recovered, identities, source_cache, root_arg)
+                recovered["frozen_identity"] = source["identity"]
+                recovered["exact_fallback"] = exact_source_fallback(
+                    root_arg, source["path"], source["lines"],
+                    expected_content_sha256=source["content_sha256"],
+                )
+            recovered_removed.append(recovered)
+        decision["removed_sources"] = recovered_removed
+    selected = [item for item in decisions if item.get("status") == "selected"]
+    omitted = [item for item in decisions if item.get("status") != "selected"]
+    replacement = [
+        {"candidate_identity": item["frozen_identity"], "removed": copy.deepcopy(item.get("removed_sources", []))}
+        for item in selected if item.get("removed_sources")
+    ]
+    fallback = [
+        {"identity": item["identity"], "exact_fallback": copy.deepcopy(item["exact_fallback"])}
+        for item in ordinary
+    ] + [
+        {"identity": item["frozen_identity"], "exact_fallback": copy.deepcopy(item["exact_fallback"])}
+        for item in decisions
+    ]
+    material: dict[str, Any] = {
+        "schema_version": SELECTION_PLAN_SCHEMA_VERSION,
+        "ordinary": ordinary,
+        "candidate": decisions,
+        "selected": selected,
+        "omitted": omitted,
+        "replacement": replacement,
+        "ceiling": {
+            "unit": "rendered_bytes",
+            "ordinary": int(receipt.get("ordinary_pack_bytes", 0) or 0),
+            "selected": int(receipt.get("selected_rendered_bytes", 0) or 0),
+        },
+        "fallback": fallback,
+        "provenance": {
+            "query_sha256": sha256_text(str(args.query)),
+            "diff": cap_label(args.diff) if args.diff else None,
+            "ordinary_pack_id": ordinary_build.get("pack_id"),
+            "selected_pack_id": selected_build.get("pack_id"),
+            "source_identities": sorted(item["identity"] for item in ordinary),
+        },
+        "safety": {
+            "read_only": True, "provider_free": True, "complete_scan": True,
+            "source_revalidation_required_on_apply": True,
+        },
+        "claim_boundary": {"provider_token_or_cost_savings_claim_allowed": False},
+    }
+    plan_id = "sha256:" + sha256_text(json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    return {"schema_version": material.pop("schema_version"), "plan_id": plan_id, **material}
+
+
+def read_selection_plan(root: Path, raw_path: str) -> dict[str, Any]:
+    rel = output_rel_for_collision_check(raw_path, "--apply-selection-plan")
+    try:
+        value = json.loads(
+            read_manifest_bytes_no_follow(root / rel).decode("utf-8"),
+            object_pairs_hook=strict_json_object,
+            parse_constant=reject_json_constant,
+            parse_int=parse_receipt_int,
+        )
+        json_depth(value)
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise PackError("invalid selection plan JSON") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != SELECTION_PLAN_SCHEMA_VERSION:
+        raise PackError("unsupported selection plan schema")
+    return value
+
+
 def apply_symbol_memory_graph(
     manifest: dict[str, Any],
     repo_map: dict[str, Any],
@@ -5207,6 +5361,9 @@ def build_auto_explain_payload(
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    plan_only = bool(getattr(args, "selection_plan", False))
+    apply_plan_path = getattr(args, "apply_selection_plan", None)
+    expected_plan = read_selection_plan(root, apply_plan_path) if apply_plan_path else None
     source_cache = _SourceSnapshotCache()
     input_budget = _SourceInputBudget()
     manifest_rel = output_rel_for_collision_check(args.manifest_out, "--manifest-out") if args.manifest_out else None
@@ -5225,7 +5382,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         validate_output_path_under_root(root, args.pack_out, "--pack-out")
     suggest_args = copy.copy(args)
     suggest_args.manifest_out = None
-    self_financing = bool(getattr(args, "self_financing_selection", False))
+    self_financing = bool(getattr(args, "self_financing_selection", False) or plan_only or apply_plan_path)
     apply_adaptive_k = bool(getattr(args, "apply_adaptive_k", False) or self_financing)
     if apply_adaptive_k:
         suggest_args.adaptive_k = True
@@ -5646,6 +5803,22 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         suggest_payload["token_proxy"] = copy.deepcopy(
             build_payload.get("token_proxy", {})
         )
+    selection_plan_payload: dict[str, Any] | None = None
+    if plan_only or apply_plan_path:
+        if not isinstance(self_financing_receipt, dict) or not isinstance(repo_map_payload, dict) or ordinary_build_payload is None:
+            raise PackError("selection plan unavailable")
+        selection_plan_payload = build_selection_plan(
+            args, ordinary_build_payload, build_payload, self_financing_receipt,
+            repo_map_payload, suggest_payload, repo_map_source_identities, source_cache, root_arg=root_arg,
+        )
+        if plan_only:
+            return {
+                "tool": TOOL_NAME, "schema_version": AUTO_SCHEMA_VERSION,
+                "version": VERSION, "mode": "selection_plan",
+                "selection_plan": selection_plan_payload,
+            }, rc
+        if expected_plan != selection_plan_payload:
+            raise PackError("selection plan drift; regenerate the plan")
     if not args.no_artifact:
         receipt_rel = Path(PACK_DIR) / f"{build_payload['pack_id']}.json"
         if manifest_rel is not None:
@@ -5716,6 +5889,12 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         payload["graph_application"] = graph_application
     if self_financing_receipt is not None:
         payload["self_financing_selection"] = self_financing_receipt
+    if selection_plan_payload is not None:
+        payload["selection_plan"] = selection_plan_payload
+        payload["selection_plan_application"] = {
+            "status": "applied", "explicit": True,
+            "revalidated_plan_id": selection_plan_payload["plan_id"],
+        }
     if (getattr(args, "symbol_memory", False) or apply_symbol_memory) and isinstance(repo_map_payload, dict):
         payload["symbol_memory"] = build_symbol_memory_payload(
             repo_map_payload, applied=apply_symbol_memory
@@ -5984,6 +6163,14 @@ def build_parser() -> argparse.ArgumentParser:
             "explicitly apply Adaptive, then Symbol, then one-hop Graph selection while replacing "
             "only lower-value non-caller sources and never exceeding the ordinary pack bytes"
         ),
+    )
+    auto.add_argument(
+        "--selection-plan", action="store_true",
+        help="emit a read-only provider-free self-financing selection plan; requires --json",
+    )
+    auto.add_argument(
+        "--apply-selection-plan", metavar="PLAN_JSON",
+        help="explicitly apply a previously emitted selection plan after identity revalidation",
     )
     return parser
 

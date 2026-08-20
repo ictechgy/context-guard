@@ -62,6 +62,13 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 `auto --self-financing-selection`은 기본 비활성 조합 경로입니다. ordinary-pack byte ceiling을 고정하고 Adaptive, task-matching Symbol, bounded one-hop Graph 순서로 적용하며 caller/critical source는 대체하지 않습니다. 후보마다 frozen identity, secret 판단, byte delta, exact fallback, replacement removal 또는 정직한 no-op을 기록하고 provider savings 주장은 하지 않습니다.
 
+`auto --selection-plan --json`은 같은 query/diff/output/symbol/self-financing 입력에서 write 없는 provider-free closed plan만 출력합니다. 저장한 plan은 동일 입력에 `--apply-selection-plan PATH`를 별도로 지정해야 적용되며, 출력 직전에 source identity를 다시 확인합니다. incomplete scan, secret-risk/scorer-private 입력, drift, unsafe output boundary, exact fallback 누락은 fail-closed입니다.
+
+```bash
+python3 context_pack.py auto --root . --query "retry failure" --diff worktree --output logs/test.txt --json --selection-plan > selection-plan.json
+python3 context_pack.py auto --root . --query "retry failure" --diff worktree --output logs/test.txt --json --apply-selection-plan selection-plan.json --no-artifact
+```
+
 `auto --apply-adaptive-k`는 명시적·기본 비활성 축소 경로입니다. 로컬 adaptive-k 회귀 gate가 통과할 때만 heuristic source를 추천 top-k로 줄이고, caller가 지정한 file/output/test-output 및 diff source는 항상 보존한 채 동일 byte budget으로 다시 build합니다. JSON과 `--explain`은 `adaptive_k_application` 근거를 남기며 provider token/cost 절감 주장을 하지 않습니다.
 
 선택적 `build`/`auto --sketch-duplicate-veto`는 sanitized slice를 기존 rank 순서대로 budget 계산 전에 검사하고 `suggest`에는 적용하지 않습니다. exact SHA-256 후보는 byte/line으로 재확인하고, 그 다음 고정 framing의 Unicode-casefold 5-token shingle에서 bottom 64 unique digest를 유지해 양쪽 최소 12, inclusive 0.90 sketch-set Jaccard heuristic을 적용합니다. 짧은 sketch는 exact-only이며, 100,000 eligible pair 검증 뒤 실제 skipped pair에서 fail open하여 이후에는 digest-only로 동작합니다. winner가 최종 pack에 렌더링되지 않을 수도 있으므로 omission의 자체 `slice` exact retrieval을 확인해야 합니다. 결과에는 `sketch_duplicate_source`와 standalone build 또는 `auto.build`의 `sketch_duplicate_veto.comparison_cap_reached` boolean만 기록하며, text summary의 `sketch_comparison_cap_reached=true|false`는 receipt 성공 여부와 무관합니다. fingerprint, 상대 identity, overlap, score, provider token/cost savings claim은 공개하지 않고 flag-off 기본 호환성을 보존합니다.

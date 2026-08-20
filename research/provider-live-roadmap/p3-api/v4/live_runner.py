@@ -32,7 +32,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 SCHEMA = "contextguard.p3-anthropic-api-live-contract/v4"
 EVIDENCE_SCHEMA = "contextguard.p3-anthropic-api-live-evidence/v4"
-EXPECTED_CONTRACT_SHA256 = "752595ed16da64d73ec01f9985f76489292c07a96ab7ed3ecd3d85a08f36a0ed"
+EXPECTED_CONTRACT_SHA256 = "2b39f631e10f7f2f6fe3db9f543b209c24b6c7736b9826e5edc42cbfe8a9cbcf"
 EXPECTED_SCORER_SHA256 = "179e4cb2bbab5ce1290f1c0c190881c1dd38fd3a7f5a881b223f4b81f0872db8"
 EXPECTED_ARTIFACTS = {
     "approval_core_v1": {
@@ -69,7 +69,7 @@ EXPECTED_ARTIFACTS = {
     },
     "canonical_packer": {
         "path": "context-guard-kit/context_pack.py",
-        "sha256": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0",
+        "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
     },
     "canonical_sanitizer": {
         "path": "context-guard-kit/sanitize_output.py",
@@ -113,7 +113,7 @@ EXPECTED_ARTIFACTS = {
     },
     "plugin_packer": {
         "path": "plugins/context-guard/bin/context-guard-pack",
-        "sha256": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0",
+        "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
     },
     "plugin_sanitizer": {
         "path": "plugins/context-guard/bin/context-guard-sanitize-output",

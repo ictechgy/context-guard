@@ -303,7 +303,7 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
             {
                 ".claude-plugin/marketplace.json": "ce0592238f107bb933ac1cf652147001c5716311979a2e342c72e426c88e21e4",
                 "context-guard-kit/benchmark_runner.py": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
-                "context-guard-kit/context_pack.py": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0",
+                "context-guard-kit/context_pack.py": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
                 "context-guard-kit/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
                 "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
                 "context-guard-kit/setup_wizard.py": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
@@ -311,7 +311,7 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
                 "plugins/context-guard/.claude-plugin/plugin.json": "edc30162d9466d8de3e6b1d44af8206ca46d0842b7f4b73c66a24679e1626a2d",
                 "plugins/context-guard/bin/context-guard-bench": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
                 "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
-                "plugins/context-guard/bin/context-guard-pack": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0",
+                "plugins/context-guard/bin/context-guard-pack": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
                 "plugins/context-guard/bin/context-guard-setup": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
                 "plugins/context-guard/lib/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
                 "scripts/prepublish_check.py": "99d7414816a6880ad13f9d4b6265cb5e33eb8c43ccf83de1d0500df43acc9382",
