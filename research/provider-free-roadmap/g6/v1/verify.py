@@ -11,12 +11,12 @@ import sys
 from typing import Mapping
 
 
-G5_LOCK_SHA256 = "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89"
-G5_TREE_SHA256 = "c2e3f47526f31b55cb6d806257d40baa3eb542e3c1b760598e90b422385b7dc8"
+G5_LOCK_SHA256 = "c579875e5724d88d37d79fffd69154af02dc35141f77ce459bdce47ed495b607"
+G5_TREE_SHA256 = "96eba2492b7190489713091e1c6567e555804c66fafd2ffbbc06afe108b3aef0"
 G5_PREREG = {
     "bytes": 12139,
     "path": "research/provider-free-roadmap/g5/v1/preregistration.json",
-    "sha256": "e702e48b7ace9ece0c3295195070c2853505a16b7af037ab93459d175ece5c69",
+    "sha256": "b0f76c641ffaf058313b9bf59b85dcd9f1a62f1eedc5bca11f16c6d9199de467",
 }
 G5_SCHEDULE = {
     "bytes": 65964,
@@ -26,13 +26,13 @@ G5_SCHEDULE = {
 G5_VERIFIER = {
     "bytes": 45010,
     "path": "research/provider-free-roadmap/g5/v1/verify.py",
-    "sha256": "b0baa4b6bff36f51c80e897cee56947fe1226f51a03d24453d4152336e342246",
+    "sha256": "6b80f2f00e3136e8c190301b9ef5af1814f29f4fefaec3a325e1db780238287b",
 }
 G5_SCHEMA_SET = {
     "bytes": 41710,
-    "sha256": "cd95559d7e1020e63cc98d64ae741ac58a358f60a80b55fb40baf8bf14164239",
+    "sha256": "cedfcd74de67d5a4dc9478af27549cb2604460381189d7c2c708432042e884de",
 }
-PACKET_SCHEMA_SHA256 = "82b112be4288ca2496a5097f0e7c5724596daf1cbb1d2160c1b5cf5dd9c4a024"
+PACKET_SCHEMA_SHA256 = "8d387adc693bb5dad6057a07a53014c0ae2d3cf6e84310a07c9712b37de932db"
 SUPPORTED_SCHEMA_KEYWORDS = {
     "$defs", "$ref", "$schema", "additionalProperties", "const", "enum",
     "items", "maxItems", "maximum", "minItems", "minLength", "minimum",

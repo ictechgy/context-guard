@@ -1,9 +1,9 @@
 {
   "algorithm": "sha256",
   "g2_source": {
-    "lock_sha256": "9044c0b0d4729457b0b9dea6534a9131156b3df54f032633244172454f4bea70",
-    "tree_root_sha256": "87f4e1306c27ab22227cf7e5056851c30ca2955e6eb736a2e2c7051d15e9922e",
-    "verifier_sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
+    "lock_sha256": "35fc85ddabdb0ca8715895eb0572ff4f64a2d286f697806a8e0d97ce6d19a5f5",
+    "tree_root_sha256": "15d7729c86098427ec013993abbb919fdc750935c7b27cc3761229ab094c4d3a",
+    "verifier_sha256": "17fbb7d3d070b1887fc4aa52a9e4203a2c4223377aa0bc8f8c2bd018a7fdb02b"
   },
   "inventory": [
     {
@@ -22,7 +22,7 @@
       "bytes": 9852,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g3/v1/manifest.json",
-      "sha256": "e970a970bf5c0af1313e26a8218fcddd4eb8ce516d4b388dadc30c706eda52a8"
+      "sha256": "b1ef04ae6a119d19e48dc4ab81ed0b2dd14ceb7133719c3f4043d7ab99044f1a"
     },
     {
       "bytes": 73745,
@@ -82,9 +82,9 @@
       "bytes": 42280,
       "mode": "0644",
       "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-      "sha256": "5561c4e1ce1c7431d90099abcf3e7984513d6cb177ef0ff1526ccee6fcd98932"
+      "sha256": "86f9a85efc6400d58f759717f9af3466f430fb9444ffbaa29f6e18f532284b16"
     }
   ],
   "schema_version": "contextguard.g3-freeze-lock/v1",
-  "tree_root_sha256": "c32a94f183c5c5f840e93fa19be75d153c62b6c5a6851b1a48fed45ec672161a"
+  "tree_root_sha256": "a48b1d17311a77e06c30e500d1cd2e09fcd9291948eb15c0801ca55d06aceed6"
 }
