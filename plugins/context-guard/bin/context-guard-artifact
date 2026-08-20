@@ -218,7 +218,7 @@ def load_line_sanitizer(
             )
         except Exception as exc:
             raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
-    return FallbackLineSanitizer(show_paths=show_paths, context=context)
+    raise RuntimeError("canonical sanitizer is unavailable")
 
 
 def sanitize_text(
