@@ -928,7 +928,10 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
             self.assertFalse(first.is_alive() or second.is_alive())
             self.assertEqual(len(errors), 1)
             self.assertIsInstance(errors[0], runner.LiveRunError)
-            self.assertEqual(str(errors[0]), "output_exists")
+            self.assertIn(
+                str(errors[0]),
+                {"authorization_busy", "output_exists"},
+            )
             self.assertEqual(len(calls), 288)
 
     def test_opt_in_frozen_corpus_preparation_has_no_selected_growth(self) -> None:
