@@ -22,15 +22,15 @@
     "units": "byte_equivalent_units"
   },
   "g2_source": {
-    "lock_sha256": "35fc85ddabdb0ca8715895eb0572ff4f64a2d286f697806a8e0d97ce6d19a5f5",
-    "tree_root_sha256": "15d7729c86098427ec013993abbb919fdc750935c7b27cc3761229ab094c4d3a",
-    "verifier_sha256": "17fbb7d3d070b1887fc4aa52a9e4203a2c4223377aa0bc8f8c2bd018a7fdb02b"
+    "lock_sha256": "dfe0bf76f9dad2441d6d7e41ecec19cf936b9c6f47ef33c8e53e7da56a4cd552",
+    "tree_root_sha256": "27568e5c8488c6dd5c99665d770d11115f8048e0787675a6574daf7328a13811",
+    "verifier_sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
   },
   "receipt_bindings": {
     "captured_inputs": {
-      "g2_lock": {"bytes": 12671, "sha256": "35fc85ddabdb0ca8715895eb0572ff4f64a2d286f697806a8e0d97ce6d19a5f5"},
-      "g2_packer": {"bytes": 248045, "sha256": "b7f1d931bbd9dc6dc224938aad84ccb4f8b4e4b28c9a3fe2e0df0f44b2025de0"},
-      "g2_public_snapshot": {"bytes": 125267, "sha256": "0b0eb156e328d2919cfed5bf4b1fac9e40b012a6ffc4f97eefca9e295738c151"},
+      "g2_lock": {"bytes": 12671, "sha256": "dfe0bf76f9dad2441d6d7e41ecec19cf936b9c6f47ef33c8e53e7da56a4cd552"},
+      "g2_packer": {"bytes": 257840, "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"},
+      "g2_public_snapshot": {"bytes": 125267, "sha256": "fcff3f07e2eb6c45d890244794d8c1b6a4384c0f676f3503f261f00b19a0ac2c"},
       "g3_cost_model": {"bytes": 843, "sha256": "f9869c1d685bcd4cc8be13bc120871909ea071a1a241305456aeb0b8eacc3bda"},
       "g3_schema_set": {"bytes": 25254, "sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c"}
     },
