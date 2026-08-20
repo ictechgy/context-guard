@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+if ! git diff --cached --quiet -- .weightclass/verify tests/test_home_settings_alias_scope.py; then
+  echo "protected acceptance files changed"
+  exit 1
+fi
+
+set +e
+CONTEXT_GUARD_CAMPAIGN_ACCEPTANCE=1 \
+  python3 -m unittest tests.test_home_settings_alias_scope
+focused_code=$?
+set -e
+
+if [ "$focused_code" -eq 0 ]; then
+  python3 -m unittest \
+    tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_rejects_apply_without_explicit_agent \
+    tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_claude_writes_home_settings_with_rollback_record \
+    tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_existing_claude_settings_rejects_no_backup \
+    tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_rollback_failure_does_not_modify_settings
+  python3 -m compileall -q context-guard-kit tests
+  exit 0
+fi
+
+if [ "$focused_code" -ne 1 ]; then
+  exit 1
+fi
+
+python3 -m unittest \
+  tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_rejects_apply_without_explicit_agent \
+  tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_claude_writes_home_settings_with_rollback_record \
+  tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_existing_claude_settings_rejects_no_backup \
+  tests.test_context_guard_kit_benchmark_surfaces.CrossAgentAdapterTests.test_user_scope_rollback_failure_does_not_modify_settings
+python3 -m compileall -q context-guard-kit tests
+exit 42
