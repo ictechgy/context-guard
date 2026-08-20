@@ -89,6 +89,27 @@ class HomeSettingsAliasScopeTests(unittest.TestCase):
             self.assertEqual(rollback["target_path"], str(settings.resolve()))
             self.assertEqual(rollback["backup_path"], result["backup_path"])
 
+    def test_alias_doctor_uses_effective_scope_in_every_recovery_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            home.mkdir()
+
+            completed = self.run_setup(home, "--verify")
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            recovery_commands = [
+                check["next_action"]
+                for check in result["checks"]
+                if check.get("id") in {"setup-plan", "adapter-plan"}
+            ]
+            recovery_commands.extend(result["recommended_commands"])
+            self.assertTrue(recovery_commands)
+            for command in recovery_commands:
+                self.assertIn("--scope user", command)
+                self.assertNotIn("--scope project", command)
+                self.assertNotIn("--root", command)
+
 
 if __name__ == "__main__":
     unittest.main()
