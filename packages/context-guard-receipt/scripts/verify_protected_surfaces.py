@@ -70,7 +70,7 @@ POST_STAGE2_PROTECTED_SHA256 = {
     ".claude-plugin/marketplace.json": "ce0592238f107bb933ac1cf652147001c5716311979a2e342c72e426c88e21e4",
     "context-guard-kit/benchmark_runner.py": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
     "context-guard-kit/context_pack.py": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
-    "context-guard-kit/context_guard_commands.py": "a0c4ee95ee0489c1d254b5bed021837680f7b2dfbf9fe6bfd3e59be77987c847",
+    "context-guard-kit/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
     "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
     "context-guard-kit/setup_wizard.py": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
     "package.json": "9ceeed255833758eb55099f240614075e0c44c458b6f9e20f976f7f81e336c1c",
@@ -79,7 +79,7 @@ POST_STAGE2_PROTECTED_SHA256 = {
     "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
     "plugins/context-guard/bin/context-guard-pack": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
     "plugins/context-guard/bin/context-guard-setup": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
-    "plugins/context-guard/lib/context_guard_commands.py": "a0c4ee95ee0489c1d254b5bed021837680f7b2dfbf9fe6bfd3e59be77987c847",
+    "plugins/context-guard/lib/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
     "scripts/prepublish_check.py": "99d7414816a6880ad13f9d4b6265cb5e33eb8c43ccf83de1d0500df43acc9382",
     "scripts/release_smoke.py": "5c1862a4861e6999547e076b852a38f93e68f4ac7a6bc2c38776121f5b141deb",
 }
