@@ -108,7 +108,12 @@ def run_statusline(
     if home is not None:
         env["HOME"] = str(home)
     return subprocess.run(
-        ["bash", str(script)],
+        [
+            "bash",
+            str(script),
+            "--approved-python",
+            str(Path(sys.executable).resolve()),
+        ],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -553,7 +558,12 @@ class UsageReducerConsumerTests(unittest.TestCase):
             env = os.environ.copy()
             env["HOME"] = str(root / "home")
             proc = subprocess.run(
-                ["bash", str(linked)],
+                [
+                    "bash",
+                    str(linked),
+                    "--approved-python",
+                    str(Path(sys.executable).resolve()),
+                ],
                 cwd=project,
                 input=json.dumps(payload),
                 text=True,

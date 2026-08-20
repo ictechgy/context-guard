@@ -585,7 +585,7 @@ class HookRuntimeHardeningTests(unittest.TestCase):
 
     def test_setup_accepts_secure_homebrew_node_symlink_to_physical_cellar(self) -> None:
         setup = load_setup_module()
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
             root = Path(tmp).resolve()
             home = root / "home"
             hud = home / ".claude" / "hud"
@@ -667,7 +667,7 @@ class HookRuntimeHardeningTests(unittest.TestCase):
             model_defaults=False,
             failed_attempt_nudge=False,
         )
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
             root = Path(tmp).resolve()
             home = root / "passwd-home"
             hud_dir = home / ".claude" / "hud"
@@ -757,7 +757,14 @@ class HookRuntimeHardeningTests(unittest.TestCase):
                 env.pop("BASH_ENV", None)
                 env.pop("ENV", None)
                 proc = subprocess.run(
-                    ["/bin/bash", "--noprofile", "--norc", str(script)],
+                    [
+                        "/bin/bash",
+                        "--noprofile",
+                        "--norc",
+                        str(script),
+                        "--approved-python",
+                        str(Path(sys.executable).resolve()),
+                    ],
                     cwd=ROOT,
                     input=payload,
                     text=True,
@@ -805,7 +812,14 @@ class HookRuntimeHardeningTests(unittest.TestCase):
                     }
                 )
                 proc = subprocess.run(
-                    ["/bin/bash", "--noprofile", "--norc", str(script)],
+                    [
+                        "/bin/bash",
+                        "--noprofile",
+                        "--norc",
+                        str(script),
+                        "--approved-python",
+                        str(Path(sys.executable).resolve()),
+                    ],
                     cwd=ROOT,
                     input=payload,
                     text=True,
