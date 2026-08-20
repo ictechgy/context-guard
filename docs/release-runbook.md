@@ -145,14 +145,15 @@ The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_
 
 **Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
 
-The active `gen8` record re-blesses the home-settings compatibility safety fix
-while preserving the privileged hook-runtime residual from `gen6` and the
+The active `gen9` record re-blesses strict ownership and write-permission checks
+for user-scope settings while preserving the home-settings compatibility fix
+from `gen8`, the privileged hook-runtime residual from `gen6`, and the
 approved-Python statusline fixtures from `gen7`. It carries every earlier
 Gate-B marker and path set. Its declared residual edits are exactly the
 canonical setup implementation and packaged setup mirror; B1 and B2 files are
 restored only by their respective reapplications.
 
-The next routine re-bless must append `gen9` rather than rewriting or reusing
+The next routine re-bless must append `gen10` rather than rewriting or reusing
 an existing generation.
 
 Re-blessing procedure:
