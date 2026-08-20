@@ -35,7 +35,6 @@ HELPER_PAIRS = (('hook_secret_patterns.py', 'lib/hook_secret_patterns.py'),
  ('context_guard_commands.py', 'lib/context_guard_commands.py'),
  ('context_guard_command_manifest_loader.py',
   'lib/context_guard_command_manifest_loader.py'),
- ('transcript_usage_reducer.py', 'lib/transcript_usage_reducer.py'),
  ('context_pack_identity.py', 'lib/context_pack_identity.py'),
  ('context_pack_scanning.py', 'lib/context_pack_scanning.py'),
  ('context_pack_selection.py', 'lib/context_pack_selection.py'),
@@ -266,4 +265,4 @@ EXPECTED_COMMAND_PACK_FILES = ('plugins/context-guard/bin/claude-read-symbol',
  'plugins/context-guard/lib/context_pack_scanning.py',
  'plugins/context-guard/lib/context_pack_selection.py',
  'plugins/context-guard/lib/hook_secret_patterns.py',
- 'plugins/context-guard/lib/transcript_usage_reducer.py')
+)
