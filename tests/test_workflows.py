@@ -123,6 +123,12 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("candidate-manifest.json", workflow)
         self.assertIn("WORKFLOW_COMMIT: ${{ github.sha }}", workflow)
         self.assertIn('test "$WORKFLOW_COMMIT" = "$CANDIDATE_COMMIT"', workflow)
+        self.assertIn(
+            "- name: Verify root package release gates\n"
+            "        timeout-minutes: 35\n"
+            "        run: python3 scripts/prepublish_check.py",
+            workflow,
+        )
 
     def test_npm_candidate_workflow_checks_gate_b_before_build_and_attestation(self):
         workflow = read(".github/workflows/npm-candidate.yml")
