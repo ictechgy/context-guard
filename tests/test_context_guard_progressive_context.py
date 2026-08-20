@@ -635,6 +635,124 @@ class ContextGuardProgressiveContextTests(unittest.TestCase):
                 self.assertTrue(rejected)
                 self.assertTrue(all(item["status"] == "no_op" for item in rejected))
 
+    def test_selection_plan_is_closed_read_only_and_requires_explicit_apply(self) -> None:
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "src").mkdir()
+                (root / "src" / "app.py").write_text(
+                    "from .helper import helper\n\ndef entrypoint():\n    return helper()\n",
+                    encoding="utf-8",
+                )
+                (root / "src" / "helper.py").write_text(
+                    "def helper():\n    return 'ok'\n", encoding="utf-8"
+                )
+                common = [
+                    "auto", "--root", ".", "--files", "src/app.py",
+                    "--query", "entrypoint helper", "--top", "2",
+                    "--budget-bytes", "4000", "--json", "--selection-plan",
+                ]
+                planned = json.loads(self._run_pack(script, root, *common).stdout)
+                self.assertEqual(planned["mode"], "selection_plan")
+                self.assertNotIn("build", planned)
+                self.assertFalse((root / ".context-guard").exists())
+                plan = planned["selection_plan"]
+                self.assertEqual(
+                    set(plan),
+                    {
+                        "schema_version", "plan_id", "ordinary", "candidate",
+                        "selected", "omitted", "replacement", "ceiling",
+                        "fallback", "provenance", "safety", "claim_boundary",
+                    },
+                )
+                self.assertTrue(plan["ordinary"])
+                self.assertEqual(plan["ceiling"]["unit"], "rendered_bytes")
+                self.assertTrue(plan["safety"]["provider_free"])
+                self.assertTrue(plan["safety"]["read_only"])
+
+                plan_path = root / "selection-plan.json"
+                plan_path.write_text(
+                    json.dumps(plan, ensure_ascii=False), encoding="utf-8"
+                )
+                applied_args = [arg for arg in common if arg != "--selection-plan"]
+                applied_args.extend(["--apply-selection-plan", "selection-plan.json", "--no-artifact"])
+                applied = json.loads(
+                    self._run_pack(script, root, *applied_args).stdout
+                )
+                self.assertEqual(applied["selection_plan"]["plan_id"], plan["plan_id"])
+                self.assertEqual(applied["selection_plan_application"]["status"], "applied")
+                self.assertIn("build", applied)
+
+                tampered = json.loads(json.dumps(plan))
+                tampered["ceiling"]["ordinary"] += 1
+                plan_path.write_text(json.dumps(tampered), encoding="utf-8")
+                mutation = self._run_pack(
+                    script, root, *applied_args, check=False
+                )
+                self.assertEqual(mutation.returncode, 2)
+                self.assertIn("selection plan drift", mutation.stderr)
+
+                duplicate = (
+                    '{"schema_version":"contextguard.pack-selection-plan.v1",'
+                    + json.dumps(plan, ensure_ascii=False)[1:]
+                )
+                self.assertEqual(duplicate.count('"schema_version"'), 2)
+                plan_path.write_text(duplicate, encoding="utf-8")
+                duplicate_result = self._run_pack(
+                    script, root, *applied_args, check=False
+                )
+                self.assertEqual(duplicate_result.returncode, 2)
+                self.assertIn("invalid selection plan JSON", duplicate_result.stderr)
+
+    def test_selection_plan_replay_fails_closed_on_drift_private_or_unsafe_boundaries(self) -> None:
+        secret = "ghp_" + ("Q" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "src").mkdir()
+                source = root / "src" / "app.py"
+                source.write_text("def entrypoint():\n    return 1\n", encoding="utf-8")
+                common = [
+                    "auto", "--root", ".", "--files", "src/app.py",
+                    "--query", "entrypoint", "--top", "1",
+                    "--budget-bytes", "3000", "--json",
+                ]
+                plan = json.loads(self._run_pack(
+                    script, root, *common, "--selection-plan"
+                ).stdout)["selection_plan"]
+                (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+                source.write_text("def entrypoint():\n    return 2\n", encoding="utf-8")
+                drift = self._run_pack(
+                    script, root, *common, "--apply-selection-plan", "plan.json",
+                    "--no-artifact", check=False,
+                )
+                self.assertEqual(drift.returncode, 2)
+                self.assertIn("selection plan drift", drift.stderr)
+
+                source.write_text(f"TOKEN = {secret!r}\n", encoding="utf-8")
+                risky = self._run_pack(
+                    script, root, *common, "--selection-plan", check=False
+                )
+                self.assertEqual(risky.returncode, 2)
+                self.assertNotIn(secret, risky.stdout + risky.stderr)
+                self.assertIn("secret-risk input", risky.stderr)
+
+                (root / "scorer-private.json").write_text("{}\n", encoding="utf-8")
+                private = self._run_pack(
+                    script, root, "auto", "--root", ".", "--files",
+                    "scorer-private.json", "--query", "score", "--json",
+                    "--selection-plan", check=False,
+                )
+                self.assertEqual(private.returncode, 2)
+                self.assertIn("scorer/private data", private.stderr)
+
+                boundary = self._run_pack(
+                    script, root, *common, "--selection-plan", "--pack-out",
+                    "pack.md", check=False,
+                )
+                self.assertEqual(boundary.returncode, 2)
+                self.assertIn("read-only", boundary.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

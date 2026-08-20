@@ -384,6 +384,12 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 - `auto`에 `--symbol-memory`를 추가하면 repo-map 기반 symbol/graph advisory metadata와 정확한 `slice` / `read-symbol` 검증 힌트를 포함합니다. 이는 source verification 안내일 뿐이며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
 - `--apply-symbol-memory`는 명시적·기본 비활성 Graphify식 적용 경로입니다. 일반 추천 뒤 안전한 direct import neighbor slice를 최대 4개 manifest에 추가하고 같은 byte budget으로 pack을 다시 만듭니다. explicit/query seed는 더 높은 우선순위를 유지하고 secret-risk neighbor는 제외하며 exact source/fallback receipt는 보존됩니다. 결과에는 닫힌 `graph_application` 블록이 기록되며 provider token/cost 절감 주장은 하지 않습니다.
 - `--self-financing-selection`은 기본 비활성 조합 경로입니다. ordinary pack byte ceiling을 고정한 뒤 Adaptive, task-matching Symbol, bounded one-hop Graph 순서로 적용합니다. 각 후보는 frozen identity, secret-risk 판단, byte delta, exact fallback, 대체된 lower-value non-caller source를 기록하며 안전하게 맞지 않으면 정직한 no-op이 됩니다. 이는 로컬 byte-ceiling 정책이며 provider token/cost 절감 주장이 아닙니다.
+- `auto --selection-plan --json`은 pack, manifest, receipt를 쓰지 않는 provider-free read-only content-addressed plan을 만듭니다. JSON을 명시적으로 저장한 뒤 같은 task 입력과 `--apply-selection-plan PATH --no-artifact`(또는 명시적인 output/artifact 옵션)를 사용해 적용합니다. apply는 출력 전에 closed plan과 source identity를 다시 검증하며 drift, incomplete scan, secret-risk 또는 scorer/private 입력, unsafe host/output boundary, exact recovery 누락을 fail-closed로 거부합니다.
+
+```bash
+context-guard-pack auto --root . --query "checkout retry 수정" --diff worktree --output logs/test.txt --json --selection-plan > selection-plan.json
+context-guard-pack auto --root . --query "checkout retry 수정" --diff worktree --output logs/test.txt --json --apply-selection-plan selection-plan.json --no-artifact
+```
 - `--manifest-out`은 `build`가 읽을 수 있는 manifest를 저장하고, `--pack-out`은 렌더링된 팩 본문을 저장합니다.
 - `context-guard-pack suggest`는 더 낮은 수준의 로컬 전용 준비 단계입니다. `--query`, `--diff`, 반복 `--files`, 그리고 `--root` 아래의 선택적 `--output` / `--test-output` 텍스트 파일을 가림 처리한 신호에서 후보 파일과 줄 범위를 순위화한 뒤 `build --manifest`가 바로 읽을 수 있는 manifest를 씁니다.
 - `context-guard-pack build`는 우선순위가 있는 로컬 파일 근거를 렌더링된 UTF-8 바이트 기준 `--budget-bytes` 안의 Markdown 팩으로 조립합니다. JSON 출력은 포함·부분 포함·중복·unsafe·missing·예산 초과로 누락된 source를 기록합니다.
