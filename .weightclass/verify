@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+if ! git diff --cached --quiet -- .weightclass/verify tests/test_artifact_sanitizer_fail_closed.py; then
+  echo "protected acceptance files changed"
+  exit 1
+fi
+
+set +e
+CONTEXT_GUARD_CAMPAIGN_ACCEPTANCE=1 \
+  python3 -m unittest tests.test_artifact_sanitizer_fail_closed
+focused_code=$?
+set -e
+
+if [ "$focused_code" -eq 0 ]; then
+  python3 -m unittest \
+    tests.test_context_guard_kit.ClaudeTokenKitTests.test_artifact_escrow_fails_closed_when_primary_sanitizer_cannot_load \
+    tests.test_context_guard_kit.ClaudeTokenKitTests.test_context_escrow_helpers_fail_closed_and_bound_queries
+  python3 -m compileall -q context-guard-kit plugins/context-guard/bin tests
+  exit 0
+fi
+
+if [ "$focused_code" -ne 1 ]; then
+  exit 1
+fi
+
+python3 -m unittest \
+  tests.test_context_guard_kit.ClaudeTokenKitTests.test_artifact_escrow_fails_closed_when_primary_sanitizer_cannot_load \
+  tests.test_context_guard_kit.ClaudeTokenKitTests.test_context_escrow_helpers_fail_closed_and_bound_queries
+python3 -m compileall -q context-guard-kit plugins/context-guard/bin tests
+exit 42
