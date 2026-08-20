@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -134,6 +135,47 @@ UNPARSEABLE_SANITIZER_RISK_RE = re.compile(
     r"(?:rg|grep|egrep|fgrep|journalctl|kubectl|oc|docker|podman|docker-compose|git|find)"
     r"(?:$|[\s;&|()])"
 )
+
+
+def _approved_runtime_executable(name: str) -> str:
+    """Resolve only from the fixed OS command path, never inherited PATH."""
+    found = shutil.which(name, path=os.defpath)
+    if not found:
+        raise RuntimeError(f"required runtime {name!r} is unavailable")
+    canonical = os.path.realpath(found)
+    if not os.path.isabs(canonical) or not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError(f"required runtime {name!r} is not an executable regular file")
+    return canonical
+
+
+def _approved_python_runtime() -> str:
+    canonical = os.path.realpath(sys.executable)
+    if not canonical or not os.path.isabs(canonical) or not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved Python runtime is unavailable")
+    return canonical
+
+
+def _runtime_shell_argv() -> tuple[str, ...]:
+    return (
+        _approved_runtime_executable("env"),
+        "-u", "BASH_ENV",
+        "-u", "ENV",
+        "-u", "PYTHONHOME",
+        "-u", "PYTHONPATH",
+        "-u", "PYTHONSTARTUP",
+        "-u", "SHELLOPTS",
+        "-u", "BASHOPTS",
+        "-u", "PS4",
+        _approved_runtime_executable("bash"),
+        "--noprofile",
+        "--norc",
+        "-p",
+        "-c",
+    )
+
+
+def _isolated_wrapper_prefix(wrapper: str) -> list[str]:
+    return [_approved_python_runtime(), "-I", os.path.realpath(wrapper)]
 
 # kubectl/docker/podman/oc 글로벌 옵션 중 다음 토큰을 value로 소비하는 형태.
 # `-n prod`, `--context=prod`, `-f file.yml` 같은 케이스를 hub로 흡수해
@@ -1080,6 +1122,13 @@ def _wrapper_invocation(argv: tuple[str, ...]) -> tuple[str, int] | None:
         and os.path.basename(argv[1]) in WRAPPER_BASENAMES
     ):
         return os.path.basename(argv[1]), 1
+    if (
+        re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", head_basename)
+        and len(argv) > 2
+        and argv[1] == "-I"
+        and os.path.basename(argv[2]) in WRAPPER_BASENAMES
+    ):
+        return os.path.basename(argv[2]), 2
     return None
 
 
@@ -1153,13 +1202,15 @@ def classify_incoming_wrapper(
         (CGW1_COMMAND_SEARCH_DIFF,),
         ("--mode", CGW1_COMMAND_SEARCH_DIFF),
     )
+    shell_argvs = (CGW1_SHELL_ARGV, _runtime_shell_argv())
     for prefix in legacy_prefixes:
-        fixed = (*prefix, "--", *CGW1_SHELL_ARGV)
-        if (
-            len(envelope_argv) == len(fixed) + 1
-            and envelope_argv[:-1] == fixed
-        ):
-            return ("incoming_wrapper_denied", kind, envelope_argv[-1])
+        for shell_argv in shell_argvs:
+            fixed = (*prefix, "--", *shell_argv)
+            if (
+                len(envelope_argv) == len(fixed) + 1
+                and envelope_argv[:-1] == fixed
+            ):
+                return ("incoming_wrapper_denied", kind, envelope_argv[-1])
     return None
 
 
@@ -2879,7 +2930,8 @@ def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str
             flag_index = route_start + relative_flag_index
             rendered_words[flag_index:flag_index] = flags
             rendered_words[route_start : route_start + 1] = (
-                shell_quote(sys.executable),
+                shell_quote(_approved_python_runtime()),
+                "-I",
                 shell_quote(os.path.realpath(__file__)),
                 _GIT_GUARD_MODE,
                 "--",
@@ -2901,27 +2953,21 @@ def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str
 
 
 def build_wrapped_command(wrapper: str, command: str, *, bash_reference_v1: bool = False) -> str:
-    if wrapper.endswith(".py"):
-        prefix = ["python3", wrapper]
-    else:
-        prefix = [wrapper]
+    prefix = _isolated_wrapper_prefix(wrapper)
     wrapped_argv = prefix + ["--max-lines", CGW1_MAX_LINES]
     if bash_reference_v1:
         wrapped_argv += ["--digest", "json", BASH_REFERENCE_FLAG]
-    wrapped_argv += ["--", *CGW1_SHELL_ARGV, command]
+    wrapped_argv += ["--", *_runtime_shell_argv(), command]
     return shell_join(wrapped_argv)
 
 
 def build_sanitized_command(wrapper: str, command: str) -> str:
-    if wrapper.endswith(".py"):
-        prefix = ["python3", wrapper]
-    else:
-        prefix = [wrapper]
+    prefix = _isolated_wrapper_prefix(wrapper)
     wrapped_argv = prefix + [
         CGW1_SENTINEL,
         CGW1_COMMAND_SEARCH_DIFF,
         "--",
-        *CGW1_SHELL_ARGV,
+        *_runtime_shell_argv(),
         command,
     ]
     return shell_join(wrapped_argv)

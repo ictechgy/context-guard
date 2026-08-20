@@ -13,6 +13,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import pwd
 import re
 import selectors
 import shlex
@@ -62,6 +63,7 @@ PRODUCT_OWNED_ENV_READ_DENIES = frozenset({
     "Read(./.env.*)",
 })
 HELPER_STATUSLINE = "context-guard-statusline-merged"
+HELPER_STATUSLINE_PLAIN = "context-guard-statusline"
 HELPER_REWRITE_BASH = "context-guard-rewrite-bash"
 HELPER_GUARD_READ = "context-guard-guard-read"
 HELPER_FAILED_NUDGE = "context-guard-failed-nudge"
@@ -110,6 +112,33 @@ DEFAULT_POST_SETUP_SCAN_TOP = 5
 POST_SETUP_SCAN_TIMEOUT_SECONDS = 20
 PATH_HELPER_PROBE_TIMEOUT_SECONDS = 5
 PATH_HELPER_PROBE_MAX_OUTPUT_BYTES = 4096
+ISOLATED_RUNTIME_PATH = os.defpath
+READ_GUARD_BEHAVIOR_ENV = (
+    "CONTEXT_GUARD_READ_GUARD",
+    "CLAUDE_TOKEN_READ_GUARD",
+    "CONTEXT_GUARD_READ_GUARD_MAX_BYTES",
+    "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES",
+    "CONTEXT_GUARD_READ_GUARD_MAX_LINES",
+    "CLAUDE_TOKEN_READ_GUARD_MAX_LINES",
+    "CONTEXT_GUARD_READ_GUARD_PROOF_BYTES",
+    "CLAUDE_TOKEN_READ_GUARD_PROOF_BYTES",
+)
+REWRITE_BEHAVIOR_ENV = (
+    "CONTEXT_GUARD_SANITIZER_FAIL_OPEN",
+    "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN",
+)
+STATUSLINE_BEHAVIOR_ENV = (
+    "CONTEXT_GUARD_STATUSLINE_INPUT_MAX_BYTES",
+    "CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES",
+    "CONTEXT_GUARD_STATUSLINE_CTX_WARN",
+    "CLAUDE_TOKEN_STATUSLINE_CTX_WARN",
+    "CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS",
+)
+HOMEBREW_NODE_CANDIDATES = (
+    Path("/opt/homebrew/bin/node"),
+    Path("/usr/local/bin/node"),
+)
+BEHAVIOR_ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9.+_-]{1,64}$")
 PRIVATE_DIR_MODE = stat.S_IRWXU
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -1848,9 +1877,11 @@ def _path_has_symlink_component(path: Path) -> bool:
 
 
 def _probe_path_helper_identity(path: Path, helper_name: str) -> None:
-    env = os.environ.copy()
     system_path = os.pathsep.join(part for part in ("/usr/bin", "/bin", "/usr/sbin", "/sbin") if Path(part).is_dir())
-    env["PATH"] = str(path.parent) + (os.pathsep + system_path if system_path else "")
+    env = {
+        "LC_ALL": "C",
+        "PATH": str(path.parent) + (os.pathsep + system_path if system_path else ""),
+    }
     try:
         proc = subprocess.Popen(
             [str(path), "--help"],
@@ -1987,12 +2018,317 @@ def helper_command(helper_name: str, kit_script: str, *, shell: str | None = Non
     return shlex.join(argv)
 
 
+def _validated_runtime_executable(raw: str | Path, *, label: str) -> Path:
+    """Bind a runtime/helper to the canonical executable seen during setup."""
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        raise SystemExit(f"{label} did not resolve to an absolute path")
+    try:
+        canonical = candidate.resolve(strict=True)
+        metadata = canonical.stat()
+    except OSError as exc:
+        raise SystemExit(
+            f"{label} could not be canonicalized: {exc.strerror or exc.__class__.__name__}"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(canonical, os.X_OK):
+        raise SystemExit(f"{label} must be an executable regular file")
+    return canonical
+
+
+def _approved_python_runtime() -> Path:
+    if not sys.executable:
+        raise SystemExit("Python runtime identity is unavailable")
+    return _validated_runtime_executable(sys.executable, label="Python runtime")
+
+
+def _approved_system_runtime(name: str) -> Path:
+    found = shutil.which(name, path=ISOLATED_RUNTIME_PATH)
+    if not found:
+        raise SystemExit(f"Required {name!r} runtime was not found in the fixed system path")
+    return _validated_runtime_executable(found, label=f"{name} runtime")
+
+
+def _isolated_runtime_prefix(
+    preserve_env_names: tuple[str, ...] = (),
+    *,
+    fixed_env: dict[str, str] | None = None,
+) -> list[str]:
+    prefix = [
+        str(_approved_system_runtime("env")),
+        "-i",
+        f"PATH={ISOLATED_RUNTIME_PATH}",
+        "LC_ALL=C",
+    ]
+    for name in preserve_env_names:
+        value = os.environ.get(name)
+        if value is not None and BEHAVIOR_ENV_VALUE_RE.fullmatch(value):
+            prefix.append(f"{name}={value}")
+    for name, value in (fixed_env or {}).items():
+        if name in {"HOME"} and value and "\x00" not in value:
+            prefix.append(f"{name}={value}")
+    return prefix
+
+
+def _helper_path_from_argv(argv: list[str], *, label: str) -> Path:
+    if not argv:
+        raise SystemExit(f"{label} helper argv is empty")
+    return _validated_runtime_executable(argv[-1], label=label)
+
+
+def _bundled_helper_candidates(helper_name: str, kit_script: str) -> set[Path]:
+    script_dir = Path(__file__).resolve().parent
+    raw_candidates = (
+        script_dir / helper_name,
+        script_dir.parent / "plugins" / "context-guard" / "bin" / helper_name,
+        script_dir / kit_script,
+    )
+    candidates: set[Path] = set()
+    for candidate in raw_candidates:
+        try:
+            candidates.add(candidate.resolve(strict=True))
+        except OSError:
+            continue
+    return candidates
+
+
+def automatic_helper_argv(
+    helper_name: str,
+    kit_script: str,
+    *,
+    shell: str | None = None,
+    allow_path_fallback: bool = False,
+    preserve_env_names: tuple[str, ...] = (),
+    fixed_env: dict[str, str] | None = None,
+) -> list[str]:
+    """Build installed hook argv with isolated, setup-pinned runtimes."""
+    resolved = helper_argv(
+        helper_name,
+        kit_script,
+        shell=shell,
+        allow_path_fallback=allow_path_fallback,
+    )
+    helper_path = _helper_path_from_argv(resolved, label=helper_name)
+    prefix = _isolated_runtime_prefix(
+        preserve_env_names,
+        fixed_env=fixed_env,
+    )
+    if helper_path not in _bundled_helper_candidates(helper_name, kit_script):
+        # An explicit PATH fallback may be a native executable. Its absolute
+        # identity was already validated by validate_path_helper_fallback().
+        return [*prefix, str(helper_path)]
+    if shell:
+        shell_runtime = _approved_system_runtime(shell)
+        shell_flags = ["--noprofile", "--norc"] if shell_runtime.name == "bash" else []
+        return [*prefix, str(shell_runtime), *shell_flags, str(helper_path)]
+    return [*prefix, str(_approved_python_runtime()), "-I", str(helper_path)]
+
+
+def automatic_helper_command(
+    helper_name: str,
+    kit_script: str,
+    *,
+    shell: str | None = None,
+    allow_path_fallback: bool = False,
+    preserve_env_names: tuple[str, ...] = (),
+    fixed_env: dict[str, str] | None = None,
+) -> str:
+    return shlex.join(
+        automatic_helper_argv(
+            helper_name,
+            kit_script,
+            shell=shell,
+            allow_path_fallback=allow_path_fallback,
+            preserve_env_names=preserve_env_names,
+            fixed_env=fixed_env,
+        )
+    )
+
+
+def _secure_owned_regular_path(path: Path, *, executable: bool) -> Path | None:
+    """Validate an approval path and every parent without following symlinks."""
+    try:
+        canonical = path.resolve(strict=True)
+    except OSError:
+        return None
+    if not path.is_absolute() or canonical != path:
+        return None
+    allowed_owners = {0, os.geteuid()}
+    current = Path(path.anchor)
+    components = path.parts[1:]
+    if not components:
+        return None
+    try:
+        root_metadata = os.lstat(current)
+        if (
+            stat.S_ISLNK(root_metadata.st_mode)
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid not in allowed_owners
+            or stat.S_IMODE(root_metadata.st_mode) & 0o022
+        ):
+            return None
+        for index, component in enumerate(components):
+            current = current / component
+            metadata = os.lstat(current)
+            is_leaf = index == len(components) - 1
+            if stat.S_ISLNK(metadata.st_mode):
+                return None
+            if metadata.st_uid not in allowed_owners or stat.S_IMODE(metadata.st_mode) & 0o022:
+                return None
+            if is_leaf:
+                if not stat.S_ISREG(metadata.st_mode):
+                    return None
+                if executable and not os.access(current, os.X_OK):
+                    return None
+            elif not stat.S_ISDIR(metadata.st_mode):
+                return None
+    except OSError:
+        return None
+    return canonical
+
+
+def _secure_owned_directory_path(path: Path) -> Path | None:
+    try:
+        canonical = path.resolve(strict=True)
+    except OSError:
+        return None
+    if not path.is_absolute() or canonical != path:
+        return None
+    allowed_owners = {0, os.geteuid()}
+    current = Path(path.anchor)
+    try:
+        root_metadata = os.lstat(current)
+        if (
+            stat.S_ISLNK(root_metadata.st_mode)
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid not in allowed_owners
+            or stat.S_IMODE(root_metadata.st_mode) & 0o022
+        ):
+            return None
+        for component in path.parts[1:]:
+            current = current / component
+            metadata = os.lstat(current)
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid not in allowed_owners
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+            ):
+                return None
+    except OSError:
+        return None
+    return canonical
+
+
+def _approved_node_runtime() -> Path | None:
+    system_node = shutil.which("node", path=ISOLATED_RUNTIME_PATH)
+    if system_node:
+        approved = _secure_owned_regular_path(Path(system_node), executable=True)
+        if approved is not None:
+            return approved
+
+    allowed_owners = {0, os.geteuid()}
+    for candidate in HOMEBREW_NODE_CANDIDATES:
+        if len(candidate.parents) < 2:
+            continue
+        allowed_root = candidate.parents[1]
+        if _secure_owned_directory_path(allowed_root) is None:
+            continue
+        if _secure_owned_directory_path(candidate.parent) is None:
+            continue
+        try:
+            link_metadata = os.lstat(candidate)
+            physical_target = candidate.resolve(strict=True)
+            physical_target.relative_to(allowed_root)
+        except (OSError, ValueError):
+            continue
+        if link_metadata.st_uid not in allowed_owners:
+            continue
+        approved = _secure_owned_regular_path(physical_target, executable=True)
+        if approved is not None:
+            return approved
+    return None
+
+
+def _approved_default_omc_hud() -> tuple[Path, Path] | None:
+    """Approve only the effective user's default OMC HUD and fixed-path Node."""
+    try:
+        passwd_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+        canonical_home = passwd_home.resolve(strict=True)
+    except (KeyError, OSError, RuntimeError):
+        return None
+    if not passwd_home.is_absolute() or canonical_home != passwd_home:
+        return None
+    omc_script = _secure_owned_regular_path(
+        canonical_home / ".claude" / "hud" / "omc-hud.mjs",
+        executable=False,
+    )
+    if omc_script is None:
+        return None
+    node_runtime = _approved_node_runtime()
+    if node_runtime is None:
+        return None
+    return node_runtime, omc_script
+
+
+def _statusline_setting(*, allow_path_fallback: bool = False) -> tuple[dict[str, str], bool]:
+    approved_omc = _approved_default_omc_hud()
+    fixed_env = (
+        {"HOME": str(approved_omc[1].parents[2])}
+        if approved_omc is not None
+        else None
+    )
+    argv = automatic_helper_argv(
+        HELPER_STATUSLINE,
+        "statusline_merged.sh",
+        shell="bash",
+        allow_path_fallback=allow_path_fallback,
+        preserve_env_names=STATUSLINE_BEHAVIOR_ENV,
+        fixed_env=fixed_env,
+    )
+    token_path = _helper_path_from_argv(
+        helper_argv(
+            HELPER_STATUSLINE_PLAIN,
+            "statusline.sh",
+            shell="bash",
+            allow_path_fallback=allow_path_fallback,
+        ),
+        label=HELPER_STATUSLINE_PLAIN,
+    )
+    argv.extend(
+        [
+            "--approved-bash",
+            str(_approved_system_runtime("bash")),
+            "--approved-python",
+            str(_approved_python_runtime()),
+            "--approved-token-statusline",
+            str(token_path),
+        ]
+    )
+    if approved_omc is not None:
+        node_runtime, omc_script = approved_omc
+        argv.extend(
+            [
+                "--approved-node",
+                str(node_runtime),
+                "--approved-omc-script",
+                str(omc_script),
+            ]
+        )
+    return {"type": "command", "command": shlex.join(argv)}, approved_omc is not None
+
+
 def statusline_setting(*, allow_path_fallback: bool = False) -> dict[str, str]:
-    return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline_merged.sh", shell="bash", allow_path_fallback=allow_path_fallback)}
+    setting, _omc_included = _statusline_setting(allow_path_fallback=allow_path_fallback)
+    return setting
 
 
 def bash_hook_setting(*, allow_path_fallback: bool = False, bash_reference_v1: bool = False) -> dict[str, Any]:
-    command = helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", allow_path_fallback=allow_path_fallback)
+    command = automatic_helper_command(
+        HELPER_REWRITE_BASH,
+        "rewrite_bash_for_token_budget.py",
+        allow_path_fallback=allow_path_fallback,
+        preserve_env_names=REWRITE_BEHAVIOR_ENV,
+    )
     if bash_reference_v1:
         command = f"{command} --bash-reference-v1"
     return {
@@ -2103,14 +2439,19 @@ def disable_unavailable_bash_reference(
 def read_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
     return {
         "matcher": "Read",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_GUARD_READ, "guard_large_read.py", allow_path_fallback=allow_path_fallback)}],
+        "hooks": [{"type": "command", "command": automatic_helper_command(
+            HELPER_GUARD_READ,
+            "guard_large_read.py",
+            allow_path_fallback=allow_path_fallback,
+            preserve_env_names=READ_GUARD_BEHAVIOR_ENV,
+        )}],
     }
 
 
 def failed_nudge_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
     return {
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_FAILED_NUDGE, "failed_attempt_nudge.py", allow_path_fallback=allow_path_fallback)}],
+        "hooks": [{"type": "command", "command": automatic_helper_command(HELPER_FAILED_NUDGE, "failed_attempt_nudge.py", allow_path_fallback=allow_path_fallback)}],
     }
 
 
@@ -2135,6 +2476,18 @@ def command_helper_basenames(command: str) -> set[str]:
     index = 0
     if os.path.basename(parts[index]) == "env":
         index += 1
+        while index < len(parts):
+            token = parts[index]
+            if token in {"-i", "--ignore-environment"}:
+                index += 1
+                continue
+            if token in {"-u", "--unset"} and index + 1 < len(parts):
+                index += 2
+                continue
+            if token.startswith("--unset="):
+                index += 1
+                continue
+            break
         while index < len(parts) and "=" in parts[index] and not parts[index].startswith("-"):
             index += 1
     if index >= len(parts):
@@ -2157,6 +2510,139 @@ def command_helper_basenames(command: str) -> set[str]:
     return {head}
 
 
+def _statusline_candidate_paths(*, merged: bool) -> set[Path]:
+    script_dir = Path(__file__).resolve().parent
+    helper_key = HELPER_STATUSLINE if merged else HELPER_STATUSLINE_PLAIN
+    kit_script = "statusline_merged.sh" if merged else "statusline.sh"
+    names = HELPER_EQUIVALENT_BASENAMES[helper_key]
+    raw_candidates = {script_dir / kit_script}
+    for name in names:
+        raw_candidates.add(script_dir / name)
+        raw_candidates.add(
+            script_dir.parent / "plugins" / "context-guard" / "bin" / name
+        )
+    candidates: set[Path] = set()
+    for candidate in raw_candidates:
+        try:
+            candidates.add(candidate.resolve(strict=True))
+        except OSError:
+            continue
+    return candidates
+
+
+def _authenticated_statusline_path(raw: str, *, merged: bool) -> Path | None:
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        canonical = candidate.resolve(strict=True)
+    except OSError:
+        return None
+    return canonical if canonical in _statusline_candidate_paths(merged=merged) else None
+
+
+def exact_known_statusline_command(command: str) -> bool:
+    """Match only authenticated complete historical merged-statusline commands."""
+    try:
+        parts = shlex.split(command) if command else []
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    known_helpers = HELPER_EQUIVALENT_BASENAMES[HELPER_STATUSLINE]
+    direct_head = parts[0]
+    if len(parts) == 1:
+        if direct_head in known_helpers:
+            return True
+        return _authenticated_statusline_path(direct_head, merged=True) is not None
+
+    index = 0
+    generated_shape = False
+    assignments: dict[str, str] = {}
+    approved_env = str(_approved_system_runtime("env"))
+    if direct_head == approved_env:
+        generated_shape = True
+        index += 1
+        if index >= len(parts) or parts[index] != "-i":
+            return False
+        index += 1
+        allowed_assignments = {
+            "PATH",
+            "LC_ALL",
+            "HOME",
+            *STATUSLINE_BEHAVIOR_ENV,
+        }
+        while index < len(parts) and "=" in parts[index] and not parts[index].startswith("-"):
+            name, _separator, value = parts[index].partition("=")
+            if name not in allowed_assignments or name in assignments:
+                return False
+            assignments[name] = value
+            index += 1
+        if assignments.get("PATH") != ISOLATED_RUNTIME_PATH or assignments.get("LC_ALL") != "C":
+            return False
+        for name, value in assignments.items():
+            if name in STATUSLINE_BEHAVIOR_ENV and not BEHAVIOR_ENV_VALUE_RE.fullmatch(value):
+                return False
+
+    approved_bash = str(_approved_system_runtime("bash"))
+    if index >= len(parts):
+        return False
+    shell = parts[index]
+    if generated_shape:
+        if shell != approved_bash:
+            return False
+    elif shell not in {"bash", "sh", approved_bash}:
+        return False
+    index += 1
+    if generated_shape:
+        if parts[index : index + 2] != ["--noprofile", "--norc"]:
+            return False
+        index += 2
+    else:
+        while index < len(parts) and parts[index] in {"--noprofile", "--norc"}:
+            index += 1
+    if index >= len(parts):
+        return False
+    if _authenticated_statusline_path(parts[index], merged=True) is None:
+        return False
+    index += 1
+    if not generated_shape:
+        return index == len(parts)
+
+    required_prefix = [
+        "--approved-bash",
+        approved_bash,
+        "--approved-python",
+        str(_approved_python_runtime()),
+        "--approved-token-statusline",
+    ]
+    if parts[index : index + len(required_prefix)] != required_prefix:
+        return False
+    index += len(required_prefix)
+    if index >= len(parts):
+        return False
+    if _authenticated_statusline_path(parts[index], merged=False) is None:
+        return False
+    index += 1
+
+    approved_omc = _approved_default_omc_hud()
+    if index == len(parts):
+        return "HOME" not in assignments
+    if approved_omc is None or len(parts) - index != 4:
+        return False
+    node_runtime, omc_script = approved_omc
+    expected_omc = [
+        "--approved-node",
+        str(node_runtime),
+        "--approved-omc-script",
+        str(omc_script),
+    ]
+    return (
+        parts[index:] == expected_omc
+        and assignments.get("HOME") == str(omc_script.parents[2])
+    )
+
+
 def equivalent_helper_basenames(command: str) -> set[str]:
     bases = command_helper_basenames(command)
     equivalents = set(bases)
@@ -2165,13 +2651,132 @@ def equivalent_helper_basenames(command: str) -> set[str]:
     return equivalents
 
 
-def command_matches_existing_or_equivalent(existing: str, desired: str) -> bool:
+def _generic_hook_spec(desired: str) -> tuple[str, str, tuple[str, ...]] | None:
+    desired_bases = command_helper_basenames(desired)
+    specs = (
+        (HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", REWRITE_BEHAVIOR_ENV),
+        (HELPER_GUARD_READ, "guard_large_read.py", READ_GUARD_BEHAVIOR_ENV),
+        (HELPER_FAILED_NUDGE, "failed_attempt_nudge.py", ()),
+    )
+    for helper_name, kit_script, behavior_env in specs:
+        if desired_bases & HELPER_EQUIVALENT_BASENAMES[helper_name]:
+            return helper_name, kit_script, behavior_env
+    return None
+
+
+def _generic_hook_candidate_paths(helper_name: str, kit_script: str) -> set[Path]:
+    script_dir = Path(__file__).resolve().parent
+    raw_candidates = {script_dir / kit_script}
+    for name in HELPER_EQUIVALENT_BASENAMES[helper_name]:
+        raw_candidates.add(script_dir / name)
+        raw_candidates.add(
+            script_dir.parent / "plugins" / "context-guard" / "bin" / name
+        )
+    candidates: set[Path] = set()
+    for candidate in raw_candidates:
+        try:
+            candidates.add(candidate.resolve(strict=True))
+        except OSError:
+            continue
+    return candidates
+
+
+def _authenticated_generic_hook_path(
+    raw: str,
+    *,
+    helper_name: str,
+    kit_script: str,
+) -> Path | None:
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        canonical = candidate.resolve(strict=True)
+    except OSError:
+        return None
+    candidates = _generic_hook_candidate_paths(helper_name, kit_script)
+    return canonical if canonical in candidates else None
+
+
+def exact_known_hook_command(existing: str, desired: str) -> bool:
     if command_matches(existing, desired):
         return True
-    desired_helpers = equivalent_helper_basenames(desired)
-    if not desired_helpers:
+    spec = _generic_hook_spec(desired)
+    if spec is None:
         return False
-    return bool(command_helper_basenames(existing) & desired_helpers)
+    helper_name, kit_script, behavior_env = spec
+    known_names = HELPER_EQUIVALENT_BASENAMES[helper_name]
+    try:
+        parts = shlex.split(existing) if existing else []
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    if len(parts) == 1:
+        if parts[0] in known_names:
+            return True
+        return _authenticated_generic_hook_path(
+            parts[0],
+            helper_name=helper_name,
+            kit_script=kit_script,
+        ) is not None
+
+    index = 0
+    generated_shape = parts[0] == str(_approved_system_runtime("env"))
+    if generated_shape:
+        index = 1
+        if index >= len(parts) or parts[index] != "-i":
+            return False
+        index += 1
+        assignments: dict[str, str] = {}
+        allowed_assignments = {"PATH", "LC_ALL", *behavior_env}
+        while index < len(parts) and "=" in parts[index] and not parts[index].startswith("-"):
+            name, _separator, value = parts[index].partition("=")
+            if name not in allowed_assignments or name in assignments:
+                return False
+            assignments[name] = value
+            index += 1
+        if assignments.get("PATH") != ISOLATED_RUNTIME_PATH or assignments.get("LC_ALL") != "C":
+            return False
+        for name, value in assignments.items():
+            if name in behavior_env and not BEHAVIOR_ENV_VALUE_RE.fullmatch(value):
+                return False
+
+    if index >= len(parts):
+        return False
+    python_runtime = parts[index]
+    if generated_shape:
+        if python_runtime != str(_approved_python_runtime()):
+            return False
+    elif (
+        "/" in python_runtime
+        or re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", python_runtime) is None
+    ):
+        return False
+    index += 1
+    if index < len(parts) and parts[index] == "-I":
+        index += 1
+    elif generated_shape:
+        return False
+    if index >= len(parts):
+        return False
+    if _authenticated_generic_hook_path(
+        parts[index],
+        helper_name=helper_name,
+        kit_script=kit_script,
+    ) is None:
+        return False
+    index += 1
+    if index == len(parts):
+        return True
+    return (
+        helper_name == HELPER_REWRITE_BASH
+        and parts[index:] == ["--bash-reference-v1"]
+    )
+
+
+def command_matches_existing_or_equivalent(existing: str, desired: str) -> bool:
+    return exact_known_hook_command(existing, desired)
 
 
 def canonicalize_equivalent_command(value: Any, desired: str) -> tuple[bool, bool]:
@@ -2732,12 +3337,29 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
             settings["effortLevel"] = DEFAULT_EFFORT
             actions.append(f"set default effortLevel to {DEFAULT_EFFORT}")
     if choices.statusline:
-        statusline = statusline_setting(allow_path_fallback=allow_path_fallback)
+        statusline, omc_included = _statusline_setting(allow_path_fallback=allow_path_fallback)
         if "statusLine" not in settings:
             settings["statusLine"] = statusline
             actions.append("enabled token statusline")
+            if omc_included:
+                actions.append("included setup-approved OMC HUD")
         elif settings.get("statusLine") != statusline:
-            actions.append("kept existing statusLine; add context-guard-statusline-merged manually if desired")
+            existing_statusline = settings.get("statusLine")
+            existing_command = (
+                existing_statusline.get("command")
+                if isinstance(existing_statusline, dict)
+                else None
+            )
+            if (
+                isinstance(existing_command, str)
+                and exact_known_statusline_command(existing_command)
+            ):
+                settings["statusLine"] = statusline
+                actions.append("migrated token statusline")
+                if omc_included:
+                    actions.append("included setup-approved OMC HUD")
+            else:
+                actions.append("kept existing statusLine; add context-guard-statusline-merged manually if desired")
     if choices.denies:
         ensure_permissions(
             settings,

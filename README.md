@@ -237,13 +237,13 @@ Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skil
 ### Opt-in Bash references for Claude Code
 
 The `bash_reference_v1` route is available only from an exact, project-local npm
-installation. The root package pins `@ictechgy/context-guard-receipt@0.2.0`; a
+installation. The root package pins `@ictechgy/context-guard-receipt@0.2.1`; a
 global, `npx`, source-checkout, Homebrew, or Claude marketplace-plugin layout
 keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.5.0
+npm install --save-exact @ictechgy/context-guard@0.5.1
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -530,7 +530,7 @@ These fields can flag likely volatile content near the prompt prefix, stable-pre
 [Sonnet] repo | main | ctx 86% ⚠ | cost $0.123 | cache 80% | reuse 8.0x
 ```
 
-`cache N%` is the cache-read share of observed input-side tokens in the bounded transcript tail and stays hidden until at least one cache read is observed. `reuse X.Yx` is `cache_read / cache_creation` and is shown only when cache read is positive and cache creation is non-zero. The `⚠` marker appears when context usage reaches the warning threshold, defaulting to 80%; set `CONTEXT_GUARD_STATUSLINE_CTX_WARN=90` to tune it for a project or shell.
+`cache N%` is the cache-read share of observed input-side tokens in the bounded transcript tail and stays hidden until at least one cache read is observed. `reuse X.Yx` is `cache_read / cache_creation` and is shown only when cache read is positive and cache creation is non-zero. The `⚠` marker appears when context usage reaches the warning threshold, defaulting to 80%. Automatic hooks run with an isolated environment, so set `CONTEXT_GUARD_STATUSLINE_CTX_WARN=90` and rerun setup to pin that safe behavior setting into the installed command; Python and shell loader variables are never carried through.
 
 ### Run a repeatable benchmark
 

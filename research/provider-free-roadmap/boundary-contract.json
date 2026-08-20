@@ -15,7 +15,7 @@
       "test_artifact": {
         "bytes": 55701,
         "path": "tests/test_provider_free_roadmap_boundary.py",
-        "sha256": "d40470bc64713b862e9d05bbe804fe866fe09aeae569b132a4be3ab2e79f27d9"
+        "sha256": "8cc254343b6d243de54d0419e8592f77a133b5ae3e5553bef1ed32b13b5a58ef"
       }
     },
     "g2-contract-tests": {
@@ -26,44 +26,44 @@
         "sha256": "9e74c3dffe3e7d94cc08096ace58bbf0581115fa1d837fb2a8a257ebfd7b5663"
       },
       "verifier_artifact": {
-        "bytes": 81813,
+        "bytes": 81832,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+        "sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
       }
     },
     "g3-rehearsal-tests": {
       "g2_verifier_artifact": {
-        "bytes": 81813,
+        "bytes": 81832,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+        "sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
       },
       "g3_lock_artifact": {
         "bytes": 3330,
         "path": "research/provider-free-roadmap/g3/freeze-lock.json",
-        "sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
+        "sha256": "6db85291e05de462e7fa234e38f5139737677a19c70fc1da26d35cbcf8bb6ba1"
       },
       "module": "g3_rehearsal_tests",
       "test_artifact": {
         "bytes": 42280,
         "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-        "sha256": "6dede3f5afc1b0260c929fe9331a3cba7c567a1d9e640937c3c9e48070c73175"
+        "sha256": "5561c4e1ce1c7431d90099abcf3e7984513d6cb177ef0ff1526ccee6fcd98932"
       }
     },
     "g4-claim-gates": {
       "g2_verifier_artifact": {
-        "bytes": 81813,
+        "bytes": 81832,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+        "sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
       },
       "g3_lock_artifact": {
         "bytes": 3330,
         "path": "research/provider-free-roadmap/g3/freeze-lock.json",
-        "sha256": "0d1cc0ed6ccae0671f2fff3c0060ab7ed5c0e4bc6ee0a07efe7321a27b6e3105"
+        "sha256": "6db85291e05de462e7fa234e38f5139737677a19c70fc1da26d35cbcf8bb6ba1"
       },
       "g4_lock_artifact": {
         "bytes": 2202,
         "path": "research/provider-free-roadmap/g4/freeze-lock.json",
-        "sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
+        "sha256": "7ab02731ef1f012826e349c06207e4d59442bfb10f2b3c8984d45712862ddeb6"
       },
       "module": "g4_claim_gate_tests",
       "test_artifact": {
@@ -76,12 +76,12 @@
       "g4_lock_artifact": {
         "bytes": 2202,
         "path": "research/provider-free-roadmap/g4/freeze-lock.json",
-        "sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767"
+        "sha256": "7ab02731ef1f012826e349c06207e4d59442bfb10f2b3c8984d45712862ddeb6"
       },
       "g5_lock_artifact": {
         "bytes": 2438,
         "path": "research/provider-free-roadmap/g5/freeze-lock.json",
-        "sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
+        "sha256": "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89"
       },
       "module": "g5_p2_preregistration_tests",
       "test_artifact": {
@@ -94,12 +94,12 @@
       "g5_lock_artifact": {
         "bytes": 2438,
         "path": "research/provider-free-roadmap/g5/freeze-lock.json",
-        "sha256": "c5f6e732eba9c500655f48e18ccd570ecb79eeb4f363c03dc7e6fc1f2735d307"
+        "sha256": "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89"
       },
       "g6_lock_artifact": {
         "bytes": 2069,
         "path": "research/provider-free-roadmap/g6/freeze-lock.json",
-        "sha256": "cce80538f5c47248c59cd9df6b0748bba825bdd5c8a8327011b71e2edbe8e64c"
+        "sha256": "4842f2a9c775b48dd9dea478a015955169862469b0864f5e36f7dbe6c2775830"
       },
       "module": "g6_prepared_unapproved_tests",
       "test_artifact": {

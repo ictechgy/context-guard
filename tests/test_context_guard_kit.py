@@ -37,8 +37,13 @@ PLUGIN_LIB = PLUGIN_DIR / "lib"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "context-guard-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
+APPROVED_TEST_PYTHON = str(Path(sys.executable).resolve())
 BASE_TEST_TOPLEVEL_MODULE = "test_context_guard_kit"
 BASE_TEST_PACKAGE_MODULE = "tests.test_context_guard_kit"
+
+
+def statusline_argv(script: Path) -> list[str]:
+    return ["bash", str(script), "--approved-python", APPROVED_TEST_PYTHON]
 
 
 def canonicalize_current_test_module():
@@ -20454,7 +20459,24 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertIn("python3", rewrite.build_wrapped_command("/tmp/trim_command_output.py", "pytest -q"))
         sanitized = rewrite.build_sanitized_command("/tmp/context-guard-sanitize-output", "git diff")
         self.assertIn("/tmp/context-guard-sanitize-output", sanitized)
-        self.assertIn("--context-guard-wrapper-v1 command_search_diff -- bash -c", sanitized)
+        sanitized_argv = shlex.split(sanitized)
+        sentinel_index = sanitized_argv.index("--context-guard-wrapper-v1")
+        runtime_shell = list(rewrite._runtime_shell_argv())
+        self.assertEqual(
+            sanitized_argv[sentinel_index : sentinel_index + 3],
+            ["--context-guard-wrapper-v1", "command_search_diff", "--"],
+        )
+        self.assertEqual(
+            sanitized_argv[
+                sentinel_index + 3 : sentinel_index + 3 + len(runtime_shell)
+            ],
+            runtime_shell,
+        )
+        self.assertTrue(os.path.isabs(runtime_shell[0]))
+        self.assertTrue(os.path.isabs(runtime_shell[-5]))
+        self.assertEqual(runtime_shell[-4:], ["--noprofile", "--norc", "-p", "-c"])
+        self.assertEqual(runtime_shell[-1], "-c")
+        self.assertEqual(sanitized_argv[-1], "git diff")
 
     def test_trim_uses_adjacent_primary_sanitizer_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -22990,9 +23012,31 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn("context-guard-rewrite-bash", joined)
                     self.assertIn("context-guard-guard-read", joined)
                     self.assertIn("context-guard-failed-nudge", joined)
-                    self.assertNotIn("claude-token-rewrite-bash", joined)
-                    self.assertNotIn("claude-token-guard-read", joined)
-                    self.assertNotIn("claude-token-failed-nudge", joined)
+                    custom_commands = (
+                        "python3 -u /tmp/claude-token-rewrite-bash",
+                        "bash -c 'claude-token-guard-read'",
+                        "env SESSION=1 claude-token-failed-nudge",
+                    )
+                    for custom_command in custom_commands:
+                        self.assertIn(custom_command, commands)
+                    pinned_rewrite = [
+                        command for command in commands
+                        if "context-guard-rewrite-bash" in command
+                        and command not in custom_commands
+                    ]
+                    pinned_read = [
+                        command for command in commands
+                        if "context-guard-guard-read" in command
+                        and command not in custom_commands
+                    ]
+                    pinned_nudge = [
+                        command for command in commands
+                        if "context-guard-failed-nudge" in command
+                        and command not in custom_commands
+                    ]
+                    self.assertEqual(len(pinned_rewrite), 1)
+                    self.assertEqual(len(pinned_read), 1)
+                    self.assertEqual(len(pinned_nudge), 2)
 
     def test_setup_wizard_migrates_later_duplicate_legacy_hooks(self):
         for script in SETUP_SCRIPTS:
@@ -23301,7 +23345,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(command=command):
                 out = hook_json(KIT_REWRITE, command)
                 wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
-                self.assertIn("bash -c", wrapped)
+                self.assertIn("--noprofile --norc -p -c", wrapped)
+                self.assertNotIn(" bash -c ", wrapped)
                 self.assertIn(command, wrapped)
                 self.assertTrue("trim_command_output.py" in wrapped or "context-guard-trim-output" in wrapped)
 
@@ -28036,7 +28081,7 @@ for malformed in malformed_values:
                         "transcript_path": str(transcript),
                     }
                     proc = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28079,7 +28124,7 @@ for malformed in malformed_values:
                     env = os.environ.copy()
                     env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
                     proc = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28089,7 +28134,7 @@ for malformed in malformed_values:
                     self.assertIn("Sonnet", proc.stdout)
                     self.assertIn("ctx 86% ⚠", proc.stdout)
                     self.assertIn("cost $0.123", proc.stdout)
-                    self.assertEqual(python_count_file.read_text(encoding="utf-8").splitlines(), ["x"])
+                    self.assertFalse(python_count_file.exists())
                     self.assertFalse(jq_count_file.exists())
 
     def test_statusline_transcript_metrics_cache_is_private_and_omits_raw_values(self):
@@ -28122,7 +28167,7 @@ for malformed in malformed_values:
                     env["HOME"] = str(home)
                     env["CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS"] = "30"
                     first = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28141,7 +28186,7 @@ for malformed in malformed_values:
                     transcript.write_text(replacement + (" " * (len(first_line) - len(replacement) - 1)) + "\n", encoding="utf-8")
                     os.utime(transcript, ns=(st.st_atime_ns, st.st_mtime_ns))
                     second = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28190,7 +28235,7 @@ for malformed in malformed_values:
                     env["HOME"] = str(home)
                     env["CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS"] = "30"
                     first = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28210,7 +28255,7 @@ for malformed in malformed_values:
                     transcript.write_text(replacement + (" " * (len(first_line) - len(replacement) - 1)) + "\n", encoding="utf-8")
                     os.utime(transcript, ns=(st.st_atime_ns, st.st_mtime_ns))
                     second = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28248,7 +28293,7 @@ for malformed in malformed_values:
                     env["HOME"] = str(home)
                     env["CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS"] = "30"
                     first = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28263,7 +28308,7 @@ for malformed in malformed_values:
                     cache_file.write_text(json.dumps(cached, sort_keys=True) + "\n", encoding="utf-8")
                     os.chmod(cache_file, 0o600)
                     second = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28301,7 +28346,7 @@ for malformed in malformed_values:
                         "transcript_path": str(link),
                     }
                     proc = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28323,7 +28368,7 @@ for malformed in malformed_values:
                         "transcript_path": str(root),
                     }
                     proc = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28351,7 +28396,7 @@ for malformed in malformed_values:
                         "transcript_path": str(fifo),
                     }
                     proc = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28370,7 +28415,7 @@ for malformed in malformed_values:
                     "workspace": {"current_dir": "/tmp/foo"},
                 }
                 proc = subprocess.run(
-                    ["bash", str(script)],
+                    statusline_argv(script),
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
@@ -28381,7 +28426,7 @@ for malformed in malformed_values:
                 bad_payload = dict(payload)
                 bad_payload["transcript_path"] = "/nonexistent/path-should-not-exist.jsonl"
                 proc2 = subprocess.run(
-                    ["bash", str(script)],
+                    statusline_argv(script),
                     input=json.dumps(bad_payload),
                     text=True,
                     capture_output=True,
@@ -28418,7 +28463,7 @@ for malformed in malformed_values:
                     env = os.environ.copy()
                     env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
                     proc = subprocess.run(
-                        ["bash", str(script)],
+                        statusline_argv(script),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28444,7 +28489,7 @@ for malformed in malformed_values:
                             env = os.environ.copy()
                             env["TMPDIR"] = tmpdir
                             proc = subprocess.run(
-                                ["bash", str(script)],
+                                statusline_argv(script),
                                 input=json.dumps(payload),
                                 text=True,
                                 capture_output=True,
@@ -28462,7 +28507,7 @@ for malformed in malformed_values:
                 env = os.environ.copy()
                 env["CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES"] = "32"
                 proc = subprocess.run(
-                    ["bash", str(script)],
+                    statusline_argv(script),
                     input="{" + ("x" * 128),
                     text=True,
                     capture_output=True,
@@ -28479,7 +28524,7 @@ for malformed in malformed_values:
                 env = os.environ.copy()
                 env["CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES"] = "32"
                 proc = subprocess.run(
-                    ["bash", str(script)],
+                    statusline_argv(script),
                     input=("x" * 32) + "\n",
                     text=True,
                     capture_output=True,
@@ -28535,7 +28580,7 @@ for malformed in malformed_values:
                 "transcript_path": str(transcript),
             }
             proc = subprocess.run(
-                ["bash", str(KIT_DIR / "statusline.sh")],
+                statusline_argv(KIT_DIR / "statusline.sh"),
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,
@@ -28564,7 +28609,7 @@ for malformed in malformed_values:
                 "transcript_path": str(transcript),
             }
             proc = subprocess.run(
-                ["bash", str(KIT_DIR / "statusline.sh")],
+                statusline_argv(KIT_DIR / "statusline.sh"),
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,
@@ -28593,7 +28638,7 @@ for malformed in malformed_values:
                 "transcript_path": str(transcript),
             }
             proc = subprocess.run(
-                ["bash", str(KIT_DIR / "statusline.sh")],
+                statusline_argv(KIT_DIR / "statusline.sh"),
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,
@@ -28622,7 +28667,7 @@ for malformed in malformed_values:
                 "transcript_path": str(transcript),
             }
             proc = subprocess.run(
-                ["bash", str(KIT_DIR / "statusline.sh")],
+                statusline_argv(KIT_DIR / "statusline.sh"),
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,
@@ -28639,7 +28684,7 @@ for malformed in malformed_values:
             "workspace": {"current_dir": "/tmp/foo"},
         }
         proc = subprocess.run(
-            ["bash", str(KIT_DIR / "statusline.sh")],
+            statusline_argv(KIT_DIR / "statusline.sh"),
             input=json.dumps(payload),
             text=True,
             capture_output=True,
@@ -28658,7 +28703,7 @@ for malformed in malformed_values:
         env = os.environ.copy()
         env["CLAUDE_TOKEN_STATUSLINE_CTX_WARN"] = "90"
         proc = subprocess.run(
-            ["bash", str(KIT_DIR / "statusline.sh")],
+            statusline_argv(KIT_DIR / "statusline.sh"),
             input=json.dumps(payload),
             text=True,
             capture_output=True,
@@ -28670,7 +28715,7 @@ for malformed in malformed_values:
 
         env["CLAUDE_TOKEN_STATUSLINE_CTX_WARN"] = "not-a-number"
         proc = subprocess.run(
-            ["bash", str(KIT_DIR / "statusline.sh")],
+            statusline_argv(KIT_DIR / "statusline.sh"),
             input=json.dumps(payload),
             text=True,
             capture_output=True,
@@ -28686,7 +28731,7 @@ for malformed in malformed_values:
             "workspace": {"current_dir": "/tmp/foo"},
         }
         proc = subprocess.run(
-            ["bash", str(KIT_DIR / "statusline.sh")],
+            statusline_argv(KIT_DIR / "statusline.sh"),
             input=json.dumps(payload),
             text=True,
             capture_output=True,
@@ -28711,7 +28756,7 @@ for malformed in malformed_values:
                         "transcript_path": str(transcript),
                     }
                     proc = subprocess.run(
-                        ["bash", str(KIT_DIR / "statusline.sh")],
+                        statusline_argv(KIT_DIR / "statusline.sh"),
                         input=json.dumps(payload),
                         text=True,
                         capture_output=True,
@@ -28749,7 +28794,7 @@ for malformed in malformed_values:
                 "transcript_path": str(transcript),
             }
             proc = subprocess.run(
-                ["bash", str(KIT_DIR / "statusline.sh")],
+                statusline_argv(KIT_DIR / "statusline.sh"),
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,

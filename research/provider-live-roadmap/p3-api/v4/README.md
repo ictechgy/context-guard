@@ -64,6 +64,19 @@ the exact runner and contract blobs before the V4 launcher can read private
 inputs or call its production surface.  This changes no historical V3 call or
 result and performs no provider call by itself.
 
+The active approval format is `contextguard.external-approval/v2`. It keeps the
+historical v1 module and state registry compatible, but binds retention
+truthfully as manual owner cleanup with no fabricated deletion deadline. V1
+envelopes are rejected before plan preparation or durable state, and approval
+schemas are never migrated. This resolves the signed-scope mismatch; it does
+not add automatic deletion or satisfy a finite-retention production gate.
+
+The live runner caches an immutable, metadata-bound selection index for the
+unchanged frozen artifacts, builds each reservation body once, avoids rewriting
+the HMAC ledger for logical reads, and refuses a duplicate output-root launcher
+after a bounded lock wait. These changes reduce local preparation and recovery
+overhead without relaxing the final digest checks or provider-call cap.
+
 Rebuild the metadata-only report without network or provider access:
 
 ```bash

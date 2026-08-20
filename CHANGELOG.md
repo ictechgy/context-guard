@@ -30,6 +30,22 @@ All notable changes for the ContextGuard plugin are documented here.
   no favorable subset or correction assessment was analyzed, and no token or
   cost savings claim is allowed.
 
+## [0.5.1] - 2026-08-19
+
+- Bounded context-pack source, diff, and non-Git traversal input before
+  allocation; made Markdown evidence fences content-derived; and reused one
+  immutable source snapshot across suggest/build so representative pack latency
+  falls from tens of seconds to sub-second without changing ordinary pack bytes.
+- Pinned automatic hook and statusline runtimes instead of trusting ambient
+  `PATH`, Python startup variables, shell startup variables, or executable
+  overrides, while retaining setup-approved OMC integration.
+- Added the backward-compatible Receipt external-approval v2 envelope whose
+  scope truthfully binds manual owner cleanup, plus bounded V4 authorization
+  lock waits, read-only ledger snapshots, cached immutable selection artifacts,
+  and shared V3/V4 failure conformance tests.
+- Preserved sparse token availability in the Mac consumer and added the
+  provider-live test directory to the release gate.
+
 ## [0.5.0] - 2026-08-06
 
 - Added the default-off Claude Code `PreToolUse:Bash` reference route. After

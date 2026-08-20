@@ -8,12 +8,12 @@
   "frozen_at": "2026-08-12",
   "upstream_contract": {
     "g4_freeze_lock_path": "research/provider-free-roadmap/g4/freeze-lock.json",
-    "g4_freeze_lock_sha256": "6ffc50a647b7ca8ee5c9c246ce09f9902ac0c0bda83aade757df692f9b376767",
-    "g4_tree_sha256": "ad18cc7cf413dff75999aa3c9d258c25205cc5f8e393b7c1fa961b1bc813bda4",
-    "g4_verifier_sha256": "acc5c26cfefc6b145626ec04d34e4c9acb32a88ac5c81b3f930f583dd778cd09",
-    "g4_claim_policy_sha256": "1d8990fe47208c360ef47b2ba2cbba963cf60c10f1aeef3e82833ba9d38d3d46",
+    "g4_freeze_lock_sha256": "7ab02731ef1f012826e349c06207e4d59442bfb10f2b3c8984d45712862ddeb6",
+    "g4_tree_sha256": "bc375532a5ee0d5878609ce27d98b2c8454754ec2d4dc3747ce4ac95d2629553",
+    "g4_verifier_sha256": "827a92307d7b08999eb3e2dc5fe4c037a73658d472163e0b75e5ac8c10156f75",
+    "g4_claim_policy_sha256": "e90cc27b7f64016ea2749e06417f83dccb74eb23ec851efb04886a69a87d594e",
     "g4_schema_set_bytes": 6533,
-    "g4_schema_set_sha256": "d17b2f510d501902c14fb0b346b7c1e20f05f4fa83f94db0316f06b4705b0fb0"
+    "g4_schema_set_sha256": "e59aa4a13a228fb6ebd8a54fa55ac77c26b044d4ccbc5ddd53511d0355a4db83"
   },
   "design": {
     "experimental_unit": "scheduled_task_arm_repetition_request",

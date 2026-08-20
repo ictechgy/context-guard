@@ -520,9 +520,13 @@ def raw_read_range_outcome(
 def find_read_symbol_command() -> str:
     script_dir = Path(__file__).resolve().parent
     if (script_dir / "context-guard-read-symbol").exists():
-        return "context-guard-read-symbol"
+        return shlex.join(
+            [os.path.realpath(sys.executable), "-I", str((script_dir / "context-guard-read-symbol").resolve())]
+        )
     if (script_dir / "read_symbol.py").exists():
-        return "python3 context-guard-kit/read_symbol.py"
+        return shlex.join(
+            [os.path.realpath(sys.executable), "-I", str((script_dir / "read_symbol.py").resolve())]
+        )
     return "context-guard-read-symbol"
 
 

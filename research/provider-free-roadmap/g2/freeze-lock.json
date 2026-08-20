@@ -1,16 +1,16 @@
 {
   "packer_bindings": {
     "canonical": {
-      "bytes": 188969,
+      "bytes": 226840,
       "mode": "0755",
       "path": "context-guard-kit/context_pack.py",
-      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+      "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
     },
     "plugin": {
-      "bytes": 188969,
+      "bytes": 226840,
       "mode": "0755",
       "path": "plugins/context-guard/bin/context-guard-pack",
-      "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+      "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
     },
     "require_byte_equality": true
   },
@@ -31,7 +31,7 @@
       "bytes": 2458,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g2/v1/contract.json",
-      "sha256": "fa7ac3036f55b9f5bef818aade35c349ad9e392c5f1ad312b05768e41fe93795"
+      "sha256": "71fba66371cb0b4ce0f0d10dc613b4d1f87f53747d575de93ef5d479e5949fde"
     },
     {
       "bytes": 135,
@@ -292,13 +292,13 @@
       "sha256": "0c1a15ee455365a21ffd7a7c6ccef28a5ec2e395d8398e4717c8221a2c67301d"
     },
     {
-      "bytes": 81813,
+      "bytes": 81832,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g2/v1/verify.py",
-      "sha256": "317a138d38e1d8d10282051c5166961ed1a80116eec40fdc339fa8c40bd0965f"
+      "sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
     }
   ],
-  "public_tree_root_sha256": "53de64f5b56211e74898ce997af74230d4d861bfad51fffa7bf1fcb3c32c32a1",
+  "public_tree_root_sha256": "6071bd9cf9f709ff17c76123c4f2cc4a52e022fd9ddf771ce473851cb468ce0b",
   "python_binding": {
     "bytes": 52448,
     "implementation": "cpython",
@@ -323,5 +323,5 @@
   ],
   "scorer_tree_root_sha256": "6e349c75476fd18facd6770c51aae151449e79ae2bb20a2c149b6f736b328921",
   "tree_algorithm": "sha256-domain-separated-length-prefixed-v2",
-  "tree_root_sha256": "63f15c6e65ffe67411b0ca1ba6365f6de7cf3a9ea374b7dff2b7342cbff669dc"
+  "tree_root_sha256": "87f4e1306c27ab22227cf7e5056851c30ca2955e6eb736a2e2c7051d15e9922e"
 }

@@ -23,6 +23,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import stat
 import sys
 import time
@@ -236,6 +237,60 @@ def _wrapper_prefixes() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _approved_python_runtime() -> str:
+    canonical = os.path.realpath(sys.executable)
+    if not canonical or not os.path.isabs(canonical) or not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved Python runtime is unavailable")
+    return canonical
+
+
+def _approved_bash_runtime() -> str:
+    found = shutil.which("bash", path=os.defpath)
+    if not found:
+        raise RuntimeError("approved Bash runtime is unavailable")
+    canonical = os.path.realpath(found)
+    if not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved Bash runtime is unavailable")
+    return canonical
+
+
+def _approved_env_runtime() -> str:
+    found = shutil.which("env", path=os.defpath)
+    if not found:
+        raise RuntimeError("approved env runtime is unavailable")
+    canonical = os.path.realpath(found)
+    if not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved env runtime is unavailable")
+    return canonical
+
+
+def _runtime_shell_argv() -> tuple[str, ...]:
+    return (
+        _approved_env_runtime(),
+        "-u", "BASH_ENV",
+        "-u", "ENV",
+        "-u", "PYTHONHOME",
+        "-u", "PYTHONPATH",
+        "-u", "PYTHONSTARTUP",
+        "-u", "SHELLOPTS",
+        "-u", "BASHOPTS",
+        "-u", "PS4",
+        _approved_bash_runtime(),
+        "--noprofile",
+        "--norc",
+        "-p",
+        "-c",
+    )
+
+
+def _runtime_wrapper_prefixes() -> dict[str, tuple[str, ...]]:
+    adjacent = _wrapper_prefixes()
+    return {
+        kind: (_approved_python_runtime(), "-I", prefix[-1])
+        for kind, prefix in adjacent.items()
+    }
+
+
 def _argv(command: str) -> tuple[str, ...] | None:
     try:
         values = shlex.split(command, posix=True)
@@ -263,7 +318,14 @@ def _is_wrapper_shaped(argv: tuple[str, ...]) -> bool:
     return (
         re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", first) is not None
         and len(argv) > 1
-        and os.path.basename(argv[1]) in known
+        and (
+            os.path.basename(argv[1]) in known
+            or (
+                len(argv) > 2
+                and argv[1] == "-I"
+                and os.path.basename(argv[2]) in known
+            )
+        )
     )
 
 
@@ -274,32 +336,42 @@ def command_identity(command: str) -> CommandIdentity:
         return CommandIdentity(PROTOCOL_FOREIGN, sha256_text(command))
 
     prefixes = _wrapper_prefixes()
-    sanitize_cgw1 = prefixes["sanitize"] + (
-        CGW1_SENTINEL,
-        CGW1_COMMAND_SEARCH_DIFF,
-        "--",
-        *CGW1_SHELL_ARGV,
-    )
-    if len(argv) == len(sanitize_cgw1) + 1 and argv[:-1] == sanitize_cgw1:
-        logical = argv[-1]
-        if logical and not _is_wrapper_shaped(_argv(logical) or ()):
-            return CommandIdentity(PROTOCOL_CGW1, sha256_text(logical))
+    runtime_prefixes = _runtime_wrapper_prefixes()
+    current_shell_argv = _runtime_shell_argv()
+    for prefix, shell_argv in (
+        (runtime_prefixes["sanitize"], current_shell_argv),
+        (prefixes["sanitize"], CGW1_SHELL_ARGV),
+    ):
+        sanitize_cgw1 = prefix + (
+            CGW1_SENTINEL,
+            CGW1_COMMAND_SEARCH_DIFF,
+            "--",
+            *shell_argv,
+        )
+        if len(argv) == len(sanitize_cgw1) + 1 and argv[:-1] == sanitize_cgw1:
+            logical = argv[-1]
+            if logical and not _is_wrapper_shaped(_argv(logical) or ()):
+                return CommandIdentity(PROTOCOL_CGW1, sha256_text(logical))
 
     # The frozen A1 producer still emits this exact v0 envelope for trim.
     # The historical producer emitted it for sanitize as well, so both known
     # adjacent wrapper identities remain allowlisted for one compatibility
     # window. No other --/bash/-lc spelling is unwrapped.
-    for prefix in prefixes.values():
-        legacy_v0 = prefix + (
-            "--max-lines",
-            LEGACY_V0_MAX_LINES,
-            "--",
-            *CGW1_SHELL_ARGV,
-        )
-        if len(argv) == len(legacy_v0) + 1 and argv[:-1] == legacy_v0:
-            logical = argv[-1]
-            if logical and not _is_wrapper_shaped(_argv(logical) or ()):
-                return CommandIdentity(PROTOCOL_LEGACY_V0, sha256_text(logical))
+    for prefix_set, shell_argv in (
+        (prefixes, CGW1_SHELL_ARGV),
+        (runtime_prefixes, current_shell_argv),
+    ):
+        for prefix in prefix_set.values():
+            legacy_v0 = prefix + (
+                "--max-lines",
+                LEGACY_V0_MAX_LINES,
+                "--",
+                *shell_argv,
+            )
+            if len(argv) == len(legacy_v0) + 1 and argv[:-1] == legacy_v0:
+                logical = argv[-1]
+                if logical and not _is_wrapper_shaped(_argv(logical) or ()):
+                    return CommandIdentity(PROTOCOL_LEGACY_V0, sha256_text(logical))
 
     protocol = PROTOCOL_FOREIGN if (
         _is_wrapper_shaped(argv) or CGW1_SENTINEL in argv

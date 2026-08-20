@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,6 +25,20 @@ import threading
 import time
 from types import ModuleType
 from typing import BinaryIO, Iterable, Iterator, NamedTuple, TextIO
+
+
+WRAPPER_ENV_DENY = frozenset({
+    "BASHOPTS",
+    "BASH_ENV",
+    "BASH_XTRACEFD",
+    "ENV",
+    "PS4",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "SHELLOPTS",
+})
+BASH_FUNCTION_ENV_RE = re.compile(r"^BASH_FUNC_.*%%$")
 
 
 def load_credential_policy() -> ModuleType:
@@ -1333,6 +1348,7 @@ def run_command(
     timeout_seconds: int,
     *,
     max_line_chars: int = MAX_LINE_CHARS_LIMIT,
+    environment: dict[str, str] | None = None,
 ) -> tuple[Iterable[str], subprocess.Popen[bytes] | None, int | None]:
     popen_kwargs: dict[str, object] = {}
     if os.name != "nt":
@@ -1340,6 +1356,7 @@ def run_command(
     try:
         proc = subprocess.Popen(
             command,
+            env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=False,
@@ -1363,6 +1380,14 @@ def run_command(
         proc,
         None,
     )
+
+
+def sanitized_wrapper_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if name in WRAPPER_ENV_DENY or BASH_FUNCTION_ENV_RE.fullmatch(name):
+            environment.pop(name, None)
+    return environment
 
 
 def stdin_has_data(stdin: TextIO) -> bool:
@@ -1455,13 +1480,43 @@ def main() -> int:
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
+    command_environment: dict[str, str] | None = None
     if args.wrapper_context is not None:
-        if len(command) != 3 or command[0:2] != ["bash", "-c"] or not command[2]:
+        env_runtime = shutil.which("env", path=os.defpath)
+        bash_runtime = shutil.which("bash", path=os.defpath)
+        trusted_prefix = [
+            os.path.realpath(env_runtime) if env_runtime else "",
+            "-u", "BASH_ENV",
+            "-u", "ENV",
+            "-u", "PYTHONHOME",
+            "-u", "PYTHONPATH",
+            "-u", "PYTHONSTARTUP",
+            "-u", "SHELLOPTS",
+            "-u", "BASHOPTS",
+            "-u", "PS4",
+            os.path.realpath(bash_runtime) if bash_runtime else "",
+            "--noprofile",
+            "--norc",
+            "-p",
+            "-c",
+        ]
+        legacy_shape = len(command) == 3 and command[0:2] == ["bash", "-c"] and bool(command[2])
+        trusted_shape = (
+            bool(env_runtime)
+            and bool(bash_runtime)
+            and len(command) == len(trusted_prefix) + 1
+            and command[:-1] == trusted_prefix
+            and bool(command[-1])
+        )
+        if not legacy_shape and not trusted_shape:
             print(
                 "context-guard-sanitize-output: invalid context-guard wrapper v1 shape",
                 file=sys.stderr,
             )
             return 2
+        if legacy_shape:
+            command = [*trusted_prefix, command[2]]
+        command_environment = sanitized_wrapper_environment()
         context = coerce_sanitization_context(
             args.wrapper_context,
             private_roots=args.private_root,
@@ -1488,6 +1543,7 @@ def main() -> int:
             command,
             args.timeout_seconds,
             max_line_chars=COMMAND_MAX_UNTERMINATED_LINE_CHARS,
+            environment=command_environment,
         )
         if isinstance(stream, TimedCommandStream):
             command_stream = stream

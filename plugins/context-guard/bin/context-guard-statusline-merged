@@ -14,17 +14,54 @@
 # 입력: stdin 으로 Claude Code 가 넘기는 statusline JSON 한 줄.
 # 출력: stdout 한 줄.
 #
-# 환경변수(선택, 테스트/커스텀 설치용):
-#   OMC_HUD_SCRIPT             OMC HUD 스크립트 경로 (기본 $HOME/.claude/hud/omc-hud.mjs)
-#   CONTEXT_GUARD_STATUSLINE_BIN context-guard-statusline 바이너리 경로
-#                              (legacy: CLAUDE_TOKEN_STATUSLINE_BIN)
-#                              (미지정 시 자기 옆 디렉토리만 사용; PATH 탐색 안 함)
+# 외부 HUD/runtime 연동은 ambient 환경변수가 아니라 setup이 고정한 절대 경로
+# 옵션으로만 허용한다. 미지정 시 자기 옆 ContextGuard statusline만 사용한다.
 set -u
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  printf 'ContextGuard helper: context-guard-statusline-merged\n'
-  exit 0
-fi
+PATH=/usr/bin:/bin
+export PATH
+unset BASH_ENV ENV CDPATH PYTHONHOME PYTHONPATH PYTHONSTARTUP
+unset OMC_HUD_SCRIPT CONTEXT_GUARD_STATUSLINE_BIN CLAUDE_TOKEN_STATUSLINE_BIN
+
+approved_bash=''
+approved_python=''
+approved_token_statusline=''
+approved_node=''
+approved_omc_script=''
+while (( $# > 0 )); do
+  case "$1" in
+    --help|-h)
+      printf 'ContextGuard helper: context-guard-statusline-merged\n'
+      exit 0
+      ;;
+    --approved-bash|--approved-python|--approved-token-statusline|--approved-node|--approved-omc-script)
+      if (( $# < 2 )); then
+        printf '[runtime-error] missing approved runtime path\n'
+        exit 0
+      fi
+      case "$1" in
+        --approved-bash) approved_bash=$2 ;;
+        --approved-python) approved_python=$2 ;;
+        --approved-token-statusline) approved_token_statusline=$2 ;;
+        --approved-node) approved_node=$2 ;;
+        --approved-omc-script) approved_omc_script=$2 ;;
+      esac
+      shift 2
+      ;;
+    *)
+      printf '[runtime-error] unsupported statusline option\n'
+      exit 0
+      ;;
+  esac
+done
+
+approved_regular_file() {
+  [[ "$1" = /* && -f "$1" && ! -L "$1" ]]
+}
+
+approved_executable_file() {
+  approved_regular_file "$1" && [[ -x "$1" ]]
+}
 
 statusline_input_tmp=''
 
@@ -81,8 +118,8 @@ read_bounded_statusline_input() {
 read_bounded_statusline_input
 
 strip_terminal_sequences() {
-  if command -v perl >/dev/null 2>&1; then
-    perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e[@-_][0-?]*[ -\/]*[@-~]//g'
+  if [[ -x /usr/bin/perl && -f /usr/bin/perl && ! -L /usr/bin/perl ]]; then
+    /usr/bin/perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e[@-_][0-?]*[ -\/]*[@-~]//g'
   else
     cat
   fi
@@ -106,18 +143,17 @@ sanitize_statusline() {
 
 # ── 1) OMC HUD 출력 ──────────────────────────────────────────────────────────
 omc_out=''
-omc_script="${OMC_HUD_SCRIPT:-$HOME/.claude/hud/omc-hud.mjs}"
-if [[ -r "$omc_script" ]] && command -v node >/dev/null 2>&1; then
-  omc_out=$(printf '%s' "$input" | node "$omc_script" 2>/dev/null || true)
+if approved_executable_file "$approved_node" && approved_regular_file "$approved_omc_script"; then
+  omc_out=$(printf '%s' "$input" | "$approved_node" "$approved_omc_script" 2>/dev/null || true)
   omc_out=$(sanitize_statusline "$omc_out")
 fi
 
 # ── 2) context-guard-statusline 바이너리 위치 결정 ────────────────────────────
-# 우선순위: 환경변수 → 자기 옆 디렉토리
-# PATH fallback 은 workspace/plugin 경로 shadowing 으로 untrusted binary 를
-# 실행할 수 있어 사용하지 않는다. 외부 바이너리를 쓰려면 명시적으로
-# CONTEXT_GUARD_STATUSLINE_BIN 을 지정해야 한다.
-tok_bin="${CONTEXT_GUARD_STATUSLINE_BIN:-${CLAUDE_TOKEN_STATUSLINE_BIN:-}}"
+# setup이 고정한 절대 helper → 자기 옆 디렉토리 순서만 허용한다.
+tok_bin=''
+if approved_executable_file "$approved_token_statusline"; then
+  tok_bin=$approved_token_statusline
+fi
 if [[ -z "$tok_bin" ]]; then
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
   for cand in \
@@ -131,7 +167,22 @@ if [[ -z "$tok_bin" ]]; then
 fi
 tok_out=''
 if [[ -n "$tok_bin" && -x "$tok_bin" ]]; then
-  tok_out=$(printf '%s' "$input" | "$tok_bin" 2>/dev/null || true)
+  tok_basename=${tok_bin##*/}
+  if [[ "$tok_basename" == "context-guard-statusline" || "$tok_basename" == "claude-token-statusline" || "$tok_basename" == "statusline.sh" ]]; then
+    tok_bash=$approved_bash
+    if ! approved_executable_file "$tok_bash"; then
+      tok_bash=$(command -v bash 2>/dev/null || true)
+    fi
+    if approved_executable_file "$tok_bash"; then
+      tok_command=("$tok_bash" --noprofile --norc "$tok_bin")
+      if approved_executable_file "$approved_python"; then
+        tok_command+=(--approved-python "$approved_python")
+      fi
+      tok_out=$(printf '%s' "$input" | "${tok_command[@]}" 2>/dev/null || true)
+    fi
+  else
+    tok_out=$(printf '%s' "$input" | "$tok_bin" 2>/dev/null || true)
+  fi
   tok_out=$(sanitize_statusline "$tok_out")
 fi
 

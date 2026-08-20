@@ -108,7 +108,12 @@ def run_statusline(
     if home is not None:
         env["HOME"] = str(home)
     return subprocess.run(
-        ["bash", str(script)],
+        [
+            "bash",
+            str(script),
+            "--approved-python",
+            str(Path(sys.executable).resolve()),
+        ],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -553,7 +558,12 @@ class UsageReducerConsumerTests(unittest.TestCase):
             env = os.environ.copy()
             env["HOME"] = str(root / "home")
             proc = subprocess.run(
-                ["bash", str(linked)],
+                [
+                    "bash",
+                    str(linked),
+                    "--approved-python",
+                    str(Path(sys.executable).resolve()),
+                ],
                 cwd=project,
                 input=json.dumps(payload),
                 text=True,
@@ -585,17 +595,23 @@ class UsageReducerConsumerTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 token_statusline.chmod(0o755)
-                env = os.environ.copy()
-                env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
-                env["OMC_HUD_SCRIPT"] = str(omc)
-                env["CONTEXT_GUARD_STATUSLINE_BIN"] = str(token_statusline)
                 proc = subprocess.run(
-                    ["bash", str(MERGED_STATUSLINE_PATH)],
+                    [
+                        "/bin/bash",
+                        "--noprofile",
+                        "--norc",
+                        str(MERGED_STATUSLINE_PATH),
+                        "--approved-node",
+                        str(node),
+                        "--approved-omc-script",
+                        str(omc),
+                        "--approved-token-statusline",
+                        str(token_statusline),
+                    ],
                     input='{"session_id":"test"}',
                     text=True,
                     capture_output=True,
                     check=True,
-                    env=env,
                 )
                 self.assertIn("[omc] hud", proc.stdout)
                 self.assertIn("cache 80%", proc.stdout)

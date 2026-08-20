@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import ssl
@@ -31,16 +32,20 @@ from typing import Any, Callable, Mapping, Sequence
 
 SCHEMA = "contextguard.p3-anthropic-api-live-contract/v4"
 EVIDENCE_SCHEMA = "contextguard.p3-anthropic-api-live-evidence/v4"
-EXPECTED_CONTRACT_SHA256 = "edc229f1865ab2d33379b818dab4b52ee43c89dea2a1d98043e627be8037d3b9"
+EXPECTED_CONTRACT_SHA256 = "a80f54b5043376ff3847733a43254c4a6fe30614877aada1dd3216142000a181"
 EXPECTED_SCORER_SHA256 = "179e4cb2bbab5ce1290f1c0c190881c1dd38fd3a7f5a881b223f4b81f0872db8"
 EXPECTED_ARTIFACTS = {
-    "approval_module": {
+    "approval_core_v1": {
         "path": "packages/context-guard-receipt/python/context_guard_receipt/external_approval.py",
         "sha256": "809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0",
     },
+    "approval_module": {
+        "path": "packages/context-guard-receipt/python/context_guard_receipt/external_approval_v2.py",
+        "sha256": "67e3d487a3df42bb30d7debf8f7fa7e85d62c75c62cd3a7308babaa92fae189a",
+    },
     "approval_schema": {
-        "path": "packages/context-guard-receipt/schemas/external-approval.schema.json",
-        "sha256": "c535d464311d9f7dd5b326face7596e6b930da4fb3e0350a5d3e0942e735eb69",
+        "path": "packages/context-guard-receipt/schemas/external-approval-v2.schema.json",
+        "sha256": "d82bf2ea94d63bc6f1840b607167167891e767a13839d52c9debbbe046c62158",
     },
     "budget_policy": {
         "path": "research/provider-live-roadmap/p3-api/v4/budget_policy.py",
@@ -56,11 +61,11 @@ EXPECTED_ARTIFACTS = {
     },
     "canonical_packer": {
         "path": "context-guard-kit/context_pack.py",
-        "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa",
+        "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e",
     },
     "canonical_sanitizer": {
         "path": "context-guard-kit/sanitize_output.py",
-        "sha256": "9d587ccde725492e081a43e988f95e4b6187c6eedf4044c2914c04688282903a",
+        "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e",
     },
     "corpus": {
         "path": "research/provider-live-roadmap/p3-api/v3/corpus-manifest.json",
@@ -100,11 +105,11 @@ EXPECTED_ARTIFACTS = {
     },
     "plugin_packer": {
         "path": "plugins/context-guard/bin/context-guard-pack",
-        "sha256": "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa",
+        "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e",
     },
     "plugin_sanitizer": {
         "path": "plugins/context-guard/bin/context-guard-sanitize-output",
-        "sha256": "9d587ccde725492e081a43e988f95e4b6187c6eedf4044c2914c04688282903a",
+        "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e",
     },
     "prompt_template": {
         "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
@@ -148,6 +153,7 @@ EXPECTED_REQUEST = {
     "thinking": "provider_default_private_ignored_for_scoring",
 }
 EXPECTED_RESUME = {
+    "approval_schema_migration": False,
     "fresh_external_approvals_required": True,
     "policy": "fresh_v4_state_no_cross_version_capsule_migration",
     "previous_capsule_migration": False,
@@ -184,7 +190,10 @@ EXPECTED_SAFETY = {
     "network_redirects": False,
     "output_mode": "owner_private",
     "raw_content_publication": False,
-    "retention": "unavailable_manual_owner_cleanup",
+    "retention": {
+        "maximum_seconds": None,
+        "mode": "manual_owner_cleanup",
+    },
     "scorer_load_after_all_calls": True,
 }
 EXPECTED_RESERVATION = {
@@ -222,6 +231,10 @@ PRIVATE_KEYS = frozenset(
     }
 )
 _AUTHORIZED_RUN_PROCESS_LOCK = threading.Lock()
+_AUTHORIZED_RUN_LOCK_WAIT_SECONDS = 30.0
+_SELECTION_SNAPSHOT_LOCK = threading.Lock()
+_SELECTION_SNAPSHOT_KEY: tuple[tuple[object, ...], ...] | None = None
+_SELECTION_SNAPSHOT: dict[str, dict[str, object]] | None = None
 
 
 class LiveRunError(RuntimeError):
@@ -675,6 +688,7 @@ def _load_bound_evaluator(contract: Mapping[str, object], repo_root: Path) -> ty
 def _load_bound_approval_module(
     *, contract: Mapping[str, object], repo_root: Path
 ) -> types.ModuleType:
+    core_declaration = EXPECTED_ARTIFACTS["approval_core_v1"]
     declaration = EXPECTED_ARTIFACTS["approval_module"]
     schema_declaration = EXPECTED_ARTIFACTS["approval_schema"]
     schema_raw = _read_bound(
@@ -683,11 +697,27 @@ def _load_bound_approval_module(
         "approval_schema",
     )
     parse_json(schema_raw, "approval_schema")
+    core_path = repo_root / core_declaration["path"]
+    core_raw = _read_bound(
+        core_path, core_declaration["sha256"], "approval_core_v1"
+    )
+    core_module = types.ModuleType("contextguard_v4_captured_external_approval_v1")
+    core_module.__file__ = str(core_path)
+    sys.modules[core_module.__name__] = core_module
+    try:
+        exec(
+            compile(core_raw, str(core_path), "exec"),
+            core_module.__dict__,
+            core_module.__dict__,
+        )
+    except Exception:
+        refuse("approval_module_unavailable")
     path = repo_root / declaration["path"]
     raw = _read_bound(path, declaration["sha256"], "approval_module")
     module_name = "contextguard_v4_captured_external_approval"
     module = types.ModuleType(module_name)
     module.__file__ = str(path)
+    module.__dict__["_V1"] = core_module
     sys.modules[module_name] = module
     try:
         exec(compile(raw, str(path), "exec"), module.__dict__, module.__dict__)
@@ -813,43 +843,87 @@ def _selection_identity(
     }
 
 
-def _expected_bound_selection(task_id: object, arm_id: object) -> dict[str, object]:
+def _selection_artifact_identity(
+    path: Path, expected_sha256: str, label: str
+) -> tuple[object, ...]:
+    try:
+        if path.is_symlink():
+            refuse(f"changed_{label}")
+        metadata = path.stat()
+    except OSError:
+        refuse(f"changed_{label}")
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        refuse(f"changed_{label}")
+    return (
+        str(path),
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        expected_sha256,
+    )
+
+
+def _bound_selection_snapshot() -> dict[str, dict[str, object]]:
+    global _SELECTION_SNAPSHOT_KEY, _SELECTION_SNAPSHOT
+
     repo_root = Path(__file__).resolve().parents[4]
-    policy_declaration = EXPECTED_ARTIFACTS["budget_policy"]
-    _read_bound(
-        repo_root / policy_declaration["path"],
-        policy_declaration["sha256"],
-        "budget_policy",
-    )
-    capture_declaration = EXPECTED_ARTIFACTS["provider_input_capture"]
-    capture_raw = _read_bound(
-        repo_root / capture_declaration["path"],
-        capture_declaration["sha256"],
-        "provider_input_capture",
-    )
-    capture = parse_json(capture_raw, "provider_input_capture")
-    report_declaration = EXPECTED_ARTIFACTS["budget_policy_report"]
-    report = parse_json(
-        _read_bound(
-            repo_root / report_declaration["path"],
-            report_declaration["sha256"],
+    declarations = tuple(
+        (
+            repo_root / EXPECTED_ARTIFACTS[name]["path"],
+            EXPECTED_ARTIFACTS[name]["sha256"],
+            name,
+        )
+        for name in (
+            "budget_policy",
+            "provider_input_capture",
             "budget_policy_report",
-        ),
-        "budget_policy_report",
+        )
     )
-    requested_cell_id = f"{task_id}:{arm_id}"
-    decisions = report.get("decisions")
-    if type(decisions) is not list:
+    snapshot_key = tuple(
+        _selection_artifact_identity(path, expected, label)
+        for path, expected, label in declarations
+    )
+    with _SELECTION_SNAPSHOT_LOCK:
+        if snapshot_key == _SELECTION_SNAPSHOT_KEY and _SELECTION_SNAPSHOT is not None:
+            return _SELECTION_SNAPSHOT
+
+        _read_bound(*declarations[0])
+        capture = parse_json(
+            _read_bound(*declarations[1]), "provider_input_capture"
+        )
+        report = parse_json(
+            _read_bound(*declarations[2]), "budget_policy_report"
+        )
+        decisions = report.get("decisions")
+        if type(decisions) is not list:
+            refuse("selection_identity_mismatch")
+        cells_by_id = _capture_cells(capture)
+        snapshot: dict[str, dict[str, object]] = {}
+        for decision in decisions:
+            if type(decision) is not dict:
+                refuse("selection_identity_mismatch")
+            requested_cell_id = decision.get("requested_cell_id")
+            if not isinstance(requested_cell_id, str) or requested_cell_id in snapshot:
+                refuse("selection_identity_mismatch")
+            snapshot[requested_cell_id] = _selection_identity(
+                decision, cells_by_id=cells_by_id
+            )
+        if len(snapshot) != len(cells_by_id):
+            refuse("selection_identity_mismatch")
+        _SELECTION_SNAPSHOT_KEY = snapshot_key
+        _SELECTION_SNAPSHOT = snapshot
+        return snapshot
+
+
+def _expected_bound_selection(task_id: object, arm_id: object) -> dict[str, object]:
+    selection = _bound_selection_snapshot().get(f"{task_id}:{arm_id}")
+    if selection is None:
         refuse("selection_identity_mismatch")
-    matches = [
-        decision
-        for decision in decisions
-        if type(decision) is dict
-        and decision.get("requested_cell_id") == requested_cell_id
-    ]
-    if len(matches) != 1:
-        refuse("selection_identity_mismatch")
-    return _selection_identity(matches[0], cells_by_id=_capture_cells(capture))
+    return copy.deepcopy(selection)
 
 
 def _bound_selection_identity(item: Mapping[str, object]) -> dict[str, object]:
@@ -981,8 +1055,10 @@ def calculate_worst_case_reservation(
         if type(units) is not list or len(units) != EXPECTED_LIMITS["batch_units"]:
             refuse("invalid_batch_cardinality")
         unit_costs: list[int] = []
+        body_lengths: list[int] = []
         for item in units:
             body_bytes = len(build_request_body(item, contract=contract))
+            body_lengths.append(body_bytes)
             input_tokens = body_bytes + EXPECTED_RESERVATION["whole_batch_worst_case"][
                 "input_overhead_tokens_per_unit"
             ]
@@ -997,9 +1073,7 @@ def calculate_worst_case_reservation(
         cumulative += batch_total
         batch_costs.append({
             "batch_id": batch["batch_id"],
-            "body_bytes_total": sum(
-                len(build_request_body(item, contract=contract)) for item in units
-            ),
+            "body_bytes_total": sum(body_lengths),
             "worst_case_list_price_micro_usd": batch_total,
             "unit_count": len(units),
         })
@@ -1288,15 +1362,28 @@ def _private_dir(path: Path) -> None:
 
 
 def _with_authorized_run_lock(
-    output_root: Path, operation: Callable[[], object]
+    output_root: Path,
+    operation: Callable[[], object],
+    *,
+    wait_timeout_seconds: float = _AUTHORIZED_RUN_LOCK_WAIT_SECONDS,
 ) -> object:
     """Serialize authorized runs sharing an approval-bound output root."""
 
-    if not callable(operation):
+    if (
+        not callable(operation)
+        or isinstance(wait_timeout_seconds, bool)
+        or not isinstance(wait_timeout_seconds, (int, float))
+        or not math.isfinite(float(wait_timeout_seconds))
+        or wait_timeout_seconds < 0
+        or wait_timeout_seconds > _AUTHORIZED_RUN_LOCK_WAIT_SECONDS
+    ):
         refuse("callback_unavailable")
     _private_dir(output_root)
     lock_path = output_root / ".authorized-run.lock"
-    with _AUTHORIZED_RUN_PROCESS_LOCK:
+    deadline = time.monotonic() + float(wait_timeout_seconds)
+    if not _AUTHORIZED_RUN_PROCESS_LOCK.acquire(timeout=float(wait_timeout_seconds)):
+        refuse("authorization_busy")
+    try:
         descriptor = -1
         try:
             descriptor = os.open(
@@ -1312,7 +1399,15 @@ def _with_authorized_run_lock(
                 or metadata.st_nlink != 1
             ):
                 refuse("authorization_unavailable")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        refuse("authorization_busy")
+                    time.sleep(min(0.05, remaining))
         except LiveRunError:
             if descriptor >= 0:
                 try:
@@ -1340,6 +1435,8 @@ def _with_authorized_run_lock(
                 os.close(descriptor)
             except OSError:
                 pass
+    finally:
+        _AUTHORIZED_RUN_PROCESS_LOCK.release()
 
 
 def _private_file(path: Path, data: bytes) -> None:
@@ -1752,6 +1849,8 @@ def _with_ledger(
     state_root: Path,
     ledger_key: bytes,
     fn: Callable[[dict[str, object], bytes], object],
+    *,
+    write_back: bool = True,
 ) -> object:
     _private_dir(state_root)
     lock_path = state_root / "ledger.lock"
@@ -1766,7 +1865,7 @@ def _with_ledger(
         if state is None:
             state = {}
         result = fn(state, ledger_key)
-        if state:
+        if state and write_back:
             _ledger_write(state_root, state, ledger_key)
         return result
     finally:
@@ -1928,9 +2027,7 @@ def _external_scope(
             "timeout_seconds": 120,
         },
         "output": {"mode": "owner_private", "root": str(output_root)},
-        # The approval schema requires a bounded retention value. This is the
-        # envelope lifetime only; evidence retention remains manual/unavailable.
-        "retention": {"seconds": 604800},
+        "retention": copy.deepcopy(EXPECTED_SAFETY["retention"]),
     }
 
 
@@ -2260,7 +2357,7 @@ def _ledger_snapshot(state_root: Path, ledger_key: bytes) -> dict[str, object]:
         del key
         holder.update(copy.deepcopy(state))
 
-    _with_ledger(state_root, ledger_key, read)
+    _with_ledger(state_root, ledger_key, read, write_back=False)
     return holder
 
 
@@ -3166,6 +3263,12 @@ def run_live_authorized(
         or type(registry_key) is not bytes
         or len(registry_key) < 32
         or hmac.compare_digest(verification_key, registry_key)
+    ):
+        refuse("approval_unavailable")
+    if any(
+        type(approval) is not dict
+        or approval.get("schema_version") != "contextguard.external-approval/v2"
+        for approval in approvals
     ):
         refuse("approval_unavailable")
     try:

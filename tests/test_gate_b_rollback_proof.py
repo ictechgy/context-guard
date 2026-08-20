@@ -1171,13 +1171,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_gen4_and_gen5(self) -> None:
-        """운영 레코드는 gen2~gen5를 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_gen4_gen5_gen6_and_gen7(self) -> None:
+        """운영 레코드는 gen2~gen7을 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
-            ("gen1", "gen2", "gen3", "gen4", "gen5"),
+            ("gen1", "gen2", "gen3", "gen4", "gen5", "gen6", "gen7"),
         )
-        gen1, gen2, gen3, gen4, gen5 = rollback_proof.GENERATIONS
+        gen1, gen2, gen3, gen4, gen5, gen6, gen7 = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
         self.assertEqual(gen2.shared_paths, gen1.shared_paths)
@@ -1314,6 +1314,92 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen5.shared_subject,
             ),
             gen5_subjects,
+        )
+
+        self.assertEqual(gen6.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen6.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen6.shared_paths,
+            rollback_proof.SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(gen6.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen6.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(
+            gen6.residual_edits,
+            frozenset(
+                {
+                    "context-guard-kit/failed_attempt_nudge.py",
+                    "context-guard-kit/setup_wizard.py",
+                    "context-guard-kit/statusline.sh",
+                    "context-guard-kit/statusline_merged.sh",
+                    "plugins/context-guard/bin/context-guard-failed-nudge",
+                    "plugins/context-guard/bin/context-guard-setup",
+                    "plugins/context-guard/bin/context-guard-statusline",
+                    "plugins/context-guard/bin/context-guard-statusline-merged",
+                    "tests/test_context_guard_kit.py",
+                }
+            ),
+        )
+        gen6_subjects = (
+            rollback_proof.GEN6_BLESS_SUBJECT,
+            rollback_proof.GEN6_B1_SUBJECT,
+            rollback_proof.GEN6_B2_SUBJECT,
+            rollback_proof.GEN6_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen6_subjects,
+            (
+                "proof: establish Gate-B-free residual gen6 hook runtime hardening",
+                "proof: reapply Gate-B nudge component gen6 hook runtime hardening",
+                "proof: reapply Gate-B usage component gen6 hook runtime hardening",
+                "proof: reapply Gate-B integration component gen6 hook runtime hardening",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen6.bless_subject,
+                gen6.b1_subject,
+                gen6.b2_subject,
+                gen6.shared_subject,
+            ),
+            gen6_subjects,
+        )
+
+        self.assertEqual(gen7.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen7.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen7.shared_paths,
+            rollback_proof.SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(gen7.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen7.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(
+            gen7.residual_edits,
+            frozenset({"tests/test_context_guard_kit.py"}),
+        )
+        gen7_subjects = (
+            rollback_proof.GEN7_BLESS_SUBJECT,
+            rollback_proof.GEN7_B1_SUBJECT,
+            rollback_proof.GEN7_B2_SUBJECT,
+            rollback_proof.GEN7_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen7_subjects,
+            (
+                "proof: establish Gate-B-free residual gen7 hosted statusline tests",
+                "proof: reapply Gate-B nudge component gen7 hosted statusline tests",
+                "proof: reapply Gate-B usage component gen7 hosted statusline tests",
+                "proof: reapply Gate-B integration component gen7 hosted statusline tests",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen7.bless_subject,
+                gen7.b1_subject,
+                gen7.b2_subject,
+                gen7.shared_subject,
+            ),
+            gen7_subjects,
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:

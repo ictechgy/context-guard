@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "contextguard.external-approval/v2",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": {
+          "const": "https"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "required": [
+        "scheme",
+        "host",
+        "port"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "commit_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "manifest_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "checksums_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "artifact_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identity"
+              }
+            }
+          },
+          "required": [
+            "commit_sha",
+            "manifest_sha256",
+            "checksums_sha256",
+            "artifact_ids"
+          ]
+        },
+        "provider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider_id": {
+              "$ref": "#/$defs/identity"
+            },
+            "model_id": {
+              "$ref": "#/$defs/identity"
+            }
+          },
+          "required": [
+            "provider_id",
+            "model_id"
+          ]
+        },
+        "observer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "observer_id": {
+              "$ref": "#/$defs/identity"
+            },
+            "surface_id": {
+              "$ref": "#/$defs/identity"
+            },
+            "phase": {
+              "enum": [
+                "P2",
+                "P3",
+                "P4",
+                "P5",
+                "P6"
+              ]
+            },
+            "receipt_schema": {
+              "$ref": "#/$defs/identity"
+            }
+          },
+          "required": [
+            "observer_id",
+            "surface_id",
+            "phase",
+            "receipt_schema"
+          ]
+        },
+        "operation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "surface_id": {
+              "$ref": "#/$defs/identity"
+            },
+            "version": {
+              "$ref": "#/$defs/identity"
+            },
+            "receipt_schema": {
+              "$ref": "#/$defs/identity"
+            }
+          },
+          "required": [
+            "surface_id",
+            "version",
+            "receipt_schema"
+          ]
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/identity"
+            },
+            "version": {
+              "$ref": "#/$defs/identity"
+            },
+            "executable_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "argv_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "environment_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "identity",
+            "version",
+            "executable_sha256",
+            "argv_sha256",
+            "environment_sha256"
+          ]
+        },
+        "credential": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "consumer_id": {
+              "$ref": "#/$defs/identity"
+            },
+            "scope_allowlist": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identity"
+              }
+            }
+          },
+          "required": [
+            "consumer_id",
+            "scope_allowlist"
+          ]
+        },
+        "destinations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/destination"
+          }
+        },
+        "network_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "proxies_allowed": {
+              "const": false
+            },
+            "redirects_allowed": {
+              "const": false
+            }
+          },
+          "required": [
+            "proxies_allowed",
+            "redirects_allowed"
+          ]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "call_cap": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 240
+            },
+            "spend_cap": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,9})?$"
+            },
+            "currency": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          },
+          "required": [
+            "call_cap",
+            "spend_cap",
+            "currency",
+            "timeout_seconds"
+          ]
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "owner_private"
+            },
+            "root": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/"
+            }
+          },
+          "required": [
+            "mode",
+            "root"
+          ]
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "manual_owner_cleanup"
+            },
+            "maximum_seconds": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "mode",
+            "maximum_seconds"
+          ]
+        }
+      },
+      "required": [
+        "source_candidate",
+        "provider",
+        "observer",
+        "operation",
+        "runtime",
+        "credential",
+        "destinations",
+        "network_policy",
+        "limits",
+        "output",
+        "retention"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "contextguard.external-approval/v2"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "issued_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4102444800
+    },
+    "expires_at": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4102444800
+    },
+    "nonce": {
+      "$ref": "#/$defs/sha256"
+    },
+    "revocation_handle": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authentication_hmac_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "revocation_handle",
+    "authentication_hmac_sha256"
+  ]
+}

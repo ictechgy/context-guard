@@ -760,16 +760,39 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 wrapped_argv = namespace["parse_minishell"](wrapped).argv
                 self.assertIn("--context-guard-wrapper-v1", wrapped_argv)
                 sentinel_index = wrapped_argv.index("--context-guard-wrapper-v1")
+                runtime_shell = namespace["_runtime_shell_argv"]()
                 self.assertEqual(
-                    wrapped_argv[sentinel_index:sentinel_index + 5],
+                    wrapped_argv[sentinel_index:sentinel_index + 3],
                     (
                         "--context-guard-wrapper-v1",
                         "command_search_diff",
                         "--",
-                        "bash",
-                        "-c",
                     ),
                 )
+                self.assertEqual(
+                    wrapped_argv[
+                        sentinel_index + 3 : sentinel_index + 3 + len(runtime_shell)
+                    ],
+                    runtime_shell,
+                )
+                self.assertTrue(os.path.isabs(runtime_shell[0]))
+                self.assertTrue(os.path.isabs(runtime_shell[-5]))
+                self.assertEqual(
+                    runtime_shell[-4:],
+                    ("--noprofile", "--norc", "-p", "-c"),
+                )
+                self.assertEqual(runtime_shell[-1], "-c")
+                for name in (
+                    "BASH_ENV",
+                    "ENV",
+                    "PYTHONHOME",
+                    "PYTHONPATH",
+                    "PYTHONSTARTUP",
+                    "SHELLOPTS",
+                    "BASHOPTS",
+                    "PS4",
+                ):
+                    self.assertIn(name, runtime_shell)
                 self.assertEqual(wrapped_argv[-1], "rg token .")
                 self.assert_command_decision(wrapped, "deny", script=script)
 
@@ -778,7 +801,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 wrapped = json.loads(first.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
                 self.assert_command_decision(
                     wrapped.replace("--max-lines 220", "--max-lines 221", 1),
-                    "noop",
+                    "deny",
                     script=script,
                 )
 
@@ -1713,7 +1736,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     if command.startswith("git grep "):
                         rewritten_argv = shlex.split(rewritten_command)
                         mode_index = rewritten_argv.index(_GIT_GUARD_MODE_FOR_TESTS)
-                        helper_start = mode_index - 2
+                        helper_start = mode_index - 3
                         git_index = mode_index + 2
                         self.assertEqual(
                             rewritten_argv[0],
@@ -1723,6 +1746,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
                             rewritten_argv[helper_start - 3 : helper_start],
                             list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
                         )
+                        self.assertTrue(os.path.isabs(rewritten_argv[helper_start]))
+                        self.assertEqual(rewritten_argv[helper_start + 1], "-I")
+                        self.assertTrue(os.path.isabs(rewritten_argv[helper_start + 2]))
                         self.assertEqual(
                             rewritten_argv[mode_index + 1 : git_index + 1],
                             ["--", "git"],
@@ -2269,7 +2295,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     for guard_word in config_guard:
                         self.assertEqual(guarded_argv.count(guard_word), 1)
                     mode_index = guarded_argv.index(_GIT_GUARD_MODE_FOR_TESTS)
-                    helper_start = mode_index - 2
+                    helper_start = mode_index - 3
                     git_index = guarded_argv.index("git")
                     self.assertEqual(git_index, mode_index + 2)
                     self.assertEqual(guarded_argv[mode_index + 1], "--")
@@ -2280,6 +2306,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         ],
                         list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
                     )
+                    self.assertTrue(os.path.isabs(guarded_argv[helper_start]))
+                    self.assertEqual(guarded_argv[helper_start + 1], "-I")
+                    self.assertTrue(os.path.isabs(guarded_argv[helper_start + 2]))
                     for flag in expected_flags:
                         self.assertIn(flag, guarded_argv)
                         self.assertEqual(guarded_argv.count(flag), 1)

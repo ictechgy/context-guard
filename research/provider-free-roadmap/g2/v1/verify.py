@@ -37,7 +37,7 @@ ARMS = ("ordinary", "adaptive_only", "symbol_only", "combined")
 PARTITIONS = ("train", "calibration", "evaluation")
 CANONICAL_PACKER = Path("context-guard-kit/context_pack.py")
 PLUGIN_PACKER = Path("plugins/context-guard/bin/context-guard-pack")
-PACKER_SHA256 = "238c57ff86885be105c4277da7a446276dc540659c15feafd81ad44ed98d9faa"
+PACKER_SHA256 = "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
 LOCK_SCHEMA = "contextguard.g2-freeze-lock/v2"
 TREE_DOMAIN = b"contextguard.g2-v1-tree/v2\x00"
 ENTRY_DOMAIN = b"contextguard.g2-v1-entry/v2\x00"
@@ -1438,7 +1438,7 @@ class CapturedLineSanitizer(module.FallbackLineSanitizer):
     def __init__(self, *, show_paths=False, context="unknown_text", private_roots=()):
         super().__init__(show_paths=show_paths, context=context)
 module._LINE_SANITIZER_FACTORY_CACHE = CapturedLineSanitizer
-module.git_ls_files = lambda _root: list(inventory)
+module.git_ls_files = lambda _root, _diagnostics=None: list(inventory)
 raise SystemExit(module.main(list(request["arguments"])))
 '''
 

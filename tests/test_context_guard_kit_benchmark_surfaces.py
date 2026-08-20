@@ -5333,6 +5333,8 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
         return path
 
     def test_merges_omc_hud_with_cost_and_cache_when_both_available(self):
+        import shutil
+
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             omc = self._make_fake_omc_hud(tmp, "[OMC#test] | 5h:10% | session:5m | ctx:47%")
@@ -5340,7 +5342,23 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                 tmp,
                 "[Opus 4.7] dir | main | ctx 47% | cost $0.123 | cache 27% | reuse 4.0x",
             )
-            out = self._run_wrapper(omc_script=omc, tok_bin=tok)
+            node = shutil.which("node")
+            if node is None:
+                self.skipTest("node is required for approved OMC fixture")
+            proc = subprocess.run(
+                [
+                    "/bin/bash", "--noprofile", "--norc",
+                    str(KIT_DIR / "statusline_merged.sh"),
+                    "--approved-node", os.path.realpath(node),
+                    "--approved-omc-script", str(omc),
+                    "--approved-token-statusline", str(tok),
+                ],
+                input=self.SAMPLE_PAYLOAD,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            out = proc.stdout.rstrip("\n")
         # OMC HUD 라인이 그대로 보존되고 compact token extras 만 뒤에 붙는다.
         self.assertTrue(out.startswith("[OMC#test] | 5h:10% | session:5m | ctx:47%"), out)
         self.assertIn(" | cost $0.123", out)
@@ -5351,10 +5369,29 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
         self.assertNotIn(" | main ", out)
 
     def test_omc_hud_alone_when_token_statusline_unavailable(self):
+        import shutil
+
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             omc = self._make_fake_omc_hud(tmp, "[OMC#test] | session:9m | ctx:33%")
-            out = self._run_wrapper(omc_script=omc, tok_bin=None)
+            wrapper = tmp / "statusline_merged.sh"
+            wrapper.write_bytes((KIT_DIR / "statusline_merged.sh").read_bytes())
+            os.chmod(wrapper, stat.S_IRWXU)
+            node = shutil.which("node")
+            if node is None:
+                self.skipTest("node is required for approved OMC fixture")
+            proc = subprocess.run(
+                [
+                    "/bin/bash", "--noprofile", "--norc", str(wrapper),
+                    "--approved-node", os.path.realpath(node),
+                    "--approved-omc-script", str(omc),
+                ],
+                input=self.SAMPLE_PAYLOAD,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            out = proc.stdout.rstrip("\n")
         self.assertEqual(out, "[OMC#test] | session:9m | ctx:33%")
 
     def test_token_statusline_alone_when_omc_hud_unavailable(self):
@@ -5364,12 +5401,34 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                 tmp,
                 "[Opus 4.7] dir | main | ctx 47% | cost $0.001 | cache 5%",
             )
-            out = self._run_wrapper(omc_script=None, tok_bin=tok)
+            proc = subprocess.run(
+                [
+                    "/bin/bash", "--noprofile", "--norc",
+                    str(KIT_DIR / "statusline_merged.sh"),
+                    "--approved-token-statusline", str(tok),
+                ],
+                input=self.SAMPLE_PAYLOAD,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            out = proc.stdout.rstrip("\n")
         # OMC HUD 가 없으면 token-statusline 출력이 그대로 (cost/cache 추출하지 않고 원본).
         self.assertEqual(out, "[Opus 4.7] dir | main | ctx 47% | cost $0.001 | cache 5%")
 
     def test_diagnostic_fallback_when_neither_available(self):
-        out = self._run_wrapper(omc_script=None, tok_bin=None)
+        with tempfile.TemporaryDirectory() as td:
+            wrapper = Path(td) / "statusline_merged.sh"
+            wrapper.write_bytes((KIT_DIR / "statusline_merged.sh").read_bytes())
+            os.chmod(wrapper, stat.S_IRWXU)
+            proc = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", str(wrapper)],
+                input=self.SAMPLE_PAYLOAD,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            out = proc.stdout.rstrip("\n")
         self.assertEqual(out, "[hud unavailable]")
 
     def test_workspace_plugin_statusline_is_not_executed_as_fallback(self):
@@ -5428,6 +5487,8 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_statusline_output_is_single_bounded_line(self):
+        import shutil
+
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             omc = self._make_fake_omc_hud(tmp, "[OMC]\n\x1b[31mred\x1b[0m")
@@ -5435,7 +5496,23 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                 tmp,
                 "[Opus]\nbranch | cost $0.123 | cache 42% | reuse 2.5x",
             )
-            out = self._run_wrapper(omc_script=omc, tok_bin=tok)
+            node = shutil.which("node")
+            if node is None:
+                self.skipTest("node is required for approved OMC fixture")
+            proc = subprocess.run(
+                [
+                    "/bin/bash", "--noprofile", "--norc",
+                    str(KIT_DIR / "statusline_merged.sh"),
+                    "--approved-node", os.path.realpath(node),
+                    "--approved-omc-script", str(omc),
+                    "--approved-token-statusline", str(tok),
+                ],
+                input=self.SAMPLE_PAYLOAD,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            out = proc.stdout.rstrip("\n")
         self.assertNotIn("\n", out)
         self.assertNotIn("\x1b", out)
         self.assertLessEqual(len(out), 1000 + len(" | cost $0.123 | cache 42% | reuse 2.5x"))
@@ -5449,14 +5526,15 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as td:
                     tmp = Path(td)
+                    wrapper = tmp / "statusline_merged.sh"
+                    wrapper.write_bytes(script.read_bytes())
+                    os.chmod(wrapper, stat.S_IRWXU)
                     for tmpdir in ("relative-missing-tmp", "/", "//"):
                         with self.subTest(tmpdir=tmpdir):
                             env = os.environ.copy()
-                            env["OMC_HUD_SCRIPT"] = str(tmp / "missing-omc.mjs")
-                            env["CLAUDE_TOKEN_STATUSLINE_BIN"] = str(tmp / "missing-token-statusline")
                             env["TMPDIR"] = tmpdir
                             proc = subprocess.run(
-                                ["bash", str(script)],
+                                ["/bin/bash", "--noprofile", "--norc", str(wrapper)],
                                 input=self.SAMPLE_PAYLOAD,
                                 text=True,
                                 capture_output=True,
