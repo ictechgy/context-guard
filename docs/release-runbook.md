@@ -145,22 +145,14 @@ The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_
 
 **Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
 
-The active `gen6` record re-blesses the privileged hook-runtime hardening while
-preserving the Gate-B-free residual from `gen5`. It preserves S006 `gen2`, S007
-`gen3`, the Bash-reference/exact-candidate `gen4`, and the release-smoke marker
-from `gen5`. Its declared residual edits are exactly:
+The active `gen7` record re-blesses the explicit approved-Python statusline
+test fixtures while preserving the privileged hook-runtime residual from
+`gen6`. It carries every earlier Gate-B marker and path set. Its declared
+residual edit is exactly `tests/test_context_guard_kit.py`; the B2-owned
+`tests/test_context_guard_usage_reducer_v2.py` remains absent from both bless
+trees and is restored only by the B2 reapplication.
 
-- `context-guard-kit/failed_attempt_nudge.py`
-- `plugins/context-guard/bin/context-guard-failed-nudge`
-- `context-guard-kit/setup_wizard.py`
-- `plugins/context-guard/bin/context-guard-setup`
-- `context-guard-kit/statusline.sh`
-- `plugins/context-guard/bin/context-guard-statusline`
-- `context-guard-kit/statusline_merged.sh`
-- `plugins/context-guard/bin/context-guard-statusline-merged`
-- `tests/test_context_guard_kit.py`
-
-The next routine re-bless must append `gen7` rather than rewriting or reusing
+The next routine re-bless must append `gen8` rather than rewriting or reusing
 an existing generation.
 
 Re-blessing procedure:

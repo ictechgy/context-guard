@@ -68,6 +68,11 @@ GEN6_B1_SUBJECT = "proof: reapply Gate-B nudge component gen6 hook runtime harde
 GEN6_B2_SUBJECT = "proof: reapply Gate-B usage component gen6 hook runtime hardening"
 GEN6_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen6 hook runtime hardening"
 
+GEN7_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen7 hosted statusline tests"
+GEN7_B1_SUBJECT = "proof: reapply Gate-B nudge component gen7 hosted statusline tests"
+GEN7_B2_SUBJECT = "proof: reapply Gate-B usage component gen7 hosted statusline tests"
+GEN7_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen7 hosted statusline tests"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -259,6 +264,19 @@ GENERATIONS: tuple[Generation, ...] = (
             }
         ),
     ),
+    Generation(
+        name="gen7",
+        bless_subject=GEN7_BLESS_SUBJECT,
+        b1_subject=GEN7_B1_SUBJECT,
+        b2_subject=GEN7_B2_SUBJECT,
+        shared_subject=GEN7_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset({"tests/test_context_guard_kit.py"}),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -273,6 +291,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "5cce305d7ed8b55f8f9300dc5a449fc36a555cb014516e5f81205ac950ddac33",
     "0d2009b33050312910525ec47d62d9bb12c0a625358dd6337b6b6b39c7dbab06",
     "e2dcb006bf5f30b4837c0b9716da2291a3ce8f753b02aec408fde9b9454a4ed2",
+    "97ff6b1ea219c5aaf6d2a913e442fa50861365f237ab7a6cb80c7f0b1f6f3934",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
