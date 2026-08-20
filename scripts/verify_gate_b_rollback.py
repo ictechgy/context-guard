@@ -73,6 +73,11 @@ GEN7_B1_SUBJECT = "proof: reapply Gate-B nudge component gen7 hosted statusline 
 GEN7_B2_SUBJECT = "proof: reapply Gate-B usage component gen7 hosted statusline tests"
 GEN7_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen7 hosted statusline tests"
 
+GEN8_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen8 home settings safety"
+GEN8_B1_SUBJECT = "proof: reapply Gate-B nudge component gen8 home settings safety"
+GEN8_B2_SUBJECT = "proof: reapply Gate-B usage component gen8 home settings safety"
+GEN8_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen8 home settings safety"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -277,6 +282,24 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset({"tests/test_context_guard_kit.py"}),
     ),
+    Generation(
+        name="gen8",
+        bless_subject=GEN8_BLESS_SUBJECT,
+        b1_subject=GEN8_B1_SUBJECT,
+        b2_subject=GEN8_B2_SUBJECT,
+        shared_subject=GEN8_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(
+            {
+                "context-guard-kit/setup_wizard.py",
+                "plugins/context-guard/bin/context-guard-setup",
+            }
+        ),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -292,6 +315,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "0d2009b33050312910525ec47d62d9bb12c0a625358dd6337b6b6b39c7dbab06",
     "e2dcb006bf5f30b4837c0b9716da2291a3ce8f753b02aec408fde9b9454a4ed2",
     "97ff6b1ea219c5aaf6d2a913e442fa50861365f237ab7a6cb80c7f0b1f6f3934",
+    "f4891db1972aa5f423ad7942e58746371ff40b4ba3f9c73d8310b66b93ea6ae3",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
