@@ -44,6 +44,19 @@ needs a later candidate-level budgeted implementation and a new quality-valid
 provider run before it can make a savings claim. The v3 result and its failed
 0/288 exact historical-patch quality gate remain unchanged.
 
+V4 changes the future scoring contract without rewriting that historical
+result. A patch may pass when it stays inside the frozen task path boundary,
+applies cleanly, changes at least one allowed path, and satisfies the frozen
+private source assertions. Exact historical-patch reproduction is retained as
+a diagnostic count, not the success criterion. The adjacent closed behavioral
+quality evaluator generalizes this boundary for later studies: independently
+captured evidence covers hidden checks, build, typecheck, tests, correction
+burden, and bounded patch locality. Both the contract and the complete evidence
+capture must be authenticated by hashes supplied outside the evaluator, so a
+caller cannot legitimize altered checks or outcomes by synchronously rehashing
+them. This is evaluation machinery only; it adds no new provider observation
+and makes no retrospective quality or savings claim.
+
 Future provider orchestration must call `select_provider_cell()` with the exact
 frozen capture bytes, task ID, and requested arm. The returned cell ID and
 prompt SHA identify the only permitted existing input. The report alone does
