@@ -43,6 +43,74 @@ def evaluate_needs_condition(condition: str, **results: str) -> bool:
 
 
 class WorkflowSecurityTests(unittest.TestCase):
+    def test_ci_partitions_fast_pr_and_bounded_exhaustive_release_gates(self):
+        ci = read(".github/workflows/ci.yml")
+        jobs = workflow_job_blocks(ci)
+
+        self.assertEqual(
+            set(jobs),
+            {"fast-pr", "security-pr", "exhaustive-linux", "exhaustive-macos"},
+        )
+        self.assertIn("github.event_name == 'pull_request'", jobs["fast-pr"])
+        self.assertIn("python scripts/ci_test_gate.py fast", jobs["fast-pr"])
+        self.assertIn("scripts/prepublish_check.py --skip-tests", jobs["fast-pr"])
+        for partition in ("provider-free", "provider-live", "history", "serial"):
+            self.assertIn(f"scripts/ci_test_gate.py {partition}", jobs["security-pr"])
+        for name in ("exhaustive-linux", "exhaustive-macos"):
+            self.assertIn("github.event_name == 'push'", jobs[name])
+            self.assertIn("timeout-minutes:", jobs[name])
+        self.assertIn("python scripts/prepublish_check.py", jobs["exhaustive-linux"])
+        self.assertIn("python scripts/prepublish_check.py", jobs["exhaustive-macos"])
+
+    def test_ci_partition_manifest_is_closed_nonempty_and_serializes_races(self):
+        gate = read("scripts/ci_test_gate.py")
+
+        self.assertIn("REQUIRED_TEST_IDS", gate)
+        self.assertIn("refusing an empty test partition", gate)
+        self.assertIn("missing required test IDs", gate)
+        self.assertIn("provider-free", gate)
+        self.assertIn("provider-live", gate)
+        self.assertIn("history", gate)
+        self.assertIn("SERIAL_TEST_IDS", gate)
+        self.assertIn("test_experimental_registry_config_write_race_cannot_redirect_to_symlink", gate)
+        self.assertNotIn("ThreadPoolExecutor", gate)
+
+    def test_release_workflows_preflight_trust_before_expensive_or_mutating_steps(self):
+        candidate = read(".github/workflows/npm-candidate.yml")
+        publish = read(".github/workflows/npm-publish.yml")
+        promote = read(".github/workflows/npm-promote.yml")
+
+        self.assertLess(
+            candidate.index("Preflight GitHub OIDC and attestation trust"),
+            candidate.index("Verify root package release gates"),
+        )
+        self.assertLess(
+            publish.index("Preflight npm trusted publishing"),
+            publish.index("actions/download-artifact@"),
+        )
+        self.assertEqual(publish.count("npm ping --registry=https://registry.npmjs.org"), 2)
+        self.assertLess(
+            promote.index("Preflight both package-scoped promotion credentials"),
+            promote.index("Preflight exact next pair and capture rollback tags"),
+        )
+        self.assertIn("npm whoami", promote)
+
+    def test_github_release_and_homebrew_reuse_exact_release_provenance(self):
+        release = read(".github/workflows/github-release.yml")
+        homebrew = read(".github/workflows/homebrew.yml")
+
+        self.assertIn("candidate_run_id", release)
+        self.assertIn("candidate_artifact_ids", release)
+        self.assertIn("actions/download-artifact@", release)
+        self.assertNotIn("npm pack", release)
+        self.assertLess(release.index("Preflight release credential and tag"), release.index("actions/download-artifact@"))
+        self.assertIn("gh attestation verify", release)
+        self.assertIn("gh release create", release)
+        self.assertIn("release_commit_sha", homebrew)
+        self.assertIn("release_tarball_sha256", homebrew)
+        self.assertIn("python3 scripts/verify_homebrew_formula.py", homebrew)
+        self.assertLess(homebrew.index("Preflight Homebrew tap credential"), homebrew.index("verify_homebrew_formula.py"))
+
     def test_pages_workflow_uses_pages_deployment_permissions_not_repo_write_token(self):
         pages = read(".github/workflows/pages.yml")
 
@@ -85,6 +153,8 @@ class WorkflowSecurityTests(unittest.TestCase):
             read(".github/workflows/npm-candidate.yml"),
             read(".github/workflows/npm-publish.yml"),
             read(".github/workflows/npm-promote.yml"),
+            read(".github/workflows/github-release.yml"),
+            read(".github/workflows/homebrew.yml"),
         ]
         combined = "\n".join(workflows)
 
@@ -390,56 +460,31 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")
-        prepublish_check = read("scripts/prepublish_check.py")
         job_blocks = workflow_job_blocks(ci)
-        ubuntu_job = job_blocks["test-and-prepublish"]
-        macos_job = job_blocks["test-and-prepublish-macos"]
-
-        self.assertIn("TEST_DISCOVERY_TIMEOUT_SECONDS = 1380", prepublish_check)
-        self.assertIn("PROVIDER_LIVE_TEST_TIMEOUT_SECONDS = 600", prepublish_check)
-        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 35\n        run: python scripts/prepublish_check.py", ubuntu_job)
-        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python scripts/release_smoke.py", ubuntu_job)
-        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 35\n        run: python scripts/prepublish_check.py", macos_job)
-        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 8\n        run: python scripts/release_smoke.py", macos_job)
+        self.assertIn("timeout-minutes: 12", job_blocks["fast-pr"])
+        self.assertIn("timeout-minutes: 35", job_blocks["security-pr"])
+        self.assertIn("timeout-minutes: 45", job_blocks["exhaustive-linux"])
+        self.assertIn("timeout-minutes: 40", job_blocks["exhaustive-macos"])
+        self.assertIn("timeout-minutes: 25\n        run: python scripts/ci_test_gate.py core", job_blocks["exhaustive-linux"])
+        self.assertIn("timeout-minutes: 25\n        run: python scripts/ci_test_gate.py core", job_blocks["exhaustive-macos"])
 
 
     def test_ci_release_gates_install_node_before_npm_checks(self):
         ci = read(".github/workflows/ci.yml")
-        self.assertEqual(ci.count("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"), 2)
-        self.assertEqual(ci.count('node-version: "22"'), 2)
-        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
-        for job in (ubuntu_job, macos_job):
-            self.assertLess(job.index("name: Set up Node"), job.index("name: Run prepublish release gate"))
+        self.assertEqual(ci.count("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"), 3)
+        self.assertEqual(ci.count('node-version: "22"'), 3)
+        for name in ("fast-pr", "exhaustive-linux", "exhaustive-macos"):
+            job = workflow_job_blocks(ci)[name]
+            self.assertLess(job.index("name: Set up Node"), job.index("prepublish_check.py"))
             self.assertLess(job.index("name: Set up Node"), job.index("name: Run staged plugin release smoke"))
 
-    def test_ci_normalizes_only_expected_hosted_runtime_targets_before_preflight(self):
+    def test_ci_normalizes_only_exact_hosted_runtime_files(self):
         ci = read(".github/workflows/ci.yml")
-        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
-
-        self.assertEqual(ci.count("name: Normalize hosted runtime permissions"), 2)
-        self.assertEqual(
-            ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'),
-            2,
-        )
-        self.assertEqual(ci.count("sudo chmod "), 2)
+        self.assertEqual(ci.count("Normalize expected hosted runtime permissions"), 2)
+        self.assertEqual(ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'), 2)
         self.assertNotIn("chmod -R", ci)
-        self.assertIn("Linux:/opt/hostedtoolcache/*", ubuntu_job)
-        self.assertNotIn("/Library/Frameworks", ubuntu_job)
-        self.assertIn(
-            "macOS:/Library/Frameworks/Python.framework/Versions/*",
-            macos_job,
-        )
-        self.assertIn(
-            "macOS:/opt/homebrew/*|macOS:/usr/local/*|macOS:/Users/runner/hostedtoolcache/*",
-            macos_job,
-        )
-        for job in (ubuntu_job, macos_job):
-            normalize = job.index("name: Normalize hosted runtime permissions")
-            preflight = job.index("name: Verify hosted runtime trust")
-            prepublish = job.index("name: Run prepublish release gate")
-            self.assertLess(job.index("name: Set up Node"), normalize)
-            self.assertLess(normalize, preflight)
-            self.assertLess(preflight, prepublish)
+        self.assertIn("/opt/hostedtoolcache/*", ci)
+        self.assertIn("/Library/Frameworks/Python.framework/Versions/*", ci)
 
     def test_homebrew_formula_template_uses_release_placeholders(self):
         template = read("packaging/homebrew/context-guard.rb.template")
@@ -455,8 +500,9 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_runs_swift_tests_in_macos_package_job(self):
         ci = read(".github/workflows/ci.yml")
-        self.assertIn("  test-and-prepublish-macos:", ci)
-        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
+        jobs = workflow_job_blocks(ci)
+        ubuntu_job = jobs["exhaustive-linux"]
+        macos_job = jobs["exhaustive-macos"]
 
         self.assertNotIn("swift test", ubuntu_job)
         self.assertIn("runs-on: macos-latest", macos_job)
