@@ -1,0 +1,81 @@
+name: Verify and publish Homebrew formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact bare semver"
+        required: true
+        type: string
+      release_commit_sha:
+        description: "Exact GitHub release commit"
+        required: true
+        type: string
+      release_tarball_sha256:
+        description: "Reviewed SHA-256 of GitHub's vVERSION source archive"
+        required: true
+        type: string
+      confirm_publish:
+        description: "Confirm updating ictechgy/homebrew-tap"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-publish:
+    environment: homebrew-tap
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Preflight Homebrew tap credential
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_COMMIT: ${{ github.event.inputs.release_commit_sha }}
+          RELEASE_TARBALL_SHA256: ${{ github.event.inputs.release_tarball_sha256 }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          test "${{ github.event.inputs.confirm_publish }}" = true || { echo "::error::confirm_publish=true is required"; exit 1; }
+          : "${GH_TOKEN:?configure HOMEBREW_TAP_TOKEN in the homebrew-tap environment}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || { echo "::error::version must be bare semver"; exit 1; }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_commit_sha must be lowercase hexadecimal"; exit 1; }
+          [[ "$RELEASE_TARBALL_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::release_tarball_sha256 must be lowercase SHA-256"; exit 1; }
+          gh auth status
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" --jq '.object.sha')" = "$RELEASE_COMMIT" || { echo "::error::release tag does not bind release_commit_sha"; exit 1; }
+          gh api repos/ictechgy/homebrew-tap --jq '.permissions.push' | grep -Fx true || { echo "::error::HOMEBREW_TAP_TOKEN lacks push access"; exit 1; }
+      - name: Checkout exact release automation
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.inputs.release_commit_sha }}
+          persist-credentials: false
+      - name: Verify release archive digest
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ github.event.inputs.release_tarball_sha256 }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::release_tarball_sha256 must be lowercase SHA-256"; exit 1; }
+          curl --fail --location --proto '=https' --tlsv1.2 --output "$RUNNER_TEMP/context-guard.tar.gz" "https://github.com/ictechgy/context-guard/archive/refs/tags/v$VERSION.tar.gz"
+          echo "$EXPECTED_SHA256  $RUNNER_TEMP/context-guard.tar.gz" | shasum -a 256 -c -
+      - name: Render and verify exact Homebrew formula
+        run: >-
+          python3 scripts/verify_homebrew_formula.py
+          --version "${{ github.event.inputs.version }}"
+          --sha256 "${{ github.event.inputs.release_tarball_sha256 }}"
+          --output "$RUNNER_TEMP/context-guard.rb"
+      - name: Publish verified formula only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api repos/ictechgy/homebrew-tap/contents/Formula/context-guard.rb --jq '.sha')"
+          content="$(base64 < "$RUNNER_TEMP/context-guard.rb" | tr -d '\n')"
+          gh api --method PUT repos/ictechgy/homebrew-tap/contents/Formula/context-guard.rb \
+            -f message="context-guard $VERSION" -f content="$content" -f sha="$current_sha" >/dev/null
