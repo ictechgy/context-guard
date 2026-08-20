@@ -1517,6 +1517,17 @@ def resolve_scope_root(raw_root: str | None, scope: str) -> Path:
     return home
 
 
+def effective_scope(raw_root: str | None, raw_scope: str | None, *, allow_home_settings: bool) -> str:
+    scope = normalize_scope(raw_scope)
+    if scope != "project" or not allow_home_settings:
+        return scope
+    project_root = resolve_setup_root(raw_root)
+    home_settings = Path.home().expanduser().resolve() / SETTINGS_REL
+    if (project_root / SETTINGS_REL).expanduser().resolve() == home_settings:
+        return "user"
+    return scope
+
+
 def explicit_agent_selection(args: argparse.Namespace) -> list[str] | None:
     values: list[str] = []
     for attr in ("agent", "only"):
@@ -2970,14 +2981,21 @@ def doctor_check(
     return check
 
 
-def _setup_command(args: argparse.Namespace, *, apply: bool, root: Path | None = None) -> str:
-    parts = ["context-guard", "setup", "--scope", normalize_scope(getattr(args, "scope", "project"))]
-    if root is not None and normalize_scope(getattr(args, "scope", "project")) == "project":
+def _setup_command(
+    args: argparse.Namespace,
+    *,
+    apply: bool,
+    root: Path | None = None,
+    scope: str | None = None,
+) -> str:
+    scope = scope or normalize_scope(getattr(args, "scope", "project"))
+    parts = ["context-guard", "setup", "--scope", scope]
+    if root is not None and scope == "project":
         parts.extend(["--root", str(root)])
     selected = explicit_agent_selection(args)
     if selected:
         parts.extend(["--agent", ",".join(selected)])
-    elif normalize_scope(getattr(args, "scope", "project")) == "user":
+    elif scope == "user":
         parts.extend(["--agent", "claude"])
     if getattr(args, "allow_path_helper_fallback", False):
         parts.append("--allow-path-helper-fallback")
@@ -3068,7 +3086,11 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
     writing settings, writing rule files, or creating rollback records.
     """
     require_no_follow_file_ops_supported()
-    scope = normalize_scope(getattr(args, "scope", "project"))
+    scope = effective_scope(
+        args.root,
+        getattr(args, "scope", "project"),
+        allow_home_settings=bool(getattr(args, "allow_home_settings", False)),
+    )
     root = resolve_scope_root(args.root, scope)
     settings_path = root / SETTINGS_REL
     helper_check = _helper_availability_check(include_diet=not getattr(args, "no_diet_scan", False), allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)))
@@ -3279,9 +3301,9 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
                     detail=diet_scan,
                 ))
 
-    recommended = [_setup_command(args, apply=False, root=root)]
+    recommended = [_setup_command(args, apply=False, root=root, scope=scope)]
     if changed or adapter_warnings:
-        recommended.append(_setup_command(args, apply=True, root=root))
+        recommended.append(_setup_command(args, apply=True, root=root, scope=scope))
     return {
         "schema_version": "contextguard.doctor.v1",
         "status": _doctor_status(checks),
@@ -4050,7 +4072,11 @@ def render_quiet_narration_text(result: dict[str, Any]) -> str:
 
 def run(args: argparse.Namespace) -> SetupResult:
     require_no_follow_file_ops_supported()
-    scope = normalize_scope(getattr(args, "scope", "project"))
+    scope = effective_scope(
+        args.root,
+        getattr(args, "scope", "project"),
+        allow_home_settings=bool(getattr(args, "allow_home_settings", False)),
+    )
     root = resolve_scope_root(args.root, scope)
     settings_path = root / SETTINGS_REL
     warnings: list[str] = []
