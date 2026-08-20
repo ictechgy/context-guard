@@ -337,6 +337,8 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-artifact search "ERROR" --json
 ./plugins/context-guard/bin/context-guard-artifact receipt <artifact_id> --json
 ./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
+./plugins/context-guard/bin/context-guard task-memory put --task issue-123 --source src/app.py --json < stable-context.txt
+./plugins/context-guard/bin/context-guard task-memory get <opaque_handle> --task issue-123 --source src/app.py --max-bytes 65536
 ```
 
 로컬 보관 모드는 캡처·sandbox 검색·조회 용도입니다. 기본 저장 위치는 `.context-guard/artifacts`이며, 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 요약 기록도 계속 읽을 수 있습니다. JSON 요약 기록에는 줄 번호가 포함된 top-error 요약 기록, 중복 라인 그룹, 가림 처리된 범위 제한 `suggested_queries`, 안정적인 `contextguard-artifact:<id>` 핸들이 있는 `output_sandbox` envelope가 들어갑니다. `context-guard-artifact receipt <artifact_id> --json`으로 본문 없이 메타데이터/재조회 핸들만 다시 가져온 뒤, 전체 로그를 다시 넣지 않고 필요한 최소 범위만 정확하게 조회할 수 있습니다. `search`는 로컬 sanitized artifact sandbox를 literal substring으로 검색하고, bounded match/context record와 `context-guard-artifact get ... --lines START:END` 재조회 명령을 함께 반환합니다. custom `--dir` 값의 raw private path는 기본적으로 가림 처리되므로 같은 `--dir`로 다시 실행하거나, 직접 실행 가능한 local command가 꼭 필요할 때만 `search --show-paths`를 명시하세요. 이 검색 리포트는 local-only이며 hosted token/cost savings claim으로 해석하면 안 됩니다. 릴리스 확인처럼 종료 코드가 중요한 파이프라인에서는 원래 명령의 종료 코드를 직접 보존하세요. 종료 코드 보존이 핵심이면 `context-guard-trim-output -- ...`을 사용하는 편이 안전합니다.
