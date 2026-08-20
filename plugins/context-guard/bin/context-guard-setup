@@ -3263,7 +3263,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             "medium",
             "ContextGuard setup is not fully applied for the requested selections.",
             detail={"planned_action_count": len(actions), "planned_actions": actions},
-            next_action=_setup_command(args, apply=False, root=root),
+            next_action=_setup_command(args, apply=False, root=root, scope=scope),
         ))
     else:
         checks.append(doctor_check(
@@ -3298,7 +3298,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             "medium",
             "Some requested adapters still have planned or unsupported setup actions.",
             detail={"adapters": adapter_warnings},
-            next_action=_setup_command(args, apply=False, root=root),
+            next_action=_setup_command(args, apply=False, root=root, scope=scope),
         ))
     else:
         checks.append(doctor_check(
