@@ -78,6 +78,8 @@ context-guard-diet scan . --json
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact receipt <artifact_id> --json
 context-guard-artifact get <artifact_id> --lines 1:80
+context-guard task-memory put --task issue-123 --source src/app.py --json < stable-context.txt
+context-guard task-memory get <opaque_handle> --task issue-123 --source src/app.py --max-bytes 65536
 context-guard-compress --json < large-output.txt
 context-guard cost preflight --request request.json --budget-krw 3000 --json
 context-guard cost observe --usage usage.json --json
