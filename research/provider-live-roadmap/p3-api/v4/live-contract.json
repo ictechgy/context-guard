@@ -12,6 +12,14 @@
       "path": "packages/context-guard-receipt/schemas/external-approval-v2.schema.json",
       "sha256": "d82bf2ea94d63bc6f1840b607167167891e767a13839d52c9debbbe046c62158"
     },
+    "behavioral_quality_evaluator": {
+      "path": "research/provider-live-roadmap/p3-api/v4/behavioral_quality.py",
+      "sha256": "d548881424637a4ea764197395fefa271daf519e6533d6bf4a127282eba0efa8"
+    },
+    "behavioral_quality_schema": {
+      "path": "research/provider-live-roadmap/p3-api/v4/behavioral-quality.schema.json",
+      "sha256": "1c1b528b05a66ef40a22b0b6c615fc48cd95b365b3ffc882863e91820d457ef7"
+    },
     "budget_policy": {
       "path": "research/provider-live-roadmap/p3-api/v4/budget_policy.py",
       "sha256": "b789e303985144c2509e68cb65b869732e23be29c20e751ec467929a152ba8c1"

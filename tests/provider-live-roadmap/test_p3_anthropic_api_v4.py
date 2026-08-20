@@ -212,6 +212,7 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                     "_bound_scorer_loader",
                     return_value=lambda: (
                         lambda capsules, prepared: {
+                            "exact_historical_patch_units": len(prepared),
                             "failed_units": 0,
                             "passed_units": len(prepared),
                             "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
@@ -350,6 +351,7 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                     "_bound_scorer_loader",
                     return_value=lambda: (
                         lambda capsules, prepared: {
+                            "exact_historical_patch_units": len(prepared),
                             "failed_units": 0,
                             "passed_units": len(prepared),
                             "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
@@ -774,6 +776,7 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                         "provider_request_id": None,
                     },
                     scorer_loader=lambda: (lambda capsules, prepared: {
+                        "exact_historical_patch_units": len(prepared),
                         "failed_units": 0,
                         "passed_units": len(prepared),
                         "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,
@@ -790,6 +793,19 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                 ))
                 changed = copy.deepcopy(evidence)
                 changed["sealed_units"][0]["selection_identity"]["requested"]["arm_id"] = "a000"
+                with self.assertRaisesRegex(
+                    runner.LiveRunError, "invalid_public_evidence"
+                ):
+                    runner.validate_public_evidence(
+                        changed, contract_raw=runner.canonical(contract)
+                    )
+                changed = copy.deepcopy(evidence)
+                changed["scoring"].update({
+                    "exact_historical_patch_units": 288,
+                    "failed_units": 1,
+                    "passed_units": 287,
+                })
+                changed["analysis"] = copy.deepcopy(changed["scoring"])
                 with self.assertRaisesRegex(
                     runner.LiveRunError, "invalid_public_evidence"
                 ):
@@ -887,6 +903,7 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                         approval_consume=lambda scope: {"approved": scope["batch_id"]},
                         invoke=invoke,
                         scorer_loader=lambda: (lambda capsules, prepared: {
+                            "exact_historical_patch_units": len(prepared),
                             "failed_units": 0,
                             "passed_units": len(prepared),
                             "scorer_artifact_sha256": runner.EXPECTED_SCORER_SHA256,

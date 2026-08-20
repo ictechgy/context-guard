@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contextguard.dev/schemas/behavioral-quality-v1.json",
+  "title": "ContextGuard behavioral quality evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "observations", "changed_paths", "correction_count", "correction_receipts", "patch"],
+  "properties": {
+    "schema_version": {"const": "contextguard.behavioral-quality-evidence/v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "observations": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_sha256", "id", "kind", "payload"],
+        "properties": {
+          "check_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["hidden_check", "build", "typecheck", "test"]},
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["exit_code", "passed", "test_count"],
+            "properties": {
+              "exit_code": {"type": "integer", "minimum": 0},
+              "passed": {"type": "boolean"},
+              "test_count": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "changed_paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "correction_count": {"type": "integer", "minimum": 0},
+    "correction_receipts": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["added_lines", "bytes", "deleted_lines", "historical_patch_sha256", "sha256"],
+      "properties": {
+        "added_lines": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 1},
+        "deleted_lines": {"type": "integer", "minimum": 0},
+        "historical_patch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
