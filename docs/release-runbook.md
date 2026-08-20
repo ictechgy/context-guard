@@ -29,10 +29,10 @@ release smoke: OK
 4. Run the local release gates.
 5. Commit using the Lore commit protocol.
 6. Push a branch and open a PR.
-7. Wait for GitHub Actions to pass on all supported Python/platform lanes. The Ubuntu Python matrix keeps the historical `test-and-prepublish (3.11)` / `test-and-prepublish (3.12)` check names; the macOS release lane is `test-and-prepublish (macos-latest, 3.12)`.
+7. Wait for both bounded PR gates: `fast-pr (ubuntu-latest, 3.12)` and `security-pr (ubuntu-latest, 3.12)`. After merge, require the `exhaustive-linux (3.11)`, `exhaustive-linux (3.12)`, and `exhaustive-macos (3.12)` gates before release publication.
 8. Run quad review against the PR/diff and save a concise evidence comment on the PR. The comment should list the target hash or commit, which tracks completed, which tracks were unavailable, and whether any blocker findings remain.
 9. If any blocker is reported, commit a fix, push it, and re-run CI plus quad review. Do not merge on stale review output from an earlier commit.
-10. Merge only after CI is green and quad review has no blocker findings on the latest head.
+10. Merge only after both PR gates are green and quad review has no blocker findings on the latest head.
 
 Claude review track may be unavailable on a machine that has not logged in to the local Claude CLI. Record that as unavailable; do not treat it as approval.
 
@@ -45,9 +45,10 @@ Before merge or publish, capture enough evidence that another maintainer can rep
   - `python3 scripts/prepublish_check.py`
   - `python3 scripts/release_smoke.py`
 - GitHub Actions check names and final status:
-  - `test-and-prepublish (3.11)`
-  - `test-and-prepublish (3.12)`
-  - `test-and-prepublish (macos-latest, 3.12)`
+  - `fast-pr (ubuntu-latest, 3.12)` on the reviewed PR
+  - `security-pr (ubuntu-latest, 3.12)` on the reviewed PR
+  - `exhaustive-linux (3.11)` and `exhaustive-linux (3.12)` on the merged commit
+  - `exhaustive-macos (3.12)` on the merged commit
 - Quad-review summary:
   - PR number or diff range
   - latest commit hash reviewed
@@ -72,12 +73,12 @@ Before publishing a versioned artifact, verify:
 ## npm trusted publishing
 
 npm publishing uses trusted publishing/OIDC through `.github/workflows/npm-publish.yml`.
-The npm package trusted-publisher configuration must use workflow filename
-`npm-publish.yml` and an empty environment name. The workflow publishes only
-from an existing GitHub release tag or an explicit manual dispatch tag, verifies
-that the tag matches `package.json` and plugin manifest versions, runs the same
-release gates, and uses `id-token: write` without `NODE_AUTH_TOKEN` or
-`NPM_TOKEN`.
+The npm trusted-publisher records must use repository `ictechgy/context-guard`,
+workflow filename `npm-publish.yml`, and the exact protected environment for
+the package (`npm-receipt-next` or `npm-root-next`). The workflow preflights
+OIDC availability and registry reachability before downloading candidates, then
+publishes only attested build-once tarballs with `id-token: write` and without
+`NODE_AUTH_TOKEN` or `NPM_TOKEN`.
 
 ## Clean-install smoke coverage
 
