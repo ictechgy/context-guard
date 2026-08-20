@@ -562,7 +562,7 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
 
         self.assertEqual(
             launcher.EXPECTED_CORE_COMMIT,
-            "1b4b3be86ccf5338b1189a971085a0eb64819d88",
+            "fe9916a39233380e2b367fcae8e9562cefafca3b",
         )
         launcher._verify_core_commit(ROOT)
         with mock.patch.object(launcher, "EXPECTED_CORE_COMMIT", "0" * 40):
