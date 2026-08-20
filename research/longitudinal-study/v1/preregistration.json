@@ -1,0 +1,33 @@
+{
+  "schema_version": "contextguard.longitudinal-preregistration/v1",
+  "status": "preregistered_closed_before_observation",
+  "objective": "completed_high_quality_work_cost_across_independent_projects_and_task_types",
+  "schedule_path": "schedule.json",
+  "observation_schema_path": "observation.schema.json",
+  "primary_population": "all_125_prescheduled_units",
+  "completed_high_quality_rule": "outcome_completed_and_quality_passed; all_other_units_remain_in_failure_missingness_or_exclusion_counts",
+  "missingness_policy": "unavailable_is_null_with_reason; never_impute_or_zero_fill",
+  "cost_policy": "provider_billed_cost_is_authoritative_when_observed; calculated_list_price_and_local_cost_are_separate_non_authoritative_components",
+  "analysis": {
+    "pairing": "within_project_and_task_stratum_arm_minus_baseline",
+    "cluster_unit": "project_id",
+    "summary": "project_cluster_descriptive_only_with_observed_and_unavailable_denominators",
+    "inference_boundary": "no_hypothesis_test_confidence_interval_external_validity_or_generalization_claim"
+  },
+  "exclusions": [
+    "schedule_identity_mismatch",
+    "duplicate_receipt_identity",
+    "receipt_identity_mismatch",
+    "cap_exceeded",
+    "malformed_observation",
+    "quality_unavailable",
+    "provider_failure",
+    "local_failure"
+  ],
+  "claims": {
+    "provider_savings_allowed_from_rehearsal": false,
+    "unavailable_values_are_zero": false,
+    "quality_guarantee": false,
+    "generalization": false
+  }
+}

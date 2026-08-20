@@ -1,0 +1,31 @@
+{
+  "schema_version": "contextguard.longitudinal-schedule/v1",
+  "status": "preregistered_closed",
+  "schedule_seed": "contextguard-v0.5.1-longitudinal-v1",
+  "projects": [
+    {"project_id": "project-01", "private_locator_required": true},
+    {"project_id": "project-02", "private_locator_required": true},
+    {"project_id": "project-03", "private_locator_required": true},
+    {"project_id": "project-04", "private_locator_required": true},
+    {"project_id": "project-05", "private_locator_required": true}
+  ],
+  "task_strata": ["maintenance", "bug", "feature", "security", "refactor"],
+  "arms": ["baseline", "adaptive_only", "symbol_only", "graph_only", "combined"],
+  "factor_contract": {
+    "baseline": [],
+    "adaptive_only": ["adaptive"],
+    "symbol_only": ["symbol"],
+    "graph_only": ["graph"],
+    "combined": ["adaptive", "symbol", "graph"]
+  },
+  "block_rule": "lexicographic_project_then_stratum_with_sha256_ranked_arm_order",
+  "unit_rule": "one_prescheduled_unit_per_project_stratum_arm; no_additions_or_substitutions",
+  "caps": {
+    "max_units": 125,
+    "max_attempts": 125,
+    "max_retrievals_per_unit": 100,
+    "max_corrections_per_unit": 20,
+    "max_local_elapsed_ms_per_unit": 3600000,
+    "maximum_live_budget_usd": "250.00"
+  }
+}
