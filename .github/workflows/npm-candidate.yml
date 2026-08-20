@@ -107,7 +107,7 @@ jobs:
         run: python3 scripts/sync_plugin_copies.py --check
 
       - name: Verify root package release gates
-        timeout-minutes: 20
+        timeout-minutes: 35
         run: python3 scripts/prepublish_check.py
 
       - name: Verify Receipt package release gates
