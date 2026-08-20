@@ -1506,14 +1506,51 @@ def normalize_scope(raw_scope: str | None) -> str:
     return scope
 
 
+def _user_scope_path_issue(
+    path: Path,
+    *,
+    label: str,
+    expected_directory: bool,
+    allow_missing: bool,
+) -> str | None:
+    """Return a fail-closed reason for an existing user-scope path."""
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return None if allow_missing else f"{label} does not exist: {path}"
+    except OSError as error:
+        return f"could not inspect {label}: {error.__class__.__name__}"
+
+    if metadata.st_uid not in {0, os.geteuid()}:
+        return f"refusing unsafe {label}: it is not owned by root or the effective user"
+    if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"refusing unsafe {label}: group/world write bits are set"
+    if expected_directory:
+        if not stat.S_ISDIR(metadata.st_mode):
+            return f"refusing unsafe {label}: it is not a directory"
+    elif not stat.S_ISREG(metadata.st_mode):
+        return f"refusing unsafe {label}: it is not a regular file"
+    return None
+
+
+def _validate_user_scope_home(home: Path) -> None:
+    issue = _user_scope_path_issue(
+        home,
+        label="resolved HOME",
+        expected_directory=True,
+        allow_missing=False,
+    )
+    if issue:
+        raise SystemExit(issue)
+
+
 def resolve_scope_root(raw_root: str | None, scope: str) -> Path:
     if scope == "project":
         return resolve_setup_root(raw_root)
     home = Path.home().expanduser().resolve()
     if home == Path(home.anchor or "/"):
         raise SystemExit("Refusing user-scope setup because HOME resolves to a filesystem root.")
-    if not home.exists() or not home.is_dir():
-        raise SystemExit(f"Refusing user-scope setup because HOME is not a directory: {home}")
+    _validate_user_scope_home(home)
     return home
 
 
@@ -1560,6 +1597,20 @@ def validate_settings_target(root: Path, settings_path: Path, *, allow_home_sett
             claude_dir.resolve().relative_to(root)
         except ValueError as exc:
             raise SystemExit(f"Claude settings directory resolves outside project root: {claude_dir}") from exc
+    if root == home_settings.parent.parent:
+        for path, label, expected_directory, allow_missing in (
+            (root, "resolved HOME", True, False),
+            (claude_dir, "existing .claude directory", True, True),
+            (settings_path, "existing settings.json", False, True),
+        ):
+            issue = _user_scope_path_issue(
+                path,
+                label=label,
+                expected_directory=expected_directory,
+                allow_missing=allow_missing,
+            )
+            if issue:
+                raise SystemExit(issue)
 
 
 def _base_open_flags() -> int:
