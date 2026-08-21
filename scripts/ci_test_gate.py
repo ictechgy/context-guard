@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 import unittest
 from pathlib import Path
@@ -192,8 +191,6 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("partition", choices=PARTITION_NAMES)
     args = parser.parse_args()
-    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-
     suite = discover_partition(args.partition)
     collected = test_ids(suite)
     if not collected:

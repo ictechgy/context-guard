@@ -96,6 +96,9 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("test_experimental_registry_config_write_race_cannot_redirect_to_symlink", gate)
         self.assertIn("tests.test_release_assets", gate)
         self.assertIn("test_exact_two_package_release_asset_set_is_required", gate)
+        self.assertNotIn(
+            'os.environ["PYTHONDONTWRITEBYTECODE"] = "1"', gate
+        )
         self.assertNotIn("ThreadPoolExecutor", gate)
 
     def test_provider_free_partition_uses_boundary_suite_on_unbound_python(self):
