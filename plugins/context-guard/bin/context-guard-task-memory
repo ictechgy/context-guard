@@ -316,20 +316,30 @@ def project_identity(root: Path) -> dict[str, Any]:
     return {"physical_root_sha256": sha256(os.fsencode(str(root))), "device": info.st_dev, "inode": info.st_ino}
 
 
+def staged_paths(raw: bytes) -> set[bytes]:
+    fields = raw.split(b"\0")
+    if not fields or fields[-1] or (len(fields) - 1) % 2:
+        raise MemoryError("staged identity metadata is malformed")
+    paths: set[bytes] = set()
+    for index in range(0, len(fields) - 1, 2):
+        header = fields[index]
+        path = fields[index + 1]
+        if not header.startswith(b":") or not path or path in paths:
+            raise MemoryError("staged identity metadata is malformed")
+        paths.add(path)
+    return paths
+
+
 def revision_identity(root: Path, store: Path) -> dict[str, str]:
     head = git(root, "rev-parse", "HEAD").decode("ascii").strip()
-    staged = git(root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv")
-    staged_names = git(
-        root,
-        "diff",
-        "--cached",
-        "--name-only",
-        "-z",
-        "--no-renames",
-        "--no-ext-diff",
-        "--no-textconv",
-    ).split(b"\0")
-    names = git(root, "ls-files", "-m", "-o", "--exclude-standard", "-z").split(b"\0")
+    staged_arguments = (
+        "diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv",
+    )
+    names_arguments = ("ls-files", "-m", "-o", "--exclude-standard", "-z")
+    staged = git(root, *staged_arguments)
+    staged_names = staged_paths(staged)
+    names_raw = git(root, *names_arguments)
+    names = names_raw.split(b"\0")
     try:
         store_rel = store.relative_to(root).as_posix()
     except ValueError:
@@ -370,6 +380,12 @@ def revision_identity(root: Path, store: Path) -> dict[str, str]:
         if revision_bytes > MAX_REVISION_BYTES:
             raise MemoryError("worktree identity exceeds bounded byte limit")
         rows.append({"path_sha256": sha256(raw), "content_sha256": sha256(data)})
+    if (
+        git(root, "rev-parse", "HEAD").decode("ascii").strip() != head
+        or git(root, *staged_arguments) != staged
+        or git(root, *names_arguments) != names_raw
+    ):
+        raise MemoryError("project revision changed during identity capture")
     return {"head": head, "worktree_sha256": sha256(canonical({"staged": sha256(staged), "files": rows}))}
 
 

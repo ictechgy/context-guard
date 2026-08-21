@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,20 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "context-guard-kit" / "task_memory.py"
+
+
+def load_task_memory():
+    spec = importlib.util.spec_from_file_location("task_memory_test_module", CLI)
+    if spec is None or spec.loader is None:
+        raise AssertionError("task-memory module is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class TaskMemoryTests(unittest.TestCase):
@@ -220,6 +231,37 @@ class TaskMemoryTests(unittest.TestCase):
             self.assertEqual(
                 list((project / ".memory" / "records").glob("*.*")), []
             )
+
+    def test_revision_identity_refuses_index_change_during_snapshot(self) -> None:
+        task_memory = load_task_memory()
+        with tempfile.TemporaryDirectory() as raw:
+            project = self.make_project(Path(raw), "index-race")
+            store = project / ".memory"
+            original_git = task_memory.git
+            changed = False
+
+            def change_after_staged_raw(root, *arguments):
+                nonlocal changed
+                result = original_git(root, *arguments)
+                if "--raw" in arguments and not changed:
+                    (project / "staged-after-raw.txt").write_text(
+                        "changed index\n", encoding="utf-8"
+                    )
+                    subprocess.run(
+                        ["git", "add", "staged-after-raw.txt"],
+                        cwd=project,
+                        check=True,
+                    )
+                    changed = True
+                return result
+
+            with mock.patch.object(
+                task_memory, "git", side_effect=change_after_staged_raw
+            ):
+                with self.assertRaisesRegex(
+                    task_memory.MemoryError, "changed during identity"
+                ):
+                    task_memory.revision_identity(project, store)
 
     def test_eviction_cleanup_concurrent_writers_and_cross_project_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
