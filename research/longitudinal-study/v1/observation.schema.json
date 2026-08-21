@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "contextguard.longitudinal-observation/v1",
+  "description": "Authoritative terminal observation. Every metric is an availability triple; unavailable values are null, never zero.",
+  "$defs": {
+    "availability": {"enum": ["observed", "unavailable"]},
+    "unavailable_reason": {"type": ["string", "null"], "enum": [null, "offline_rehearsal", "not_in_provider_receipt", "billing_pending", "not_measured", "not_applicable", "excluded_unit", "failed_unit"]},
+    "integer_metric": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"availability": {"$ref": "#/$defs/availability"}, "value": {"type": ["integer", "null"], "minimum": 0}, "unavailable_reason": {"$ref": "#/$defs/unavailable_reason"}},
+      "required": ["availability", "value", "unavailable_reason"]
+    },
+    "decimal_metric": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"availability": {"$ref": "#/$defs/availability"}, "value": {"type": ["string", "null"], "pattern": "^[0-9]+\\.[0-9]{2,6}$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "unavailable_reason": {"$ref": "#/$defs/unavailable_reason"}},
+      "required": ["availability", "value", "currency", "unavailable_reason"]
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scheduled_unit_id", "project_id", "task_stratum", "arm", "outcome", "quality", "provider", "local", "retrievals", "corrections", "exclusion", "receipt", "private"],
+  "properties": {
+    "schema_version": {"const": "contextguard.longitudinal-observation/v1"},
+    "scheduled_unit_id": {"type": "string"},
+    "project_id": {"type": "string"},
+    "task_stratum": {"enum": ["maintenance", "bug", "feature", "security", "refactor"]},
+    "arm": {"enum": ["baseline", "adaptive_only", "symbol_only", "graph_only", "combined"]},
+    "outcome": {"enum": ["completed", "failed", "excluded"]},
+    "quality": {"type": "object", "additionalProperties": false, "required": ["outcome", "score", "evaluator_receipt_id"], "properties": {"outcome": {"enum": ["passed", "failed", "unavailable"]}, "score": {"$ref": "#/$defs/integer_metric"}, "evaluator_receipt_id": {"type": ["string", "null"]}}},
+    "provider": {"type": "object", "additionalProperties": false, "required": ["tokens", "billed_cost", "billing_status", "calculated_list_price"], "properties": {"tokens": {"type": "object", "additionalProperties": false, "required": ["input", "output", "cache_read", "cache_write"], "properties": {"input": {"$ref": "#/$defs/integer_metric"}, "output": {"$ref": "#/$defs/integer_metric"}, "cache_read": {"$ref": "#/$defs/integer_metric"}, "cache_write": {"$ref": "#/$defs/integer_metric"}}}, "billed_cost": {"$ref": "#/$defs/decimal_metric"}, "billing_status": {"enum": ["authoritative_receipt", "pending", "unavailable", "not_applicable"]}, "calculated_list_price": {"$ref": "#/$defs/decimal_metric"}}},
+    "local": {"type": "object", "additionalProperties": false, "required": ["elapsed_ms", "calculated_cost"], "properties": {"elapsed_ms": {"$ref": "#/$defs/integer_metric"}, "calculated_cost": {"$ref": "#/$defs/decimal_metric"}}},
+    "retrievals": {"type": "object", "additionalProperties": false, "required": ["count", "bytes"], "properties": {"count": {"$ref": "#/$defs/integer_metric"}, "bytes": {"$ref": "#/$defs/integer_metric"}}},
+    "corrections": {"type": "object", "additionalProperties": false, "required": ["count", "provider_tokens", "local_elapsed_ms"], "properties": {"count": {"$ref": "#/$defs/integer_metric"}, "provider_tokens": {"$ref": "#/$defs/integer_metric"}, "local_elapsed_ms": {"$ref": "#/$defs/integer_metric"}}},
+    "exclusion": {"type": "object", "additionalProperties": false, "required": ["excluded", "reason"], "properties": {"excluded": {"type": "boolean"}, "reason": {"type": ["string", "null"]}}},
+    "receipt": {"type": "object", "additionalProperties": false, "required": ["receipt_id", "request_id", "provider_receipt_sha256", "observation_sha256"], "properties": {"receipt_id": {"type": "string"}, "request_id": {"type": "string"}, "provider_receipt_sha256": {"type": ["string", "null"]}, "observation_sha256": {"type": "string"}}},
+    "private": {"type": "object", "additionalProperties": false, "required": ["private_project_locator", "provider_receipt_payload"], "properties": {"private_project_locator": {"type": "string"}, "provider_receipt_payload": {"type": ["object", "null"]}}}
+  }
+}

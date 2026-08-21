@@ -243,7 +243,7 @@ keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.5.1
+npm install --save-exact @ictechgy/context-guard@0.6.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -365,6 +365,8 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-artifact search "ERROR" --json
 ./plugins/context-guard/bin/context-guard-artifact receipt <artifact_id> --json
 ./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
+./plugins/context-guard/bin/context-guard task-memory put --task issue-123 --source src/app.py --json < stable-context.txt
+./plugins/context-guard/bin/context-guard task-memory get <opaque_handle> --task issue-123 --source src/app.py --max-bytes 65536
 ```
 
 Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, sanitized bounded `suggested_queries`, and an `output_sandbox` envelope with a stable `contextguard-artifact:<id>` handle. Use `context-guard-artifact receipt <artifact_id> --json` to rehydrate metadata-only handles without returning content, then fetch the smallest useful exact slice instead of replaying the full log. `search` scans the local sanitized artifact sandbox by literal substring, returns capped match/context records, and includes `context-guard-artifact get ... --lines START:END` rehydration commands for omitted detail. For custom `--dir` values, raw private paths stay redacted by default; rerun with the same `--dir`, or pass `search --show-paths` when you explicitly want a directly executable local command. The search report is local-only and does not make hosted token/cost savings claims. When `--max-lines` accompanies a `--lines START:END` selector, it caps lines returned within that range; it does not expand the selector. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
@@ -411,6 +413,13 @@ A few boundaries are intentional:
 - Add `--apply-adaptive-k` to `auto` for an explicit, default-off pruning pass. It applies the local recommendation only when its regression gates pass, always retains caller-declared file/output/test-output and diff sources, rebuilds inside the same byte budget, and records `adaptive_k_application`. It implies `--adaptive-k` and does not authorize a provider-token or cost-savings claim.
 - Add `--symbol-memory` to `auto` for repo-map-derived symbol/graph advisory metadata with exact `slice` / `read-symbol` verification hints. It is source-verification guidance only and does not change the manifest, pack body, receipt, or byte budget.
 - Add `--apply-symbol-memory` for an explicit, default-off Graphify-style step: after the ordinary suggestion pass, it adds at most four direct import-neighbor slices to the manifest and rebuilds within the same byte budget. Explicit/query seeds keep higher priority, secret-risk neighbors are excluded, the exact source/fallback receipt remains available, and the result records a closed `graph_application` block. This implies symbol-memory output but makes no provider-token or cost claim.
+- Add `--self-financing-selection` for the composed default-off path. It freezes the ordinary pack byte ceiling, applies Adaptive, then task-matching Symbol slices, then bounded one-hop Graph neighbors. Each candidate records its frozen identity, secret-risk decision, byte delta, exact fallback, and any lower-value non-caller source it replaces; candidates that cannot fit safely are recorded as no-ops. This is a local byte-ceiling policy, not a provider-token or cost-savings claim.
+- Use `auto --selection-plan --json` to produce a provider-free, read-only, content-addressed plan without writing a pack, manifest, or receipt. Save that JSON deliberately, then use the same task inputs with `--apply-selection-plan PATH --no-artifact` (or explicitly choose output/artifact options) to apply it. Apply recomputes the closed plan and revalidates source identities before emitting anything; drift, incomplete scans, secret-risk or scorer/private inputs, unsafe host/output boundaries, and missing exact recovery fail closed.
+
+```bash
+context-guard-pack auto --root . --query "fix checkout retry" --diff worktree --output logs/test.txt --json --selection-plan > selection-plan.json
+context-guard-pack auto --root . --query "fix checkout retry" --diff worktree --output logs/test.txt --json --apply-selection-plan selection-plan.json --no-artifact
+```
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
 - `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
 - `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.

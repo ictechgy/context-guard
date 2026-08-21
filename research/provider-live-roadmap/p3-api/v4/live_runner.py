@@ -32,7 +32,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 SCHEMA = "contextguard.p3-anthropic-api-live-contract/v4"
 EVIDENCE_SCHEMA = "contextguard.p3-anthropic-api-live-evidence/v4"
-EXPECTED_CONTRACT_SHA256 = "a80f54b5043376ff3847733a43254c4a6fe30614877aada1dd3216142000a181"
+EXPECTED_CONTRACT_SHA256 = "2b39f631e10f7f2f6fe3db9f543b209c24b6c7736b9826e5edc42cbfe8a9cbcf"
 EXPECTED_SCORER_SHA256 = "179e4cb2bbab5ce1290f1c0c190881c1dd38fd3a7f5a881b223f4b81f0872db8"
 EXPECTED_ARTIFACTS = {
     "approval_core_v1": {
@@ -46,6 +46,14 @@ EXPECTED_ARTIFACTS = {
     "approval_schema": {
         "path": "packages/context-guard-receipt/schemas/external-approval-v2.schema.json",
         "sha256": "d82bf2ea94d63bc6f1840b607167167891e767a13839d52c9debbbe046c62158",
+    },
+    "behavioral_quality_evaluator": {
+        "path": "research/provider-live-roadmap/p3-api/v4/behavioral_quality.py",
+        "sha256": "d548881424637a4ea764197395fefa271daf519e6533d6bf4a127282eba0efa8",
+    },
+    "behavioral_quality_schema": {
+        "path": "research/provider-live-roadmap/p3-api/v4/behavioral-quality.schema.json",
+        "sha256": "1c1b528b05a66ef40a22b0b6c615fc48cd95b365b3ffc882863e91820d457ef7",
     },
     "budget_policy": {
         "path": "research/provider-live-roadmap/p3-api/v4/budget_policy.py",
@@ -61,7 +69,7 @@ EXPECTED_ARTIFACTS = {
     },
     "canonical_packer": {
         "path": "context-guard-kit/context_pack.py",
-        "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e",
+        "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
     },
     "canonical_sanitizer": {
         "path": "context-guard-kit/sanitize_output.py",
@@ -105,7 +113,7 @@ EXPECTED_ARTIFACTS = {
     },
     "plugin_packer": {
         "path": "plugins/context-guard/bin/context-guard-pack",
-        "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e",
+        "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
     },
     "plugin_sanitizer": {
         "path": "plugins/context-guard/bin/context-guard-sanitize-output",
@@ -888,15 +896,15 @@ def _bound_selection_snapshot() -> dict[str, dict[str, object]]:
         for path, expected, label in declarations
     )
     with _SELECTION_SNAPSHOT_LOCK:
+        bound_raw = tuple(_read_bound(path, expected, label) for path, expected, label in declarations)
         if snapshot_key == _SELECTION_SNAPSHOT_KEY and _SELECTION_SNAPSHOT is not None:
             return _SELECTION_SNAPSHOT
 
-        _read_bound(*declarations[0])
         capture = parse_json(
-            _read_bound(*declarations[1]), "provider_input_capture"
+            bound_raw[1], "provider_input_capture"
         )
         report = parse_json(
-            _read_bound(*declarations[2]), "budget_policy_report"
+            bound_raw[2], "budget_policy_report"
         )
         decisions = report.get("decisions")
         if type(decisions) is not list:
@@ -1281,6 +1289,7 @@ def _bound_scorer_loader(
         ) -> dict[str, object]:
             passed = 0
             failed = 0
+            exact_historical_patch_units = 0
             for item in plan:
                 capsule = capsules.get(item["scheduled_unit_id"])
                 context = task_contexts.get(item["task_id"])
@@ -1298,9 +1307,7 @@ def _bound_scorer_loader(
                         raw, set(task["allowed_patch_paths"])
                     )
                     historical = evaluator.selected_patch(context["repo"], task)
-                    if raw != historical:
-                        failed += 1
-                        continue
+                    exact_historical_patch = raw == historical
                     with tempfile.TemporaryDirectory(prefix="contextguard-v4-score-") as directory:
                         workspace = Path(directory) / "workspace"
                         evaluator.export_snapshot(
@@ -1313,23 +1320,16 @@ def _bound_scorer_loader(
                         if not evaluator.assertions_pass(workspace, checker):
                             failed += 1
                             continue
-                        for path in task["allowed_patch_paths"]:
-                            expected = evaluator.git_blob(
-                                context["repo"], task["historical_commit"], path
-                            )
-                            actual_path = workspace.joinpath(*evaluator.safe_path(path).parts)
-                            actual = actual_path.read_bytes() if actual_path.is_file() else None
-                            if actual != expected:
-                                failed += 1
-                                break
+                        if changed:
+                            passed += 1
+                            if exact_historical_patch:
+                                exact_historical_patch_units += 1
                         else:
-                            if changed:
-                                passed += 1
-                            else:
-                                failed += 1
+                            failed += 1
                 except Exception:
                     failed += 1
             return {
+                "exact_historical_patch_units": exact_historical_patch_units,
                 "failed_units": failed,
                 "passed_units": passed,
                 "scorer_artifact_sha256": artifact["sha256"],
@@ -3147,7 +3147,7 @@ def validate_public_evidence(
     if evidence["status"] == "completed":
         scoring = evidence["scoring"]
         scoring_keys = {
-            "failed_units", "passed_units", "scorer_artifact_sha256",
+            "exact_historical_patch_units", "failed_units", "passed_units", "scorer_artifact_sha256",
             "status", "total_units",
         }
         if type(scoring) is not dict or set(scoring) != scoring_keys:
@@ -3159,10 +3159,11 @@ def validate_public_evidence(
                 isinstance(scoring[key], bool)
                 or not isinstance(scoring[key], int)
                 or scoring[key] < 0
-                for key in ("failed_units", "passed_units", "total_units")
+                for key in ("exact_historical_patch_units", "failed_units", "passed_units", "total_units")
             )
             or scoring["total_units"] != EXPECTED_LIMITS["scheduled_units"]
             or scoring["failed_units"] + scoring["passed_units"] != scoring["total_units"]
+            or scoring["exact_historical_patch_units"] > scoring["passed_units"]
         ):
             refuse("invalid_public_evidence")
     elif evidence["scoring"] != {

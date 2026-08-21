@@ -1,13 +1,13 @@
 {
   "algorithm": "sha256",
   "g5_source": {
-    "lock_sha256": "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89",
-    "preregistration_sha256": "e702e48b7ace9ece0c3295195070c2853505a16b7af037ab93459d175ece5c69",
+    "lock_sha256": "4da399f445b2ff1d033c712083bd605b7cb0e6f210c7c24abe36d5f1df501f96",
+    "preregistration_sha256": "6aed6f0818d5364d052eb98413be3cf57342f13374d1c421605b2bb4526654af",
     "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
     "schema_set_bytes": 41710,
-    "schema_set_sha256": "cd95559d7e1020e63cc98d64ae741ac58a358f60a80b55fb40baf8bf14164239",
-    "tree_root_sha256": "c2e3f47526f31b55cb6d806257d40baa3eb542e3c1b760598e90b422385b7dc8",
-    "verifier_sha256": "b0baa4b6bff36f51c80e897cee56947fe1226f51a03d24453d4152336e342246"
+    "schema_set_sha256": "7667de85f2fb71ef84b57f4edf7544a30d5a171043567b30e49fdab1b5f161b6",
+    "tree_root_sha256": "de89fe567ccdaead27ff9853066108defbbab910f2a1fb42a005a2df2a7238be",
+    "verifier_sha256": "0a6952142804247c443300d28dac6345175a61d19ceaa00273840459a46e6672"
   },
   "inventory": [
     {
@@ -26,19 +26,19 @@
       "bytes": 4936,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g6/v1/preparation-packet.json",
-      "sha256": "77e27ca049b4e397c26b5d60af2ad35e7a489c71602bbaf9d11f63a8ebfb11a8"
+      "sha256": "cb09f1b992ce5031a279d24963f926ac7fde18b14c721d986fb6ed2718026729"
     },
     {
       "bytes": 14174,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g6/v1/schemas/preparation-packet.schema.json",
-      "sha256": "82b112be4288ca2496a5097f0e7c5724596daf1cbb1d2160c1b5cf5dd9c4a024"
+      "sha256": "131677d2dec0179242a3c6b60c8c34538b0a05cd987ffa004c754758eac59616"
     },
     {
       "bytes": 16045,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g6/v1/verify.py",
-      "sha256": "3d1495e41ffc69312304770d3e84305e3a9ab315bbc1d04cd705d82328c03f3b"
+      "sha256": "96722831b4eda805a4fb5fde6edfda54d958387f9875a34e112491d1e86bc2d8"
     },
     {
       "bytes": 15895,
@@ -48,5 +48,5 @@
     }
   ],
   "schema_version": "contextguard.g6-freeze-lock/v1",
-  "tree_root_sha256": "3ada580da4c4ca672925d9fcd77af0b167d08f248eb81f45e193ad33a3a696ac"
+  "tree_root_sha256": "a59a00783dd3944181556b485279039a4110b3cd97c1961f96c6f3fde17fa645"
 }

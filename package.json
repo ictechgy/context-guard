@@ -1,6 +1,6 @@
 {
   "name": "@ictechgy/context-guard",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "ContextGuard CLI helpers for keeping AI coding agent context focused and local-first.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/ictechgy/context-guard#readme",
@@ -25,6 +25,7 @@
     "context-guard-sanitize-output": "plugins/context-guard/bin/context-guard-sanitize-output",
     "context-guard-filter": "plugins/context-guard/bin/context-guard-filter",
     "context-guard-artifact": "plugins/context-guard/bin/context-guard-artifact",
+    "context-guard-task-memory": "plugins/context-guard/bin/context-guard-task-memory",
     "context-guard-pack": "plugins/context-guard/bin/context-guard-pack",
     "context-guard-tool-prune": "plugins/context-guard/bin/context-guard-tool-prune",
     "context-guard-compress": "plugins/context-guard/bin/context-guard-compress",

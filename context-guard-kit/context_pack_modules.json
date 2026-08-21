@@ -1,0 +1,12 @@
+{
+  "modules": [
+    {"canonical_path":"context-guard-kit/context_pack.py","plugin_path":"plugins/context-guard/bin/context-guard-pack","role":"entrypoint","semantic_output":"ordinary-pack-v1"},
+    {"canonical_path":"context-guard-kit/context_pack_git_boundary.py","plugin_path":"plugins/context-guard/lib/context_pack_git_boundary.py","role":"git-boundary","semantic_output":"git-boundary-v1"},
+    {"canonical_path":"context-guard-kit/context_pack_receipts.py","plugin_path":"plugins/context-guard/lib/context_pack_receipts.py","role":"receipts","semantic_output":"receipt-canonical-json-v1"},
+    {"canonical_path":"context-guard-kit/context_pack_rendering.py","plugin_path":"plugins/context-guard/lib/context_pack_rendering.py","role":"rendering","semantic_output":"ordinary-rendering-v1"},
+    {"canonical_path":"context-guard-kit/context_pack_scanning.py","plugin_path":"plugins/context-guard/lib/context_pack_scanning.py","role":"scanning","semantic_output":"bounded-source-scan-v1"},
+    {"canonical_path":"context-guard-kit/context_pack_selection.py","plugin_path":"plugins/context-guard/lib/context_pack_selection.py","role":"selection","semantic_output":"stable-selection-v1"}
+  ],
+  "schema_version": "contextguard.context-pack-modules/v1",
+  "semantic_oracle_sha256": "de89bbc42e2508bc7dee00c62d78977f57d326efec61ee8fa6ecdf497a5144bb"
+}

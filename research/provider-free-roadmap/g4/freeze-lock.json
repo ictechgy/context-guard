@@ -1,12 +1,12 @@
 {
   "algorithm": "sha256",
   "g3_source": {
-    "lock_sha256": "6db85291e05de462e7fa234e38f5139737677a19c70fc1da26d35cbcf8bb6ba1",
-    "manifest_sha256": "e970a970bf5c0af1313e26a8218fcddd4eb8ce516d4b388dadc30c706eda52a8",
+    "lock_sha256": "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52",
+    "manifest_sha256": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889",
     "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
     "schema_set_bytes": 25254,
     "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
-    "tree_root_sha256": "c32a94f183c5c5f840e93fa19be75d153c62b6c5a6851b1a48fed45ec672161a"
+    "tree_root_sha256": "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b"
   },
   "inventory": [
     {
@@ -19,13 +19,13 @@
       "bytes": 664,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g4/v1/claim-policy.json",
-      "sha256": "e90cc27b7f64016ea2749e06417f83dccb74eb23ec851efb04886a69a87d594e"
+      "sha256": "522413abffa1a99ff74160d7f6055bffabf2a02eaded3bf3adc077d7ea19dee2"
     },
     {
       "bytes": 1155,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g4/v1/schemas/claim-policy.schema.json",
-      "sha256": "132a1576e3d10d0ef3673758abbd845a012b21449c47925b0e602028177d9458"
+      "sha256": "f51b1969688e651f56abcaef8cdb86a4e4e538da74688c8359bff099044f5999"
     },
     {
       "bytes": 3686,
@@ -43,7 +43,7 @@
       "bytes": 22950,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g4/v1/verify.py",
-      "sha256": "827a92307d7b08999eb3e2dc5fe4c037a73658d472163e0b75e5ac8c10156f75"
+      "sha256": "60296da05f0418287a7a74fe9d98e0c8e38befaf5dad59b9d11ff4ce07a2884b"
     },
     {
       "bytes": 15713,
@@ -53,5 +53,5 @@
     }
   ],
   "schema_version": "contextguard.g4-freeze-lock/v1",
-  "tree_root_sha256": "bc375532a5ee0d5878609ce27d98b2c8454754ec2d4dc3747ce4ac95d2629553"
+  "tree_root_sha256": "568b7630561ab6fe48b3cf702c0f9562a92aa24fca03064419d8812818545458"
 }

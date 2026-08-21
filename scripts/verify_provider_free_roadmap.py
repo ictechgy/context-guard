@@ -29,28 +29,28 @@ PINNED_OUTPUT_ROOTS = (
     "tests/provider-free-roadmap",
 )
 PINNED_G2_LOCK_PATH = "research/provider-free-roadmap/g2/freeze-lock.json"
-PINNED_G2_LOCK_SHA256 = "9044c0b0d4729457b0b9dea6534a9131156b3df54f032633244172454f4bea70"
-PINNED_G2_TREE_ROOT_SHA256 = "87f4e1306c27ab22227cf7e5056851c30ca2955e6eb736a2e2c7051d15e9922e"
-PINNED_G2_VERIFIER_SHA256 = "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
+PINNED_G2_LOCK_SHA256 = "dfe0bf76f9dad2441d6d7e41ecec19cf936b9c6f47ef33c8e53e7da56a4cd552"
+PINNED_G2_TREE_ROOT_SHA256 = "27568e5c8488c6dd5c99665d770d11115f8048e0787675a6574daf7328a13811"
+PINNED_G2_VERIFIER_SHA256 = "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
 PINNED_G3_LOCK_PATH = "research/provider-free-roadmap/g3/freeze-lock.json"
-PINNED_G3_LOCK_SHA256 = "6db85291e05de462e7fa234e38f5139737677a19c70fc1da26d35cbcf8bb6ba1"
-PINNED_G3_TREE_ROOT_SHA256 = "c32a94f183c5c5f840e93fa19be75d153c62b6c5a6851b1a48fed45ec672161a"
+PINNED_G3_LOCK_SHA256 = "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52"
+PINNED_G3_TREE_ROOT_SHA256 = "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b"
 PINNED_G4_LOCK_PATH = "research/provider-free-roadmap/g4/freeze-lock.json"
-PINNED_G4_LOCK_SHA256 = "7ab02731ef1f012826e349c06207e4d59442bfb10f2b3c8984d45712862ddeb6"
-PINNED_G4_TREE_ROOT_SHA256 = "bc375532a5ee0d5878609ce27d98b2c8454754ec2d4dc3747ce4ac95d2629553"
+PINNED_G4_LOCK_SHA256 = "4680432dc093982db2627d207e782f523bf3896e9562d14e220b798f473b7e51"
+PINNED_G4_TREE_ROOT_SHA256 = "568b7630561ab6fe48b3cf702c0f9562a92aa24fca03064419d8812818545458"
 PINNED_G5_LOCK_PATH = "research/provider-free-roadmap/g5/freeze-lock.json"
-PINNED_G5_LOCK_SHA256 = "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89"
-PINNED_G5_TREE_ROOT_SHA256 = "c2e3f47526f31b55cb6d806257d40baa3eb542e3c1b760598e90b422385b7dc8"
+PINNED_G5_LOCK_SHA256 = "4da399f445b2ff1d033c712083bd605b7cb0e6f210c7c24abe36d5f1df501f96"
+PINNED_G5_TREE_ROOT_SHA256 = "de89fe567ccdaead27ff9853066108defbbab910f2a1fb42a005a2df2a7238be"
 PINNED_G6_LOCK_PATH = "research/provider-free-roadmap/g6/freeze-lock.json"
-PINNED_G6_LOCK_SHA256 = "4842f2a9c775b48dd9dea478a015955169862469b0864f5e36f7dbe6c2775830"
-PINNED_G6_TREE_ROOT_SHA256 = "3ada580da4c4ca672925d9fcd77af0b167d08f248eb81f45e193ad33a3a696ac"
+PINNED_G6_LOCK_SHA256 = "d623371ca4944847b528c270359b8c48970666c9b6215416bb1f630bb79d8578"
+PINNED_G6_TREE_ROOT_SHA256 = "a59a00783dd3944181556b485279039a4110b3cd97c1961f96c6f3fde17fa645"
 PINNED_EXECUTION_PROFILES = {
     "boundary-tests": {
         "module": "tests.test_provider_free_roadmap_boundary",
         "test_artifact": {
             "bytes": 55701,
             "path": "tests/test_provider_free_roadmap_boundary.py",
-            "sha256": "8cc254343b6d243de54d0419e8592f77a133b5ae3e5553bef1ed32b13b5a58ef",
+            "sha256": "a5d860ff793d88e088894eab5c381fa0743928b610e02b68788bcee41815d871",
         },
     },
     "g2-contract-tests": {
@@ -63,7 +63,7 @@ PINNED_EXECUTION_PROFILES = {
         "verifier_artifact": {
             "bytes": 81832,
             "path": "research/provider-free-roadmap/g2/v1/verify.py",
-            "sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc",
+            "sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f",
         },
     },
     "g3-rehearsal-tests": {
@@ -81,7 +81,7 @@ PINNED_EXECUTION_PROFILES = {
         "test_artifact": {
             "bytes": 42280,
             "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-            "sha256": "5561c4e1ce1c7431d90099abcf3e7984513d6cb177ef0ff1526ccee6fcd98932",
+            "sha256": "c78f2510c23f343a4355ec43f5f7924a6a5ac0e98aa174c7e199f3e937ac4496",
         },
     },
     "g4-claim-gates": {
@@ -1048,7 +1048,7 @@ def verify_independently_pinned_g4_lock(root: Path, profile: dict) -> tuple[byte
         or lock.get("tree_root_sha256") != PINNED_G4_TREE_ROOT_SHA256
         or lock.get("g3_source") != {
             "lock_sha256": PINNED_G3_LOCK_SHA256,
-            "manifest_sha256": "e970a970bf5c0af1313e26a8218fcddd4eb8ce516d4b388dadc30c706eda52a8",
+            "manifest_sha256": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889",
             "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
             "schema_set_bytes": 25254,
             "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
@@ -1201,12 +1201,12 @@ def verify_independently_pinned_g5_lock(root: Path, profile: dict) -> tuple[byte
         or lock.get("schema_version") != "contextguard.g5-freeze-lock/v1"
         or lock.get("tree_root_sha256") != PINNED_G5_TREE_ROOT_SHA256
         or lock.get("g4_source") != {
-            "claim_policy_sha256": "e90cc27b7f64016ea2749e06417f83dccb74eb23ec851efb04886a69a87d594e",
+            "claim_policy_sha256": "522413abffa1a99ff74160d7f6055bffabf2a02eaded3bf3adc077d7ea19dee2",
             "lock_sha256": PINNED_G4_LOCK_SHA256,
             "schema_set_bytes": 6533,
-            "schema_set_sha256": "e59aa4a13a228fb6ebd8a54fa55ac77c26b044d4ccbc5ddd53511d0355a4db83",
+            "schema_set_sha256": "c522aaca41495afaeb1430b830b6f038f96d25c47e783d004eb059f391124b3d",
             "tree_root_sha256": PINNED_G4_TREE_ROOT_SHA256,
-            "verifier_sha256": "827a92307d7b08999eb3e2dc5fe4c037a73658d472163e0b75e5ac8c10156f75",
+            "verifier_sha256": "60296da05f0418287a7a74fe9d98e0c8e38befaf5dad59b9d11ff4ce07a2884b",
         }
     ):
         fail("invalid independently pinned g5 freeze lock")
@@ -1358,12 +1358,12 @@ def verify_independently_pinned_g6_lock(root: Path, profile: dict) -> tuple[byte
         or lock.get("tree_root_sha256") != PINNED_G6_TREE_ROOT_SHA256
         or lock.get("g5_source") != {
             "lock_sha256": PINNED_G5_LOCK_SHA256,
-            "preregistration_sha256": "e702e48b7ace9ece0c3295195070c2853505a16b7af037ab93459d175ece5c69",
+            "preregistration_sha256": "6aed6f0818d5364d052eb98413be3cf57342f13374d1c421605b2bb4526654af",
             "schedule_sha256": "326fc47df7871e39b2f9af2d888b8385ab91fe4347c6467f08dd4a6e386e7965",
             "schema_set_bytes": 41710,
-            "schema_set_sha256": "cd95559d7e1020e63cc98d64ae741ac58a358f60a80b55fb40baf8bf14164239",
+            "schema_set_sha256": "7667de85f2fb71ef84b57f4edf7544a30d5a171043567b30e49fdab1b5f161b6",
             "tree_root_sha256": PINNED_G5_TREE_ROOT_SHA256,
-            "verifier_sha256": "b0baa4b6bff36f51c80e897cee56947fe1226f51a03d24453d4152336e342246",
+            "verifier_sha256": "0a6952142804247c443300d28dac6345175a61d19ceaa00273840459a46e6672",
         }
     ):
         fail("invalid independently pinned g6 freeze lock")

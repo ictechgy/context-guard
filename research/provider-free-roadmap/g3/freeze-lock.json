@@ -1,9 +1,9 @@
 {
   "algorithm": "sha256",
   "g2_source": {
-    "lock_sha256": "9044c0b0d4729457b0b9dea6534a9131156b3df54f032633244172454f4bea70",
-    "tree_root_sha256": "87f4e1306c27ab22227cf7e5056851c30ca2955e6eb736a2e2c7051d15e9922e",
-    "verifier_sha256": "ef2dd0d2668c9950ceaa0f9947aa6d4389fbeb1c8ccf6f8117a31d21f509c2fc"
+    "lock_sha256": "dfe0bf76f9dad2441d6d7e41ecec19cf936b9c6f47ef33c8e53e7da56a4cd552",
+    "tree_root_sha256": "27568e5c8488c6dd5c99665d770d11115f8048e0787675a6574daf7328a13811",
+    "verifier_sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
   },
   "inventory": [
     {
@@ -22,7 +22,7 @@
       "bytes": 9852,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g3/v1/manifest.json",
-      "sha256": "e970a970bf5c0af1313e26a8218fcddd4eb8ce516d4b388dadc30c706eda52a8"
+      "sha256": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889"
     },
     {
       "bytes": 73745,
@@ -82,9 +82,9 @@
       "bytes": 42280,
       "mode": "0644",
       "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-      "sha256": "5561c4e1ce1c7431d90099abcf3e7984513d6cb177ef0ff1526ccee6fcd98932"
+      "sha256": "c78f2510c23f343a4355ec43f5f7924a6a5ac0e98aa174c7e199f3e937ac4496"
     }
   ],
   "schema_version": "contextguard.g3-freeze-lock/v1",
-  "tree_root_sha256": "c32a94f183c5c5f840e93fa19be75d153c62b6c5a6851b1a48fed45ec672161a"
+  "tree_root_sha256": "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b"
 }

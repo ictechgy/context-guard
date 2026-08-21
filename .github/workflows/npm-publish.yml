@@ -82,6 +82,15 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
+      - name: Preflight npm trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?npm OIDC is unavailable; grant id-token: write}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?npm OIDC request credential is unavailable}"
+          npm ping --registry=https://registry.npmjs.org
+          echo "Trusted publisher must match ictechgy/context-guard, npm-publish.yml, environment npm-receipt-next" >&2
+
       - name: Download immutable Receipt candidate asset
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
@@ -365,6 +374,15 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
+
+      - name: Preflight npm trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?npm OIDC is unavailable; grant id-token: write}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?npm OIDC request credential is unavailable}"
+          npm ping --registry=https://registry.npmjs.org
+          echo "Trusted publisher must match ictechgy/context-guard, npm-publish.yml, environment npm-root-next" >&2
 
       - name: Download immutable root candidate asset
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5

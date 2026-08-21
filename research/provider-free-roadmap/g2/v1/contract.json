@@ -59,11 +59,11 @@
   "packer_bindings": {
     "canonical": {
       "path": "context-guard-kit/context_pack.py",
-      "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
+      "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"
     },
     "plugin": {
       "path": "plugins/context-guard/bin/context-guard-pack",
-      "sha256": "86f69c93d80ba6907e2131659f0e73dac0c24f45e09f304ea288c1558e08e08e"
+      "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"
     },
     "require_byte_equality": true
   },

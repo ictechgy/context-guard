@@ -52,6 +52,8 @@ ADAPTIVE_K_SCHEMA_VERSION = "contextguard.pack-adaptive-k.v1"
 ADAPTIVE_K_APPLICATION_SCHEMA_VERSION = "contextguard.pack-adaptive-k-application.v1"
 SYMBOL_MEMORY_SCHEMA_VERSION = "contextguard.pack-symbol-memory.v1"
 GRAPH_APPLICATION_SCHEMA_VERSION = "contextguard.pack-graph-application.v1"
+SELF_FINANCING_SELECTION_SCHEMA_VERSION = "contextguard.pack-self-financing-selection.v1"
+SELECTION_PLAN_SCHEMA_VERSION = "contextguard.pack-selection-plan.v1"
 CONTENT_ADDRESS_SCHEMA_VERSION = "contextguard.pack-content-address.v1"
 ROLLING_DELTA_SCHEMA_VERSION = "contextguard.pack-rolling-delta.v1"
 SKETCH_DUPLICATE_SHINGLE_WIDTH = 5
@@ -4720,6 +4722,270 @@ def line_identity_from_dict(value: object) -> str:
     return f"{value.get('start')}:{value.get('end')}"
 
 
+def frozen_source_content_sha256(
+    path: str,
+    lines: object,
+    source_cache: _SourceSnapshotCache,
+) -> str | None:
+    rel, _reason = lexical_rel(path)
+    if rel is None:
+        return None
+    snapshot = source_cache.entries.get(
+        (rel.as_posix(), line_identity_from_dict(lines), "source_code")
+    )
+    if snapshot is None:
+        return None
+    return sha256_text("".join(snapshot.selected_lines))
+
+
+def frozen_source_identity(
+    path: str,
+    lines: object,
+    identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    source_cache: _SourceSnapshotCache,
+) -> str:
+    identity = identities.get(path)
+    content_sha256 = frozen_source_content_sha256(path, lines, source_cache)
+    material = json.dumps(
+        {
+            "content_sha256": content_sha256,
+            "lines": line_identity_from_dict(lines),
+            "path": path,
+            "stat": identity,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"sha256:{sha256_text(material)}"
+
+
+def exact_source_fallback(
+    root_arg: str,
+    path: str,
+    lines: object,
+    *,
+    expected_content_sha256: str | None,
+    unavailable_reason: str | None = None,
+) -> dict[str, Any]:
+    if unavailable_reason is not None:
+        return {"kind": "unavailable", "reason": unavailable_reason}
+    rel, _reason = lexical_rel(path)
+    safe_root = safe_root_arg_for_retrieval(root_arg)
+    if (
+        rel is None
+        or safe_root is None
+        or repo_map_path_has_sensitive_evidence(path)
+        or not isinstance(lines, dict)
+        or not isinstance(lines.get("start"), int)
+        or isinstance(lines.get("start"), bool)
+        or not isinstance(lines.get("end"), int)
+        or isinstance(lines.get("end"), bool)
+        or lines["start"] < 1
+        or lines["end"] < lines["start"]
+        or expected_content_sha256 is None
+    ):
+        return {"kind": "unavailable", "reason": "exact_snapshot_unavailable"}
+    line_identity = line_identity_from_dict(lines)
+    args = [
+        "context-guard-pack", "slice", "--root", safe_root,
+        "--path", rel.as_posix(), "--lines", line_identity, "--json",
+    ]
+    return {
+        "kind": "exact_source_slice",
+        "command": " ".join(shlex.quote(part) for part in args),
+        "expected_content_sha256": expected_content_sha256,
+        "path": rel.as_posix(),
+        "lines": copy.deepcopy(lines),
+    }
+
+
+def self_financing_candidate_receipt(
+    *, phase: str, source: dict[str, Any], reason: str, status: str,
+    secret_decision: str, identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    root_arg: str, source_cache: _SourceSnapshotCache, byte_delta: int = 0,
+    removed_sources: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    path = str(source.get("path", ""))
+    content_sha256 = frozen_source_content_sha256(
+        path, source.get("lines"), source_cache
+    )
+    return {
+        "phase": phase,
+        "status": status,
+        "path": path,
+        "lines": copy.deepcopy(source.get("lines")),
+        "reason": reason,
+        "hop_count": 1 if phase == "graph" else 0,
+        "frozen_identity": frozen_source_identity(
+            path, source.get("lines"), identities, source_cache
+        ),
+        "byte_delta": byte_delta,
+        "secret_risk": {"decision": secret_decision, "signal": "bounded_local_pattern_scan"},
+        "exact_fallback": exact_source_fallback(
+            root_arg,
+            path,
+            source.get("lines"),
+            expected_content_sha256=content_sha256,
+            unavailable_reason="secret_risk" if secret_decision == "reject" else None,
+        ),
+        "removed_sources": copy.deepcopy(removed_sources or []),
+    }
+
+
+def selection_plan_source(
+    item: dict[str, Any], identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    source_cache: _SourceSnapshotCache, root_arg: str,
+) -> dict[str, Any]:
+    path = str(item.get("path", ""))
+    lines = copy.deepcopy(item.get("requested_lines", item.get("lines")))
+    content_sha256 = frozen_source_content_sha256(path, lines, source_cache)
+    fallback = exact_source_fallback(
+        root_arg, path, lines, expected_content_sha256=content_sha256
+    )
+    if fallback.get("kind") != "exact_source_slice":
+        raise PackError("selection plan missing exact recovery")
+    return {
+        "path": path,
+        "lines": lines,
+        "identity": frozen_source_identity(path, lines, identities, source_cache),
+        "content_sha256": content_sha256,
+        "exact_fallback": fallback,
+    }
+
+
+def build_selection_plan(
+    args: argparse.Namespace, ordinary_build: dict[str, Any], selected_build: dict[str, Any],
+    receipt: dict[str, Any], repo_map: dict[str, Any], suggest_payload: dict[str, Any],
+    identities: dict[str, tuple[int, int, int, int, int, int, int, int]],
+    source_cache: _SourceSnapshotCache, *, root_arg: str,
+) -> dict[str, Any]:
+    if getattr(args, "selection_plan", False) and (args.manifest_out or args.pack_out):
+        raise PackError("selection planning is read-only; output paths are unsupported")
+    if not args.json:
+        raise PackError("selection planning requires --json")
+    if getattr(args, "selection_plan", False) and getattr(args, "apply_selection_plan", None):
+        raise PackError("selection plan and apply are mutually exclusive")
+    if args.delta_from_pack_id:
+        raise PackError("selection plan does not cross private receipt boundaries")
+    explicit_paths = split_suggest_files(args.files) + list(args.output or []) + list(args.test_output or [])
+    if any(repo_map_path_has_sensitive_evidence(path) or re.search(r"(?i)(?:^|[-_/.])(scorer|private)(?:[-_/.]|$)", path) for path in explicit_paths):
+        raise PackError("selection plan refuses scorer/private data")
+    if any(
+        isinstance(item, dict) and str(item.get("path", "")).startswith("redacted-path#")
+        for item in repo_map.get("token_tree", [])
+    ):
+        raise PackError("selection plan refuses scorer/private data")
+    caps = repo_map.get("caps", {}) if isinstance(repo_map.get("caps"), dict) else {}
+    summary = repo_map.get("summary", {}) if isinstance(repo_map.get("summary"), dict) else {}
+    graph = repo_map.get("graph", {}) if isinstance(repo_map.get("graph"), dict) else {}
+    if SECRET_CONTENT_RE.search(str(args.query)):
+        raise PackError("selection plan refuses secret-risk input")
+    if (
+        any(bool(caps.get(key)) for key in ("files_capped", "candidate_files_capped", "scan_files_capped"))
+        or int(summary.get("bytes_per_file_capped_count", 0) or 0) != 0
+        or bool(repo_map.get("omitted_files"))
+        or int(graph.get("edges_omitted_by_cap", 0) or 0) != 0
+        or bool(ordinary_build.get("input", {}).get("capped"))
+        or bool(selected_build.get("input", {}).get("capped"))
+        or any(
+            isinstance(item, dict) and item.get("reason") == "query_scan_truncated"
+            for item in suggest_payload.get("omitted_sources", [])
+        )
+    ):
+        raise PackError("selection plan requires a complete scan")
+    secret_scan = repo_map.get("secret_scan", {}) if isinstance(repo_map.get("secret_scan"), dict) else {}
+    if (
+        int(ordinary_build.get("redaction", {}).get("redacted_lines", 0) or 0) != 0
+        or int(selected_build.get("redaction", {}).get("redacted_lines", 0) or 0) != 0
+        or bool(secret_scan.get("files_with_risks"))
+        or int(secret_scan.get("files_omitted_by_cap", 0) or 0) != 0
+    ):
+        raise PackError("selection plan refuses secret-risk input")
+
+    ordinary = [
+        selection_plan_source(item, identities, source_cache, root_arg)
+        for item in ordinary_build.get("included_sources", []) if isinstance(item, dict)
+    ]
+    decisions = [copy.deepcopy(item) for item in receipt.get("decisions", []) if isinstance(item, dict)]
+    for decision in decisions:
+        fallback = decision.get("exact_fallback", {})
+        if fallback.get("kind") != "exact_source_slice":
+            raise PackError("selection plan missing exact recovery")
+        recovered_removed = []
+        for removed in decision.get("removed_sources", []):
+            if not isinstance(removed, dict):
+                raise PackError("selection plan missing exact recovery")
+            recovered = copy.deepcopy(removed)
+            if recovered.get("exact_fallback", {}).get("kind") != "exact_source_slice":
+                source = selection_plan_source(recovered, identities, source_cache, root_arg)
+                recovered["frozen_identity"] = source["identity"]
+                recovered["exact_fallback"] = exact_source_fallback(
+                    root_arg, source["path"], source["lines"],
+                    expected_content_sha256=source["content_sha256"],
+                )
+            recovered_removed.append(recovered)
+        decision["removed_sources"] = recovered_removed
+    selected = [item for item in decisions if item.get("status") == "selected"]
+    omitted = [item for item in decisions if item.get("status") != "selected"]
+    replacement = [
+        {"candidate_identity": item["frozen_identity"], "removed": copy.deepcopy(item.get("removed_sources", []))}
+        for item in selected if item.get("removed_sources")
+    ]
+    fallback = [
+        {"identity": item["identity"], "exact_fallback": copy.deepcopy(item["exact_fallback"])}
+        for item in ordinary
+    ] + [
+        {"identity": item["frozen_identity"], "exact_fallback": copy.deepcopy(item["exact_fallback"])}
+        for item in decisions
+    ]
+    material: dict[str, Any] = {
+        "schema_version": SELECTION_PLAN_SCHEMA_VERSION,
+        "ordinary": ordinary,
+        "candidate": decisions,
+        "selected": selected,
+        "omitted": omitted,
+        "replacement": replacement,
+        "ceiling": {
+            "unit": "rendered_bytes",
+            "ordinary": int(receipt.get("ordinary_pack_bytes", 0) or 0),
+            "selected": int(receipt.get("selected_rendered_bytes", 0) or 0),
+        },
+        "fallback": fallback,
+        "provenance": {
+            "query_sha256": sha256_text(str(args.query)),
+            "diff": cap_label(args.diff) if args.diff else None,
+            "ordinary_pack_id": ordinary_build.get("pack_id"),
+            "selected_pack_id": selected_build.get("pack_id"),
+            "source_identities": sorted(item["identity"] for item in ordinary),
+        },
+        "safety": {
+            "read_only": True, "provider_free": True, "complete_scan": True,
+            "source_revalidation_required_on_apply": True,
+        },
+        "claim_boundary": {"provider_token_or_cost_savings_claim_allowed": False},
+    }
+    plan_id = "sha256:" + sha256_text(json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    return {"schema_version": material.pop("schema_version"), "plan_id": plan_id, **material}
+
+
+def read_selection_plan(root: Path, raw_path: str) -> dict[str, Any]:
+    rel = output_rel_for_collision_check(raw_path, "--apply-selection-plan")
+    try:
+        value = json.loads(
+            read_manifest_bytes_no_follow(root / rel).decode("utf-8"),
+            object_pairs_hook=strict_json_object,
+            parse_constant=reject_json_constant,
+            parse_int=parse_receipt_int,
+        )
+        json_depth(value)
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise PackError("invalid selection plan JSON") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != SELECTION_PLAN_SCHEMA_VERSION:
+        raise PackError("unsupported selection plan schema")
+    return value
+
+
 def apply_symbol_memory_graph(
     manifest: dict[str, Any],
     repo_map: dict[str, Any],
@@ -5095,6 +5361,9 @@ def build_auto_explain_payload(
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    plan_only = bool(getattr(args, "selection_plan", False))
+    apply_plan_path = getattr(args, "apply_selection_plan", None)
+    expected_plan = read_selection_plan(root, apply_plan_path) if apply_plan_path else None
     source_cache = _SourceSnapshotCache()
     input_budget = _SourceInputBudget()
     manifest_rel = output_rel_for_collision_check(args.manifest_out, "--manifest-out") if args.manifest_out else None
@@ -5113,7 +5382,8 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         validate_output_path_under_root(root, args.pack_out, "--pack-out")
     suggest_args = copy.copy(args)
     suggest_args.manifest_out = None
-    apply_adaptive_k = bool(getattr(args, "apply_adaptive_k", False))
+    self_financing = bool(getattr(args, "self_financing_selection", False) or plan_only or apply_plan_path)
+    apply_adaptive_k = bool(getattr(args, "apply_adaptive_k", False) or self_financing)
     if apply_adaptive_k:
         suggest_args.adaptive_k = True
     suggest_payload, rc = suggest_pack(
@@ -5124,6 +5394,18 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         _input_budget=input_budget,
     )
     manifest = suggest_payload["manifest"]
+    ordinary_build_payload: dict[str, Any] | None = None
+    if self_financing:
+        ordinary_build_payload = build_pack(
+            root,
+            manifest_to_source_specs(manifest),
+            budget_bytes=bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES),
+            root_arg=root_arg,
+            store_artifact=False,
+            sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
+            _source_cache=source_cache,
+            _input_budget=input_budget,
+        )
     adaptive_k_application: dict[str, Any] | None = None
     if apply_adaptive_k and isinstance(suggest_payload.get("adaptive_k"), dict):
         manifest, adaptive_k_application = apply_adaptive_k_manifest(
@@ -5166,7 +5448,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         )
     repo_map_payload: dict[str, Any] | None = None
     graph_application: dict[str, Any] | None = None
-    apply_symbol_memory = bool(getattr(args, "apply_symbol_memory", False))
+    apply_symbol_memory = bool(getattr(args, "apply_symbol_memory", False) or self_financing)
     complete_secret_paths: set[str] | None = set() if apply_symbol_memory else None
     repo_map_source_identities: dict[
         str,
@@ -5184,7 +5466,295 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
                 repo_map_source_identities if apply_symbol_memory else None
             ),
         )
-    if apply_symbol_memory and isinstance(repo_map_payload, dict):
+    self_financing_receipt: dict[str, Any] | None = None
+    if self_financing and isinstance(repo_map_payload, dict) and ordinary_build_payload is not None:
+        ordinary_ceiling = int(ordinary_build_payload.get("pack_bytes", 0) or 0)
+        decisions: list[dict[str, Any]] = []
+        recorded_secret_decisions: set[tuple[str, str]] = set()
+        ordinary_sources = ordinary_build_payload.get("included_sources", [])
+        retained_keys = {
+            (str(item.get("path", "")), line_range_identity(item.get("lines")))
+            for item in manifest.get("sources", []) if isinstance(item, dict)
+        }
+        for item in ordinary_sources if isinstance(ordinary_sources, list) else []:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("path", "")), line_range_identity(item.get("requested_lines")))
+            if key not in retained_keys:
+                source = {"path": key[0], "lines": copy.deepcopy(item.get("requested_lines"))}
+                decisions.append(self_financing_candidate_receipt(
+                    phase="adaptive", source=source, reason="adaptive_headroom_removal",
+                    status="selected", secret_decision="allow", identities=repo_map_source_identities,
+                    root_arg=root_arg, source_cache=source_cache,
+                    byte_delta=-int(item.get("bytes", 0) or 0),
+                    removed_sources=[source],
+                ))
+
+        existing_paths = {str(item.get("path", "")) for item in manifest.get("sources", []) if isinstance(item, dict)}
+        query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
+        candidates: list[tuple[str, dict[str, Any], str]] = []
+        for signature in repo_map_payload.get("signature_index", []):
+            if not isinstance(signature, dict):
+                continue
+            path = str(signature.get("path", ""))
+            searchable = suggest_tokens(f"{signature.get('name', '')} {signature.get('signature', '')}")
+            if not query_terms.intersection(searchable):
+                continue
+            source = {
+                "path": path, "priority": 2, "label": f"symbol:{path}"[:MAX_LABEL_CHARS],
+                "lines": copy.deepcopy(signature.get("lines")),
+            }
+            if path in (complete_secret_paths or set()):
+                decisions.append(self_financing_candidate_receipt(
+                    phase="symbol", source=source, reason="secret_risk", status="no_op",
+                    secret_decision="reject", identities=repo_map_source_identities,
+                    root_arg=root_arg, source_cache=source_cache,
+                ))
+                recorded_secret_decisions.add(("symbol", path))
+                continue
+            if path in existing_paths:
+                existing_source = next(
+                    (
+                        item for item in build_payload.get("included_sources", [])
+                        if isinstance(item, dict)
+                        and item.get("path") == path
+                        and item.get("status") == "included"
+                        and item.get("requested_lines") == item.get("included_lines")
+                    ),
+                    None,
+                )
+                if existing_source is not None:
+                    source["lines"] = copy.deepcopy(existing_source["requested_lines"])
+                decisions.append(self_financing_candidate_receipt(
+                    phase="symbol", source=source, reason="duplicate_source", status="no_op",
+                    secret_decision="allow", identities=repo_map_source_identities,
+                    root_arg=root_arg, source_cache=source_cache,
+                ))
+                continue
+            candidates.append(("symbol", source, "task_matching_symbol"))
+            if len([item for item in candidates if item[0] == "symbol"]) >= MAX_GRAPH_APPLICATION_SOURCES:
+                break
+        graph_manifest, graph_preview = apply_symbol_memory_graph(
+            manifest, repo_map_payload, complete_secret_paths=complete_secret_paths,
+        )
+        graph_sources = graph_manifest.get("sources", [])
+        for source in graph_sources[len(manifest.get("sources", [])):]:
+            if isinstance(source, dict):
+                candidates.append(("graph", source, "direct_import_neighbor"))
+
+        frozen_candidate_sources = {
+            (str(source.get("path", "")), line_range_identity(source.get("lines")))
+            for _phase, source, _reason in candidates
+        }
+        candidate_specs = manifest_to_source_specs(build_suggest_manifest(
+            [source for _phase, source, _reason in candidates]
+        ))
+        candidate_snapshot_rejections = bind_graph_sources_to_repo_snapshot(
+            root, candidate_specs, frozen_candidate_sources, repo_map_source_identities,
+            source_cache=source_cache, input_budget=input_budget,
+        )
+
+        # Record secret-risk direct neighbors as explicit no-ops without exposing their contents.
+        graph = repo_map_payload.get("graph", {})
+        for edge in graph.get("edges", []) if isinstance(graph, dict) else []:
+            if not isinstance(edge, dict):
+                continue
+            for path in (edge.get("from"), edge.get("to")):
+                if isinstance(path, str) and path in (complete_secret_paths or set()) and path not in existing_paths:
+                    if ("graph", path) in recorded_secret_decisions:
+                        continue
+                    source = {"path": path, "lines": None}
+                    decisions.append(self_financing_candidate_receipt(
+                        phase="graph", source=source, reason="secret_risk", status="no_op",
+                        secret_decision="reject", identities=repo_map_source_identities,
+                        root_arg=root_arg, source_cache=source_cache,
+                    ))
+                    recorded_secret_decisions.add(("graph", path))
+
+        current_manifest = copy.deepcopy(manifest)
+        current_build = build_payload
+        protected_sources = [
+            (
+                str(item.get("path", "")),
+                copy.deepcopy(item.get("lines")) if isinstance(item.get("lines"), dict) else None,
+            )
+            for item in current_manifest.get("sources", [])
+            if isinstance(item, dict)
+            and str(item.get("label", "")).startswith(
+                ("file:", "output:", "test-output:", "diff:", "critical:")
+            )
+        ]
+
+        def protected_sources_are_exact(build: dict[str, Any]) -> bool:
+            included_sources = [
+                item for item in build.get("included_sources", [])
+                if isinstance(item, dict)
+            ]
+            for protected_path, protected_lines in protected_sources:
+                matched = False
+                for item in included_sources:
+                    if (
+                        item.get("path") != protected_path
+                        or item.get("status") != "included"
+                        or item.get("requested_lines") != item.get("included_lines")
+                    ):
+                        continue
+                    if protected_lines is not None and item.get("requested_lines") != protected_lines:
+                        continue
+                    matched = True
+                    break
+                if not matched:
+                    return False
+            return True
+
+        seen_candidates: set[tuple[str, str]] = set()
+        for phase, candidate, reason in candidates:
+            key = (str(candidate.get("path", "")), line_range_identity(candidate.get("lines")))
+            if key in seen_candidates or key[0] in {str(item.get("path", "")) for item in current_manifest.get("sources", []) if isinstance(item, dict)}:
+                decisions.append(self_financing_candidate_receipt(
+                    phase=phase, source=candidate, reason="duplicate_source", status="no_op",
+                    secret_decision="allow", identities=repo_map_source_identities,
+                    root_arg=root_arg, source_cache=source_cache,
+                ))
+                continue
+            seen_candidates.add(key)
+            trial_sources = [copy.deepcopy(item) for item in current_manifest.get("sources", []) if isinstance(item, dict)] + [copy.deepcopy(candidate)]
+            candidate_priority = int(candidate.get("priority", 0) or 0)
+            removable = sorted(
+                [
+                    item for item in trial_sources[:-1]
+                    if not str(item.get("label", "")).startswith(
+                        ("file:", "output:", "test-output:", "diff:", "critical:")
+                    )
+                    and int(item.get("priority", 0) or 0) < candidate_priority
+                ],
+                key=lambda item: (int(item.get("priority", 0) or 0), str(item.get("path", ""))),
+            )
+            removed: list[dict[str, Any]] = []
+            accepted_build: dict[str, Any] | None = None
+            while True:
+                trial_manifest = build_suggest_manifest(trial_sources)
+                trial_build = build_pack(
+                    root, manifest_to_source_specs(trial_manifest), budget_bytes=max(MIN_BUDGET_BYTES, ordinary_ceiling),
+                    root_arg=root_arg, store_artifact=False,
+                    sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
+                    _source_cache=source_cache, _input_budget=input_budget,
+                    _required_snapshot_sources=frozen_candidate_sources,
+                    _expected_source_identities=repo_map_source_identities,
+                    _snapshot_rejections=candidate_snapshot_rejections,
+                )
+                candidate_included_exactly = any(
+                    isinstance(item, dict)
+                    and str(item.get("path", "")) == key[0]
+                    and line_range_identity(item.get("requested_lines")) == key[1]
+                    and line_range_identity(item.get("included_lines")) == key[1]
+                    and item.get("status") == "included"
+                    for item in trial_build.get("included_sources", [])
+                )
+                if (
+                    int(trial_build.get("pack_bytes", 0) or 0) <= ordinary_ceiling
+                    and candidate_included_exactly
+                    and protected_sources_are_exact(trial_build)
+                ):
+                    accepted_build = trial_build
+                    break
+                if not removable:
+                    break
+                victim = removable.pop(0)
+                trial_sources.remove(victim)
+                victim_source = {
+                    "path": victim.get("path"),
+                    "lines": copy.deepcopy(victim.get("lines")),
+                }
+                if not isinstance(victim_source["lines"], dict):
+                    prior = next(
+                        (
+                            item for item in current_build.get("included_sources", [])
+                            if isinstance(item, dict)
+                            and item.get("path") == victim_source["path"]
+                            and item.get("status") == "included"
+                            and item.get("requested_lines") == item.get("included_lines")
+                        ),
+                        None,
+                    )
+                    if prior is not None:
+                        victim_source["lines"] = copy.deepcopy(prior["requested_lines"])
+                removed.append({
+                    "path": victim_source["path"], "lines": victim_source["lines"],
+                    "reason": "lower_value_replacement",
+                    "frozen_identity": frozen_source_identity(
+                        str(victim_source["path"] or ""), victim_source["lines"],
+                        repo_map_source_identities, source_cache,
+                    ),
+                    "exact_fallback": exact_source_fallback(
+                        root_arg, str(victim_source["path"] or ""), victim_source["lines"],
+                        expected_content_sha256=frozen_source_content_sha256(
+                            str(victim_source["path"] or ""), victim_source["lines"], source_cache
+                        ),
+                    ),
+                })
+            if accepted_build is None:
+                decisions.append(self_financing_candidate_receipt(
+                    phase=phase, source=candidate, reason="ordinary_ceiling_no_safe_replacement", status="no_op",
+                    secret_decision="allow", identities=repo_map_source_identities,
+                    root_arg=root_arg, source_cache=source_cache,
+                ))
+                continue
+            previous_bytes = int(current_build.get("pack_bytes", 0) or 0)
+            current_manifest = build_suggest_manifest(trial_sources)
+            current_build = accepted_build
+            decisions.append(self_financing_candidate_receipt(
+                phase=phase, source=candidate, reason=reason, status="selected",
+                secret_decision="allow", identities=repo_map_source_identities,
+                root_arg=root_arg, source_cache=source_cache,
+                byte_delta=int(current_build.get("pack_bytes", 0) or 0) - previous_bytes,
+                removed_sources=removed,
+            ))
+        manifest = current_manifest
+        build_payload = current_build
+        selected_rendered_bytes = int(build_payload.get("pack_bytes", 0) or 0)
+        if (
+            selected_rendered_bytes > ordinary_ceiling
+            or not protected_sources_are_exact(build_payload)
+        ):
+            raise PackError("self-financing selection invariant failed")
+        suggest_payload["manifest"] = manifest
+        suggest_payload["estimated_pack_bytes"] = build_payload.get("pack_bytes", 0)
+        suggest_payload["token_proxy"] = copy.deepcopy(build_payload.get("token_proxy", {}))
+        selected_graph_decisions = [
+            item for item in decisions
+            if item.get("phase") == "graph" and item.get("status") == "selected"
+        ]
+        graph_application = {
+            **graph_preview,
+            "selected_source_count": len(selected_graph_decisions),
+            "selected_sources": [
+                {
+                    "path": item.get("path"), "lines": copy.deepcopy(item.get("lines")),
+                    "reason": item.get("reason"),
+                }
+                for item in selected_graph_decisions
+            ],
+        }
+        phase_results = {}
+        for phase in ("adaptive", "symbol", "graph"):
+            phase_decisions = [item for item in decisions if item.get("phase") == phase]
+            phase_results[phase] = {
+                "status": "applied" if any(item.get("status") == "selected" for item in phase_decisions) else "no_op",
+                "selected_count": sum(item.get("status") == "selected" for item in phase_decisions),
+                "no_op_count": sum(item.get("status") == "no_op" for item in phase_decisions),
+            }
+        self_financing_receipt = {
+            "schema_version": SELF_FINANCING_SELECTION_SCHEMA_VERSION,
+            "mode": "explicit_opt_in", "phase_order": ["adaptive", "symbol", "graph"],
+            "ordinary_pack_bytes": ordinary_ceiling,
+            "selected_rendered_bytes": selected_rendered_bytes,
+            "ceiling_respected": selected_rendered_bytes <= ordinary_ceiling,
+            "phase_results": phase_results,
+            "decisions": decisions,
+            "claim_boundary": {"provider_token_or_cost_savings_claim_allowed": False},
+        }
+    elif apply_symbol_memory and isinstance(repo_map_payload, dict):
         repo_map_payload["safety"]["explain_only"] = False
         repo_map_payload["safety"]["caveats"] = [
             "Repo-map bytes are local sampled UTF-8 bytes and estimated chars_div_4 token proxies, not provider-token or savings claims.",
@@ -5233,6 +5803,22 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         suggest_payload["token_proxy"] = copy.deepcopy(
             build_payload.get("token_proxy", {})
         )
+    selection_plan_payload: dict[str, Any] | None = None
+    if plan_only or apply_plan_path:
+        if not isinstance(self_financing_receipt, dict) or not isinstance(repo_map_payload, dict) or ordinary_build_payload is None:
+            raise PackError("selection plan unavailable")
+        selection_plan_payload = build_selection_plan(
+            args, ordinary_build_payload, build_payload, self_financing_receipt,
+            repo_map_payload, suggest_payload, repo_map_source_identities, source_cache, root_arg=root_arg,
+        )
+        if plan_only:
+            return {
+                "tool": TOOL_NAME, "schema_version": AUTO_SCHEMA_VERSION,
+                "version": VERSION, "mode": "selection_plan",
+                "selection_plan": selection_plan_payload,
+            }, rc
+        if expected_plan != selection_plan_payload:
+            raise PackError("selection plan drift; regenerate the plan")
     if not args.no_artifact:
         receipt_rel = Path(PACK_DIR) / f"{build_payload['pack_id']}.json"
         if manifest_rel is not None:
@@ -5301,6 +5887,14 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         payload["adaptive_k_application"] = adaptive_k_application
     if graph_application is not None:
         payload["graph_application"] = graph_application
+    if self_financing_receipt is not None:
+        payload["self_financing_selection"] = self_financing_receipt
+    if selection_plan_payload is not None:
+        payload["selection_plan"] = selection_plan_payload
+        payload["selection_plan_application"] = {
+            "status": "applied", "explicit": True,
+            "revalidated_plan_id": selection_plan_payload["plan_id"],
+        }
     if (getattr(args, "symbol_memory", False) or apply_symbol_memory) and isinstance(repo_map_payload, dict):
         payload["symbol_memory"] = build_symbol_memory_payload(
             repo_map_payload, applied=apply_symbol_memory
@@ -5436,6 +6030,19 @@ def print_auto_text(payload: dict[str, Any]) -> None:
             print(f"omitted reasons: {reason_text}")
     print_adaptive_k_text(payload)
     print_symbol_memory_text(payload)
+    self_financing = payload.get("self_financing_selection")
+    if isinstance(self_financing, dict):
+        phases = self_financing.get("phase_results", {})
+        phase_text = ",".join(
+            f"{name}={phases.get(name, {}).get('status', 'no_op')}"
+            for name in ("adaptive", "symbol", "graph")
+        )
+        print(
+            "self-financing: "
+            f"ceiling={self_financing.get('ordinary_pack_bytes', 0)} "
+            f"selected={self_financing.get('selected_rendered_bytes', 0)} "
+            f"{phase_text} provider_savings_claim=false"
+        )
     if payload.get("manifest_path"):
         print(f"manifest: {payload['manifest_path']}")
     if payload.get("pack_path"):
@@ -5548,6 +6155,22 @@ def build_parser() -> argparse.ArgumentParser:
             "explicitly add up to four direct import-neighbor slices from the local "
             "repo map to the manifest and pack; implies --symbol-memory"
         ),
+    )
+    auto.add_argument(
+        "--self-financing-selection",
+        action="store_true",
+        help=(
+            "explicitly apply Adaptive, then Symbol, then one-hop Graph selection while replacing "
+            "only lower-value non-caller sources and never exceeding the ordinary pack bytes"
+        ),
+    )
+    auto.add_argument(
+        "--selection-plan", action="store_true",
+        help="emit a read-only provider-free self-financing selection plan; requires --json",
+    )
+    auto.add_argument(
+        "--apply-selection-plan", metavar="PLAN_JSON",
+        help="explicitly apply a previously emitted selection plan after identity revalidation",
     )
     return parser
 

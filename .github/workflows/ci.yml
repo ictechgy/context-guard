@@ -3,116 +3,232 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  test-and-prepublish:
+  fast-pr:
+    if: ${{ github.event_name == 'pull_request' }}
+    name: fast-pr (ubuntu-latest, 3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Normalize expected hosted runtime permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
+          [[ "$python_runtime" == /opt/hostedtoolcache/* ]]
+          [[ "$node_runtime" == /opt/hostedtoolcache/* ]]
+          sudo chmod go-w "$python_runtime" "$node_runtime"
+      - name: Verify hosted runtime trust
+        run: >-
+          python -m unittest -v
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_python_runtime_is_policy_eligible
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
+      - name: Verify synchronized package sources
+        run: python scripts/sync_plugin_copies.py --check
+      - name: Run fast closed security gate
+        run: python scripts/ci_test_gate.py fast
+      - name: Check release package invariants
+        run: python scripts/prepublish_check.py --skip-tests
+      - name: Run staged plugin release smoke
+        timeout-minutes: 5
+        run: python scripts/release_smoke.py
+
+  core-pr:
+    if: ${{ github.event_name == 'pull_request' }}
+    name: core-pr (ubuntu-latest, 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Normalize expected hosted runtime permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
+          [[ "$python_runtime" == /opt/hostedtoolcache/* ]]
+          [[ "$node_runtime" == /opt/hostedtoolcache/* ]]
+          sudo chmod go-w "$python_runtime" "$node_runtime"
+      - name: Verify hosted runtime trust
+        run: >-
+          python -m unittest -v
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_python_runtime_is_policy_eligible
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
+      - name: Run exhaustive core partition before merge
+        timeout-minutes: 25
+        run: python scripts/ci_test_gate.py core
+
+  security-pr:
+    if: ${{ github.event_name == 'pull_request' }}
+    name: security-pr (ubuntu-latest, 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+      - name: Normalize expected hosted Python permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          [[ "$python_runtime" == /opt/hostedtoolcache/* ]]
+          sudo chmod go-w "$python_runtime"
+      - name: Run provider-free security partition
+        run: python scripts/ci_test_gate.py provider-free
+      - name: Run provider-live contract partition without provider access
+        run: python scripts/ci_test_gate.py provider-live
+      - name: Run full-history partition
+        run: python scripts/ci_test_gate.py history
+      - name: Run shared-worktree race tests serially
+        run: python scripts/ci_test_gate.py serial
+
+  exhaustive-linux:
+    if: ${{ github.event_name == 'push' }}
+    name: exhaustive-linux (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - name: Checkout
+      - name: Checkout full history
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "22"
-
-      - name: Normalize hosted runtime permissions
+          package-manager-cache: false
+      - name: Normalize expected hosted runtime permissions
         shell: bash
         run: |
           set -euo pipefail
           python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
           node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
-          case "${RUNNER_OS}:${python_runtime}" in
-            Linux:/opt/hostedtoolcache/*) ;;
-            *) echo "unexpected hosted Python runtime" >&2; exit 1 ;;
-          esac
-          case "${RUNNER_OS}:${node_runtime}" in
-            Linux:/opt/hostedtoolcache/*) ;;
-            *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
-          esac
+          [[ "$python_runtime" == /opt/hostedtoolcache/* ]]
+          [[ "$node_runtime" == /opt/hostedtoolcache/* ]]
           sudo chmod go-w "$python_runtime" "$node_runtime"
-
       - name: Verify hosted runtime trust
         run: >-
           python -m unittest -v
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_python_runtime_is_policy_eligible
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
-
+      - name: Run exhaustive core partition
+        timeout-minutes: 25
+        run: python scripts/ci_test_gate.py core
+      - name: Run provider-free partition
+        if: ${{ matrix.python-version == '3.12' }}
+        timeout-minutes: 12
+        run: python scripts/ci_test_gate.py provider-free
+      - name: Run provider-live contract partition without provider access
+        if: ${{ matrix.python-version == '3.12' }}
+        timeout-minutes: 12
+        run: python scripts/ci_test_gate.py provider-live
+      - name: Run full-history partition
+        if: ${{ matrix.python-version == '3.12' }}
+        timeout-minutes: 12
+        run: python scripts/ci_test_gate.py history
+      - name: Run shared-worktree race tests serially
+        if: ${{ matrix.python-version == '3.12' }}
+        timeout-minutes: 5
+        run: python scripts/ci_test_gate.py serial
       - name: Run prepublish release gate
-        timeout-minutes: 35
-        run: python scripts/prepublish_check.py
-
+        timeout-minutes: 12
+        run: python scripts/prepublish_check.py --skip-tests
       - name: Run staged plugin release smoke
         timeout-minutes: 5
         run: python scripts/release_smoke.py
 
-  test-and-prepublish-macos:
-    name: test-and-prepublish (macos-latest, 3.12)
+  exhaustive-macos:
+    if: ${{ github.event_name == 'push' }}
+    name: exhaustive-macos (3.12)
     runs-on: macos-latest
+    timeout-minutes: 40
     steps:
-      - name: Checkout
+      - name: Checkout full history
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
-
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "22"
-
-      - name: Normalize hosted runtime permissions
+          package-manager-cache: false
+      - name: Normalize expected hosted runtime permissions
         shell: bash
         run: |
           set -euo pipefail
           python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
           node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
-          case "${RUNNER_OS}:${python_runtime}" in
-            macOS:/Library/Frameworks/Python.framework/Versions/*) ;;
-            *) echo "unexpected hosted Python runtime" >&2; exit 1 ;;
-          esac
-          case "${RUNNER_OS}:${node_runtime}" in
-            macOS:/opt/homebrew/*|macOS:/usr/local/*|macOS:/Users/runner/hostedtoolcache/*) ;;
-            *) echo "unexpected hosted Node runtime" >&2; exit 1 ;;
-          esac
+          [[ "$python_runtime" == /Library/Frameworks/Python.framework/Versions/* ]]
+          [[ "$node_runtime" == /opt/homebrew/* || "$node_runtime" == /usr/local/* || "$node_runtime" == /Users/runner/hostedtoolcache/* ]]
           sudo chmod go-w "$python_runtime" "$node_runtime"
-
       - name: Verify hosted runtime trust
         run: >-
           python -m unittest -v
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_python_runtime_is_policy_eligible
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
-
+      - name: Run exhaustive core partition
+        timeout-minutes: 25
+        run: python scripts/ci_test_gate.py core
       - name: Run prepublish release gate
-        timeout-minutes: 35
-        run: python scripts/prepublish_check.py
-
+        timeout-minutes: 12
+        run: python scripts/prepublish_check.py --skip-tests
       - name: Run staged plugin release smoke
         timeout-minutes: 8
         run: python scripts/release_smoke.py
-
       - name: Run ContextGuard Mac Swift tests
         timeout-minutes: 15
         working-directory: apps/contextguard-mac

@@ -19,12 +19,12 @@
   },
   "upstream_contract": {
     "g5_freeze_lock_path": "research/provider-free-roadmap/g5/freeze-lock.json",
-    "g5_freeze_lock_sha256": "986f05823ebf7040ca57ba360e6e94d47d379dadcfa6ac4f9005e72108303c89",
-    "g5_tree_sha256": "c2e3f47526f31b55cb6d806257d40baa3eb542e3c1b760598e90b422385b7dc8",
+    "g5_freeze_lock_sha256": "4da399f445b2ff1d033c712083bd605b7cb0e6f210c7c24abe36d5f1df501f96",
+    "g5_tree_sha256": "de89fe567ccdaead27ff9853066108defbbab910f2a1fb42a005a2df2a7238be",
     "g5_preregistration": {
       "bytes": 12139,
       "path": "research/provider-free-roadmap/g5/v1/preregistration.json",
-      "sha256": "e702e48b7ace9ece0c3295195070c2853505a16b7af037ab93459d175ece5c69"
+      "sha256": "6aed6f0818d5364d052eb98413be3cf57342f13374d1c421605b2bb4526654af"
     },
     "g5_schedule": {
       "bytes": 65964,
@@ -33,12 +33,12 @@
     },
     "g5_schema_set": {
       "bytes": 41710,
-      "sha256": "cd95559d7e1020e63cc98d64ae741ac58a358f60a80b55fb40baf8bf14164239"
+      "sha256": "7667de85f2fb71ef84b57f4edf7544a30d5a171043567b30e49fdab1b5f161b6"
     },
     "g5_verifier": {
       "bytes": 45010,
       "path": "research/provider-free-roadmap/g5/v1/verify.py",
-      "sha256": "b0baa4b6bff36f51c80e897cee56947fe1226f51a03d24453d4152336e342246"
+      "sha256": "0a6952142804247c443300d28dac6345175a61d19ceaa00273840459a46e6672"
     }
   },
   "unapproved_constraints": {
