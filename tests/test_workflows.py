@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,16 @@ UNPINNED_ACTION_RE = re.compile(r"uses:\s+actions/[\w-]+@v\d+\b")
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+def load_ci_gate():
+    path = ROOT / "scripts" / "ci_test_gate.py"
+    spec = importlib.util.spec_from_file_location("ci_test_gate_test", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("CI test gate is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def workflow_job_blocks(workflow: str) -> dict[str, str]:
@@ -85,6 +97,26 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("tests.test_release_assets", gate)
         self.assertIn("test_exact_two_package_release_asset_set_is_required", gate)
         self.assertNotIn("ThreadPoolExecutor", gate)
+
+    def test_provider_free_partition_uses_boundary_suite_on_unbound_python(self):
+        gate = load_ci_gate()
+        self.assertTrue(hasattr(gate, "frozen_python_matches"))
+        with mock.patch.object(gate, "frozen_python_matches", return_value=False):
+            collected = gate.test_ids(gate.discover_partition("provider-free"))
+            required = gate.required_test_ids("provider-free")
+
+        boundary = (
+            "tests.test_provider_free_roadmap_boundary."
+            "ProviderFreeRoadmapBoundaryTests."
+            "test_g2_profile_bootstrap_injects_only_captured_verifier_and_lock_bytes"
+        )
+        direct = (
+            "test_g2_ablation_contract.G2AblationContractTests."
+            "test_graph_ordinary_miss_and_symbol_recovery_are_enforced"
+        )
+        self.assertIn(boundary, collected)
+        self.assertIn(boundary, required)
+        self.assertNotIn(direct, collected)
 
     def test_release_workflows_preflight_trust_before_expensive_or_mutating_steps(self):
         candidate = read(".github/workflows/npm-candidate.yml")
@@ -572,10 +604,18 @@ class WorkflowSecurityTests(unittest.TestCase):
             self.assertLess(job.index("name: Set up Node"), job.index("prepublish_check.py"))
             self.assertLess(job.index("name: Set up Node"), job.index("name: Run staged plugin release smoke"))
 
+        fast = workflow_job_blocks(ci)["fast-pr"]
+        self.assertIn("Normalize expected hosted runtime permissions", fast)
+        self.assertIn("Verify hosted runtime trust", fast)
+        self.assertLess(
+            fast.index("Normalize expected hosted runtime permissions"),
+            fast.index("name: Run staged plugin release smoke"),
+        )
+
     def test_ci_normalizes_only_exact_hosted_runtime_files(self):
         ci = read(".github/workflows/ci.yml")
-        self.assertEqual(ci.count("Normalize expected hosted runtime permissions"), 3)
-        self.assertEqual(ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'), 3)
+        self.assertEqual(ci.count("Normalize expected hosted runtime permissions"), 4)
+        self.assertEqual(ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'), 4)
         self.assertNotIn("chmod -R", ci)
         self.assertIn("/opt/hostedtoolcache/*", ci)
         self.assertIn("/Library/Frameworks/Python.framework/Versions/*", ci)

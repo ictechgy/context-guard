@@ -29,6 +29,20 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
+      - name: Normalize expected hosted runtime permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_runtime="$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.executable).resolve(strict=True))')"
+          node_runtime="$(python -I -c 'from pathlib import Path; import shutil; node = shutil.which("node"); assert node is not None; print(Path(node).resolve(strict=True))')"
+          [[ "$python_runtime" == /opt/hostedtoolcache/* ]]
+          [[ "$node_runtime" == /opt/hostedtoolcache/* ]]
+          sudo chmod go-w "$python_runtime" "$node_runtime"
+      - name: Verify hosted runtime trust
+        run: >-
+          python -m unittest -v
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_python_runtime_is_policy_eligible
+          tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
       - name: Verify synchronized package sources
         run: python scripts/sync_plugin_copies.py --check
       - name: Run fast closed security gate

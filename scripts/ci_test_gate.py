@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 import unittest
@@ -33,6 +35,13 @@ HISTORY_MODULES = (
 SERIAL_TEST_IDS = (
     "test_context_guard_kit.ClaudeTokenKitTests."
     "test_experimental_registry_config_write_race_cannot_redirect_to_symlink",
+)
+BOUNDARY_PROVIDER_FREE_REQUIRED_TEST_IDS = frozenset(
+    {
+        "tests.test_provider_free_roadmap_boundary."
+        "ProviderFreeRoadmapBoundaryTests."
+        "test_g2_profile_bootstrap_injects_only_captured_verifier_and_lock_bytes",
+    }
 )
 REQUIRED_TEST_IDS = {
     "fast": frozenset(
@@ -109,6 +118,38 @@ def test_ids(suite: unittest.TestSuite) -> frozenset[str]:
     return frozenset(found)
 
 
+def frozen_python_matches() -> bool:
+    try:
+        lock = json.loads(
+            (ROOT / "research/provider-free-roadmap/g2/freeze-lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        expected = lock["python_binding"]
+        executable = Path(sys.executable).resolve(strict=True)
+        if (
+            sys.implementation.name != expected.get("implementation")
+            or f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            != expected.get("version")
+            or str(executable) != expected.get("path")
+            or executable.stat().st_size != expected.get("bytes")
+        ):
+            return False
+        digest = hashlib.sha256()
+        with executable.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest() == expected.get("sha256")
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def required_test_ids(name: str) -> frozenset[str]:
+    if name == "provider-free" and not frozen_python_matches():
+        return BOUNDARY_PROVIDER_FREE_REQUIRED_TEST_IDS
+    return REQUIRED_TEST_IDS[name]
+
+
 def discover_partition(name: str) -> unittest.TestSuite:
     loader = unittest.defaultTestLoader
     if name == "fast":
@@ -124,6 +165,10 @@ def discover_partition(name: str) -> unittest.TestSuite:
             excluded_ids=frozenset(SERIAL_TEST_IDS),
         )
     if name == "provider-free":
+        if not frozen_python_matches():
+            return loader.loadTestsFromName(
+                "tests.test_provider_free_roadmap_boundary"
+            )
         return loader.discover(
             str(ROOT / "tests" / "provider-free-roadmap"), pattern="test_*.py"
         )
@@ -153,7 +198,7 @@ def main() -> int:
     collected = test_ids(suite)
     if not collected:
         raise SystemExit(f"refusing an empty test partition: {args.partition}")
-    missing = sorted(REQUIRED_TEST_IDS[args.partition] - collected)
+    missing = sorted(required_test_ids(args.partition) - collected)
     if missing:
         raise SystemExit(
             f"{args.partition} partition is missing required test IDs: "
