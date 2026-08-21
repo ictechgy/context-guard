@@ -4,6 +4,8 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-21
+
 - Added a provider-free `context-guard-receipt evaluate phase` surface with
   closed P2-P6 input/result schemas. It computes shadow/canary/router/adjunct/
   specialized-track readiness from bounded canonical local records while
