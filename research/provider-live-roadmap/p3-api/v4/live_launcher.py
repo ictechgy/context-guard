@@ -22,7 +22,7 @@ import sys
 V4 = Path(__file__).resolve().parent
 EXPECTED_RUNNER_SHA256 = "db8d62a261227440d8d29ac4899f5bada91fa187162af98a650b95e5fdb57b66"
 EXPECTED_CONTRACT_SHA256 = "2b39f631e10f7f2f6fe3db9f543b209c24b6c7736b9826e5edc42cbfe8a9cbcf"
-EXPECTED_CORE_COMMIT = "fe9916a39233380e2b367fcae8e9562cefafca3b"
+EXPECTED_CORE_COMMIT = "917046a626163eaa17e036a894e11bed07f1a92a"
 RUNNER_RELATIVE_PATH = "research/provider-live-roadmap/p3-api/v4/live_runner.py"
 CONTRACT_RELATIVE_PATH = "research/provider-live-roadmap/p3-api/v4/live-contract.json"
 MAX_BOUND_ARTIFACT_BYTES = 4 * 1024 * 1024
