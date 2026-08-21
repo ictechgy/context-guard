@@ -330,36 +330,9 @@ def staged_paths(raw: bytes) -> set[bytes]:
     return paths
 
 
-def revision_identity(root: Path, store: Path) -> dict[str, str]:
-    head = git(root, "rev-parse", "HEAD").decode("ascii").strip()
-    staged_arguments = (
-        "diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv",
-    )
-    names_arguments = ("ls-files", "-m", "-o", "--exclude-standard", "-z")
-    staged = git(root, *staged_arguments)
-    staged_names = staged_paths(staged)
-    names_raw = git(root, *names_arguments)
-    names = names_raw.split(b"\0")
-    try:
-        store_rel = store.relative_to(root).as_posix()
-    except ValueError:
-        store_rel = ""
+def worktree_rows(root: Path, names: list[bytes], store_rel: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     revision_bytes = 0
-    identity_names = {
-        raw
-        for raw in (*staged_names, *names)
-        if raw
-        and not (
-            store_rel
-            and (
-                os.fsdecode(raw) == store_rel
-                or os.fsdecode(raw).startswith(store_rel + "/")
-            )
-        )
-    }
-    if len(identity_names) > MAX_REVISION_FILES:
-        raise MemoryError("worktree identity exceeds bounded file limit")
     for raw in sorted(set(names)):
         if not raw:
             continue
@@ -380,8 +353,48 @@ def revision_identity(root: Path, store: Path) -> dict[str, str]:
         if revision_bytes > MAX_REVISION_BYTES:
             raise MemoryError("worktree identity exceeds bounded byte limit")
         rows.append({"path_sha256": sha256(raw), "content_sha256": sha256(data)})
+    return rows
+
+
+def revision_identity(root: Path, store: Path) -> dict[str, str]:
+    head = git(root, "rev-parse", "HEAD").decode("ascii").strip()
+    staged_arguments = (
+        "diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv",
+    )
+    names_arguments = ("ls-files", "-m", "-o", "--exclude-standard", "-z")
+    staged = git(root, *staged_arguments)
+    staged_names = staged_paths(staged)
+    names_raw = git(root, *names_arguments)
+    names = names_raw.split(b"\0")
+    try:
+        store_rel = store.relative_to(root).as_posix()
+    except ValueError:
+        store_rel = ""
+    identity_names = {
+        raw
+        for raw in (*staged_names, *names)
+        if raw
+        and not (
+            store_rel
+            and (
+                os.fsdecode(raw) == store_rel
+                or os.fsdecode(raw).startswith(store_rel + "/")
+            )
+        )
+    }
+    if len(identity_names) > MAX_REVISION_FILES:
+        raise MemoryError("worktree identity exceeds bounded file limit")
+    rows = worktree_rows(root, names, store_rel)
     if (
         git(root, "rev-parse", "HEAD").decode("ascii").strip() != head
+        or git(root, *staged_arguments) != staged
+        or git(root, *names_arguments) != names_raw
+    ):
+        raise MemoryError("project revision changed during identity capture")
+    confirmed_rows = worktree_rows(root, names, store_rel)
+    if (
+        confirmed_rows != rows
+        or git(root, "rev-parse", "HEAD").decode("ascii").strip() != head
         or git(root, *staged_arguments) != staged
         or git(root, *names_arguments) != names_raw
     ):

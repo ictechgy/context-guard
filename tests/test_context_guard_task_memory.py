@@ -263,6 +263,31 @@ class TaskMemoryTests(unittest.TestCase):
                 ):
                     task_memory.revision_identity(project, store)
 
+    def test_revision_identity_refuses_content_change_after_first_read(self) -> None:
+        task_memory = load_task_memory()
+        with tempfile.TemporaryDirectory() as raw:
+            project = self.make_project(Path(raw), "content-race")
+            target = project / "untracked.txt"
+            target.write_text("before\n", encoding="utf-8")
+            original_source_read = task_memory.source_read
+            changed = False
+
+            def change_after_read(path):
+                nonlocal changed
+                result = original_source_read(path)
+                if path == target and not changed:
+                    target.write_text("after\n", encoding="utf-8")
+                    changed = True
+                return result
+
+            with mock.patch.object(
+                task_memory, "source_read", side_effect=change_after_read
+            ):
+                with self.assertRaisesRegex(
+                    task_memory.MemoryError, "changed during identity"
+                ):
+                    task_memory.revision_identity(project, project / ".memory")
+
     def test_eviction_cleanup_concurrent_writers_and_cross_project_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             parent = Path(raw)
