@@ -82,6 +82,8 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("history", gate)
         self.assertIn("SERIAL_TEST_IDS", gate)
         self.assertIn("test_experimental_registry_config_write_race_cannot_redirect_to_symlink", gate)
+        self.assertIn("tests.test_release_assets", gate)
+        self.assertIn("test_exact_two_package_release_asset_set_is_required", gate)
         self.assertNotIn("ThreadPoolExecutor", gate)
 
     def test_release_workflows_preflight_trust_before_expensive_or_mutating_steps(self):
@@ -113,6 +115,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("actions/download-artifact@", release)
         self.assertNotIn("npm pack", release)
         self.assertLess(release.index("Preflight release credential and tag"), release.index("actions/download-artifact@"))
+        self.assertIn("python3 scripts/verify_release_assets.py", release)
+        self.assertLess(
+            release.index("python3 scripts/verify_release_assets.py"),
+            release.index("gh attestation verify"),
+        )
         self.assertIn("gh attestation verify", release)
         self.assertIn("gh release create", release)
         self.assertIn("release_commit_sha", homebrew)

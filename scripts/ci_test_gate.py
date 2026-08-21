@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 PARTITION_NAMES = ("fast", "core", "provider-free", "provider-live", "history", "serial")
 FAST_MODULES = (
     "tests.test_workflows",
+    "tests.test_release_assets",
     "tests.test_release_candidate_smoke",
     "tests.test_context_pack_p1_p2_hardening",
     "tests.test_context_guard_task_memory",
@@ -40,6 +41,8 @@ REQUIRED_TEST_IDS = {
             "test_first_party_actions_are_pinned_to_full_sha_with_non_persistent_checkout_credentials",
             "tests.test_context_pack_p1_p2_hardening.ContextPackP1P2HardeningTests."
             "test_graph_bind_rejection_is_reused_without_reopening_source",
+            "tests.test_release_assets.ReleaseAssetVerificationTests."
+            "test_exact_two_package_release_asset_set_is_required",
         }
     ),
     "core": frozenset(

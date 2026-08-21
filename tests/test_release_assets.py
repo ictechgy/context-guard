@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "verify_release_assets.py"
+
+
+class ReleaseAssetVerificationTests(unittest.TestCase):
+    def stage(self, root: Path) -> tuple[Path, dict[str, object]]:
+        assets = root / "assets"
+        assets.mkdir()
+        packages = []
+        for name, filename, content, version in (
+            (
+                "@ictechgy/context-guard-receipt",
+                "ictechgy-context-guard-receipt-0.2.1.tgz",
+                b"receipt-candidate",
+                "0.2.1",
+            ),
+            (
+                "@ictechgy/context-guard",
+                "ictechgy-context-guard-0.6.0.tgz",
+                b"root-candidate",
+                "0.6.0",
+            ),
+        ):
+            (assets / filename).write_bytes(content)
+            packages.append(
+                {
+                    "filename": filename,
+                    "integrity": "sha512-"
+                    + base64.b64encode(hashlib.sha512(content).digest()).decode("ascii"),
+                    "name": name,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                    "version": version,
+                }
+            )
+        manifest = {
+            "build_policy": {
+                "ignore_scripts": True,
+                "lockfiles": [],
+                "network": "offline",
+                "package_build_count": 1,
+            },
+            "commit_sha": "a" * 40,
+            "exact_dependency": {
+                "name": "@ictechgy/context-guard-receipt",
+                "version": "0.2.1",
+            },
+            "packages": packages,
+            "policy_sha256": "b" * 64,
+            "receipt_package_files_sha256": "c" * 64,
+            "protocol": {"maximum": 1, "minimum": 1, "name": "bash_reference_v1"},
+            "repository": "ictechgy/context-guard",
+            "schema_version": "contextguard-npm-candidate-set/v1",
+            "tool_versions": {"node": "v24", "npm": "11", "python": "3.12"},
+        }
+        manifest_text = json.dumps(
+            manifest, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ) + "\n"
+        (assets / "candidate-manifest.json").write_text(manifest_text, encoding="ascii")
+        checksums = "".join(
+            f'{package["sha256"]}  {package["filename"]}\n'
+            for package in packages
+        )
+        (assets / "candidate-sha256sums.txt").write_text(checksums, encoding="ascii")
+        return assets, manifest
+
+    def run_verifier(self, assets: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--assets-dir",
+                str(assets),
+                "--commit-sha",
+                "a" * 40,
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def test_exact_two_package_release_asset_set_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            assets, _manifest = self.stage(Path(name))
+            self.assertEqual(self.run_verifier(assets).returncode, 0)
+
+        mutations = ("extra", "digest", "checksum", "single-package")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as name:
+                assets, manifest = self.stage(Path(name))
+                if mutation == "extra":
+                    (assets / "unexpected.txt").write_text("unexpected\n")
+                elif mutation == "digest":
+                    (assets / manifest["packages"][0]["filename"]).write_bytes(b"changed")
+                elif mutation == "checksum":
+                    (assets / "candidate-sha256sums.txt").write_text("not canonical\n")
+                else:
+                    removed = manifest["packages"].pop()
+                    (assets / removed["filename"]).unlink()
+                    (assets / "candidate-manifest.json").write_text(
+                        json.dumps(
+                            manifest,
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        + "\n",
+                        encoding="ascii",
+                    )
+                self.assertNotEqual(self.run_verifier(assets).returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
