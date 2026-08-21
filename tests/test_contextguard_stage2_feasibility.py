@@ -99,6 +99,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "docs/distribution.md",
         "docs/release-runbook.md",
         "package.json",
+        "packaging/homebrew/context-guard.rb.template",
         "packages/context-guard-receipt/python/context_guard_receipt/external_approval_v2.py",
         "packages/context-guard-receipt/schemas/external-approval-v2.schema.json",
         "packages/context-guard-receipt/tests/contract/test_g016_external_approval_v2.py",
@@ -832,6 +833,12 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
         detached_anchor["evidence_anchors"][0]["supports"] = "x"
         with self.assertRaises(AssertionError):
             validate_record(detached_anchor)
+
+    def test_homebrew_formula_template_is_a_declared_support_path(self) -> None:
+        self.assertIn(
+            "packaging/homebrew/context-guard.rb.template",
+            PROVIDER_FREE_SUPPORT_PATHS,
+        )
 
     def test_historical_baseline_is_reconstructed_from_the_frozen_commit(self) -> None:
         historical_inventory = historical_production_surface_inventory()
