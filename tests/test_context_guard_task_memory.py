@@ -175,6 +175,34 @@ class TaskMemoryTests(unittest.TestCase):
             os.chmod(mode_project / ".memory", 0o755)
             self.assertEqual(self.get(mode_project, str(receipt["handle"]), ok=False).stdout, "")
 
+    def test_revision_identity_refuses_oversized_and_aggregate_untracked_content(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            oversized = self.make_project(parent, "oversized-revision")
+            (oversized / "large.bin").write_bytes(b"x" * 10_000_001)
+            refused = self.run_cli(
+                "--root", str(oversized), "--store", str(oversized / ".memory"),
+                "put", "--task", "task-1", "--source", "source.txt",
+                cwd=oversized, stdin="safe\n", ok=False,
+            )
+            self.assertEqual(refused.stdout, "")
+            self.assertEqual(
+                list((oversized / ".memory" / "records").glob("*.*")), []
+            )
+
+            aggregate = self.make_project(parent, "aggregate-revision")
+            (aggregate / "first.bin").write_bytes(b"a" * 6_000_000)
+            (aggregate / "second.bin").write_bytes(b"b" * 6_000_000)
+            refused = self.run_cli(
+                "--root", str(aggregate), "--store", str(aggregate / ".memory"),
+                "put", "--task", "task-1", "--source", "source.txt",
+                cwd=aggregate, stdin="safe\n", ok=False,
+            )
+            self.assertEqual(refused.stdout, "")
+            self.assertEqual(
+                list((aggregate / ".memory" / "records").glob("*.*")), []
+            )
+
     def test_eviction_cleanup_concurrent_writers_and_cross_project_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             parent = Path(raw)

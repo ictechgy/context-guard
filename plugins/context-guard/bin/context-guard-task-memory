@@ -26,6 +26,8 @@ DEFAULT_MAX_TOTAL_BYTES = 10_000_000
 DEFAULT_MAX_ENTRIES = 100
 MAX_EXACT_BYTES = 1_000_000
 MAX_SOURCE_BYTES = 10_000_000
+MAX_REVISION_BYTES = 10_000_000
+MAX_REVISION_FILES = 4_096
 MAX_METADATA_BYTES = 128_000
 HANDLE_RE = re.compile(r"^contextguard-memory:([a-f0-9]{32})$")
 SECRET_RE = re.compile(
@@ -265,6 +267,8 @@ def revision_identity(root: Path, store: Path) -> dict[str, str]:
     except ValueError:
         store_rel = ""
     rows: list[dict[str, str]] = []
+    revision_bytes = 0
+    revision_files = 0
     for raw in names:
         if not raw:
             continue
@@ -272,10 +276,22 @@ def revision_identity(root: Path, store: Path) -> dict[str, str]:
         if store_rel and (rel == store_rel or rel.startswith(store_rel + "/")):
             continue
         path = root / rel
-        if path.is_symlink() or not path.is_file():
+        revision_files += 1
+        if revision_files > MAX_REVISION_FILES:
+            raise MemoryError("worktree identity exceeds bounded file limit")
+        try:
+            metadata = os.lstat(path)
+        except OSError:
             rows.append({"path_sha256": sha256(raw), "content_sha256": "unsafe"})
             continue
-        rows.append({"path_sha256": sha256(raw), "content_sha256": sha256(path.read_bytes())})
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            rows.append({"path_sha256": sha256(raw), "content_sha256": "unsafe"})
+            continue
+        data, _metadata = source_read(path)
+        revision_bytes += len(data)
+        if revision_bytes > MAX_REVISION_BYTES:
+            raise MemoryError("worktree identity exceeds bounded byte limit")
+        rows.append({"path_sha256": sha256(raw), "content_sha256": sha256(data)})
     return {"head": head, "worktree_sha256": sha256(canonical({"staged": sha256(staged), "files": rows}))}
 
 
