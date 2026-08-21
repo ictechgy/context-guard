@@ -11,6 +11,7 @@ from typing import Any
 
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+SEMANTIC_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -89,10 +90,26 @@ def derive_manifest_identities(root: Path, manifest: dict[str, Any]) -> list[dic
     for entry in modules:
         if not isinstance(entry, dict) or set(entry) != {"canonical_path", "plugin_path", "role", "semantic_output"}:
             raise ValueError("invalid context-pack module entry")
+        role = entry["role"]
         semantic = entry["semantic_output"]
+        if (
+            not isinstance(role, str)
+            or SEMANTIC_NAME_RE.fullmatch(role) is None
+            or not isinstance(semantic, str)
+            or SEMANTIC_NAME_RE.fullmatch(semantic) is None
+        ):
+            raise ValueError("invalid context-pack semantic declaration")
+        module_oracle = _digest(
+            b"contextguard.context-pack-module-semantic/v1\0",
+            {
+                "oracle_sha256": oracle,
+                "role": role,
+                "semantic_output": semantic,
+            },
+        )
         derived.append({
-            "role": entry["role"],
-            "canonical": _captured_file(root, entry["canonical_path"], oracle),
-            "plugin": _captured_file(root, entry["plugin_path"], oracle),
+            "role": role,
+            "canonical": _captured_file(root, entry["canonical_path"], module_oracle),
+            "plugin": _captured_file(root, entry["plugin_path"], module_oracle),
         })
     return derived

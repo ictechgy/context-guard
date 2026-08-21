@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import hashlib
 import json
@@ -117,6 +118,33 @@ class ContextPackModularIdentityTests(unittest.TestCase):
             )
             self.assertEqual(canonical.stdout, packaged.stdout)
             self.assertEqual(canonical.stderr, packaged.stderr)
+
+    def test_semantic_identity_binds_each_module_role_and_declared_output(self) -> None:
+        identity = load(KIT / "context_pack_identity.py", "context_pack_semantic_contract_test")
+        manifest = json.loads((KIT / "context_pack_modules.json").read_text(encoding="utf-8"))
+        original = identity.derive_manifest_identities(ROOT, manifest)
+        semantic_hashes = {
+            pair["canonical"]["semantic_sha256"] for pair in original
+        }
+        self.assertEqual(len(semantic_hashes), len(manifest["modules"]))
+
+        changed = copy.deepcopy(manifest)
+        selection = next(
+            entry for entry in changed["modules"] if entry["role"] == "selection"
+        )
+        selection["semantic_output"] = "tampered-contract-v999"
+        rewritten = identity.derive_manifest_identities(ROOT, changed)
+        for before, after in zip(original, rewritten, strict=True):
+            if before["role"] == "selection":
+                self.assertNotEqual(
+                    before["canonical"]["semantic_sha256"],
+                    after["canonical"]["semantic_sha256"],
+                )
+            else:
+                self.assertEqual(
+                    before["canonical"]["semantic_sha256"],
+                    after["canonical"]["semantic_sha256"],
+                )
 
 
 if __name__ == "__main__":
