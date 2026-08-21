@@ -88,6 +88,11 @@ GEN10_B1_SUBJECT = "proof: reapply Gate-B nudge component gen10 doctor effective
 GEN10_B2_SUBJECT = "proof: reapply Gate-B usage component gen10 doctor effective scope"
 GEN10_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen10 doctor effective scope"
 
+GEN11_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen11 context efficiency roadmap"
+GEN11_B1_SUBJECT = "proof: reapply Gate-B nudge component gen11 context efficiency roadmap"
+GEN11_B2_SUBJECT = "proof: reapply Gate-B usage component gen11 context efficiency roadmap"
+GEN11_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen11 context efficiency roadmap"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -346,6 +351,24 @@ GENERATIONS: tuple[Generation, ...] = (
             }
         ),
     ),
+    Generation(
+        name="gen11",
+        bless_subject=GEN11_BLESS_SUBJECT,
+        b1_subject=GEN11_B1_SUBJECT,
+        b2_subject=GEN11_B2_SUBJECT,
+        shared_subject=GEN11_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(
+            {
+                "context-guard-kit/context_guard_commands.py",
+                "plugins/context-guard/lib/context_guard_commands.py",
+            }
+        ),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -364,6 +387,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "f4891db1972aa5f423ad7942e58746371ff40b4ba3f9c73d8310b66b93ea6ae3",
     "0158d442cdfb95359d5ac7226f19de9417ad001d536c8ce0084de352c9bd166f",
     "f7a6ae820ba00ae823b2b1345500f55e7e47ea9c34da42859aed26967f99bbda",
+    "af751929e8c0255b9908c2b0ff0305bd6a624ad9a1601a68388ce4d080d4e779",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
