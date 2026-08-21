@@ -1,3 +1,6 @@
+# typed: strict
+# frozen_string_literal: true
+
 # Homebrew formula draft for ContextGuard.
 # Replace URL/SHA/tag during release packaging; do not publish with SHA placeholder.
 class ContextGuard < Formula
@@ -30,6 +33,7 @@ class ContextGuard < Formula
   test do
     assert_match version.to_s, shell_output("#{bin}/context-guard --version")
     mkdir testpath/"project"
-    system bin/"context-guard", "setup", "--root", testpath/"project", "--agent", "codex", "--scope", "project", "--plan"
+    system bin/"context-guard", "setup", "--root", testpath/"project",
+           "--agent", "codex", "--scope", "project", "--plan"
   end
 end
