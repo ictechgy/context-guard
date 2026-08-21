@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import selectors
+import signal
 import stat
 import subprocess
 import sys
@@ -28,6 +30,9 @@ MAX_EXACT_BYTES = 1_000_000
 MAX_SOURCE_BYTES = 10_000_000
 MAX_REVISION_BYTES = 10_000_000
 MAX_REVISION_FILES = 4_096
+MAX_GIT_STDOUT_BYTES = 2_000_000
+MAX_GIT_STDERR_BYTES = 128_000
+MAX_GIT_SECONDS = 10
 MAX_METADATA_BYTES = 128_000
 HANDLE_RE = re.compile(r"^contextguard-memory:([a-f0-9]{32})$")
 SECRET_RE = re.compile(
@@ -240,17 +245,70 @@ def git(root: Path, *args: str) -> bytes:
         "SSH_ASKPASS": "/usr/bin/false", "LANG": "C", "LC_ALL": "C",
         "PATH": "/usr/bin:/bin",
     }
+    command = [
+        executable,
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        *args,
+    ]
     try:
-        proc = subprocess.run(
-            [executable, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *args],
-            cwd=root, env=environment, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+        proc = subprocess.Popen(
+            command,
+            cwd=root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        raise MemoryError("project must be a readable Git worktree") from None
-    if proc.returncode != 0:
+    except OSError:
         raise MemoryError("project must be a readable Git worktree")
-    return proc.stdout
+    assert proc.stdout is not None and proc.stderr is not None
+    selector = selectors.DefaultSelector()
+    stdout_buffer = bytearray()
+    stderr_buffer = bytearray()
+    streams = {
+        proc.stdout.fileno(): (proc.stdout, stdout_buffer, MAX_GIT_STDOUT_BYTES),
+        proc.stderr.fileno(): (proc.stderr, stderr_buffer, MAX_GIT_STDERR_BYTES),
+    }
+    for descriptor in streams:
+        os.set_blocking(descriptor, False)
+        selector.register(descriptor, selectors.EVENT_READ)
+    deadline = time.monotonic() + MAX_GIT_SECONDS
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            for key, _events in selector.select(min(0.25, remaining)):
+                stream, buffer, maximum = streams[key.fd]
+                chunk = os.read(key.fd, 64 * 1024)
+                if not chunk:
+                    selector.unregister(key.fd)
+                    continue
+                buffer.extend(chunk)
+                if len(buffer) > maximum:
+                    raise OverflowError
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        return_code = proc.wait(timeout=remaining)
+    except (OSError, OverflowError, TimeoutError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        raise MemoryError("project Git metadata exceeds the bounded identity limit") from None
+    finally:
+        selector.close()
+        proc.stdout.close()
+        proc.stderr.close()
+    if return_code != 0:
+        raise MemoryError("project must be a readable Git worktree")
+    return bytes(stdout_buffer)
 
 
 def project_identity(root: Path) -> dict[str, Any]:
@@ -261,6 +319,16 @@ def project_identity(root: Path) -> dict[str, Any]:
 def revision_identity(root: Path, store: Path) -> dict[str, str]:
     head = git(root, "rev-parse", "HEAD").decode("ascii").strip()
     staged = git(root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv")
+    staged_names = git(
+        root,
+        "diff",
+        "--cached",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--no-ext-diff",
+        "--no-textconv",
+    ).split(b"\0")
     names = git(root, "ls-files", "-m", "-o", "--exclude-standard", "-z").split(b"\0")
     try:
         store_rel = store.relative_to(root).as_posix()
@@ -268,17 +336,27 @@ def revision_identity(root: Path, store: Path) -> dict[str, str]:
         store_rel = ""
     rows: list[dict[str, str]] = []
     revision_bytes = 0
-    revision_files = 0
-    for raw in names:
+    identity_names = {
+        raw
+        for raw in (*staged_names, *names)
+        if raw
+        and not (
+            store_rel
+            and (
+                os.fsdecode(raw) == store_rel
+                or os.fsdecode(raw).startswith(store_rel + "/")
+            )
+        )
+    }
+    if len(identity_names) > MAX_REVISION_FILES:
+        raise MemoryError("worktree identity exceeds bounded file limit")
+    for raw in sorted(set(names)):
         if not raw:
             continue
         rel = os.fsdecode(raw)
         if store_rel and (rel == store_rel or rel.startswith(store_rel + "/")):
             continue
         path = root / rel
-        revision_files += 1
-        if revision_files > MAX_REVISION_FILES:
-            raise MemoryError("worktree identity exceeds bounded file limit")
         try:
             metadata = os.lstat(path)
         except OSError:

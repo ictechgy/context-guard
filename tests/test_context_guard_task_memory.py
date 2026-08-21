@@ -203,6 +203,24 @@ class TaskMemoryTests(unittest.TestCase):
                 list((aggregate / ".memory" / "records").glob("*.*")), []
             )
 
+    def test_revision_identity_counts_staged_only_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = self.make_project(Path(raw), "staged-revision")
+            for index in range(4_097):
+                (project / f"staged-{index:04d}.txt").write_text("", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "--", "."], cwd=project, check=True
+            )
+            refused = self.run_cli(
+                "--root", str(project), "--store", str(project / ".memory"),
+                "put", "--task", "task-1", "--source", "source.txt",
+                cwd=project, stdin="safe\n", ok=False,
+            )
+            self.assertEqual(refused.stdout, "")
+            self.assertEqual(
+                list((project / ".memory" / "records").glob("*.*")), []
+            )
+
     def test_eviction_cleanup_concurrent_writers_and_cross_project_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             parent = Path(raw)
