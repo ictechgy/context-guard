@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -52,6 +53,23 @@ def write_regular_atomic(path: Path, content: str) -> None:
             pass
 
 
+def homebrew_commands(
+    brew: Path, output: Path, formula_name: str
+) -> tuple[list[str], ...]:
+    return (
+        [
+            str(brew),
+            "style",
+            "--except-cops",
+            "Lint/DuplicateMethods",
+            str(output),
+        ],
+        [str(brew), "audit", "--strict", "--new", "--formula", formula_name],
+        [str(brew), "install", "--build-from-source", formula_name],
+        [str(brew), "test", formula_name],
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -59,7 +77,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--no-brew", action="store_true")
     args = parser.parse_args()
-    write_regular_atomic(args.output, render(args.version, args.sha256))
+    formula = render(args.version, args.sha256)
+    write_regular_atomic(args.output, formula)
     if not args.no_brew:
         brew = next(
             (
@@ -76,19 +95,50 @@ def main() -> int:
             raise SystemExit("trusted Homebrew executable is unsafe")
         environment = {
             "CI": "1", "HOME": str(Path.home()), "LANG": "C.UTF-8",
+            "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ENV_HINTS": "1",
             "LC_ALL": "C.UTF-8", "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         }
-        commands = (
-            [str(brew), "style", str(args.output)],
-            [str(brew), "audit", "--strict", "--new", "--formula", str(args.output)],
-            [str(brew), "install", "--build-from-source", str(args.output)],
-            [str(brew), "test", str(args.output)],
-        )
-        for command in commands:
+        tap_name = f"contextguard/release-verification-{uuid.uuid4().hex[:12]}"
+        formula_name = f"{tap_name}/context-guard"
+        tap_created = False
+        installed_by_verifier = False
+        try:
             subprocess.run(
-                command, cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+                [str(brew), "tap-new", "--no-git", tap_name],
+                cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
                 check=True, timeout=900,
             )
+            tap_created = True
+            tap_repository = subprocess.run(
+                [str(brew), "--repo", tap_name],
+                cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+                check=True, timeout=60, text=True, capture_output=True,
+            )
+            tap_root = Path(tap_repository.stdout.strip()).resolve(strict=True)
+            tap_formula = tap_root / "Formula" / "context-guard.rb"
+            write_regular_atomic(tap_formula, formula)
+            for index, command in enumerate(
+                homebrew_commands(brew, tap_formula, formula_name)
+            ):
+                subprocess.run(
+                    command, cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+                    check=True, timeout=900,
+                )
+                if index == 2:
+                    installed_by_verifier = True
+        finally:
+            if installed_by_verifier:
+                subprocess.run(
+                    [str(brew), "uninstall", "--force", formula_name],
+                    cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+                    check=True, timeout=900,
+                )
+            if tap_created:
+                subprocess.run(
+                    [str(brew), "untap", tap_name],
+                    cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+                    check=True, timeout=900,
+                )
     print(f"homebrew formula verification: OK ({args.output.name})")
     return 0
 

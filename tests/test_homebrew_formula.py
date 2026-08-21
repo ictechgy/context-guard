@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import runpy
 import subprocess
 import stat
 import sys
@@ -13,6 +14,49 @@ SCRIPT = ROOT / "scripts" / "verify_homebrew_formula.py"
 
 
 class HomebrewFormulaVerificationTests(unittest.TestCase):
+    def test_temp_tap_verification_ignores_only_cross_formula_duplicate(self) -> None:
+        namespace = runpy.run_path(
+            str(SCRIPT), run_name="homebrew_formula_verifier_test"
+        )
+        self.assertIn("homebrew_commands", namespace)
+        output = Path("/tmp/context-guard.rb")
+        formula_name = "contextguard/release-verification-123/context-guard"
+        commands = namespace["homebrew_commands"](
+            Path("/trusted/brew"), output, formula_name
+        )
+        self.assertEqual(
+            commands[0],
+            [
+                "/trusted/brew",
+                "style",
+                "--except-cops",
+                "Lint/DuplicateMethods",
+                str(output),
+            ],
+        )
+        self.assertEqual(commands[0].count("--except-cops"), 1)
+        self.assertEqual(
+            commands[1:],
+            (
+                [
+                    "/trusted/brew",
+                    "audit",
+                    "--strict",
+                    "--new",
+                    "--formula",
+                    formula_name,
+                ],
+                [
+                    "/trusted/brew",
+                    "install",
+                    "--build-from-source",
+                    formula_name,
+                ],
+                ["/trusted/brew", "test", formula_name],
+            ),
+        )
+        self.assertEqual(namespace["render"]("0.5.1", "a" * 64).count("def install"), 1)
+
     def test_renders_only_exact_version_and_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "context-guard.rb"
@@ -62,7 +106,5 @@ class HomebrewFormulaVerificationTests(unittest.TestCase):
                 )
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertFalse(output.exists())
-
-
 if __name__ == "__main__":
     unittest.main()
