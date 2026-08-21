@@ -619,6 +619,13 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertNotIn("chmod -R", ci)
         self.assertIn("/opt/hostedtoolcache/*", ci)
         self.assertIn("/Library/Frameworks/Python.framework/Versions/*", ci)
+        security = workflow_job_blocks(ci)["security-pr"]
+        self.assertIn("Normalize expected hosted Python permissions", security)
+        self.assertIn('sudo chmod go-w "$python_runtime"', security)
+        self.assertLess(
+            security.index("Normalize expected hosted Python permissions"),
+            security.index("Run provider-free security partition"),
+        )
 
     def test_homebrew_formula_template_uses_release_placeholders(self):
         template = read("packaging/homebrew/context-guard.rb.template")
