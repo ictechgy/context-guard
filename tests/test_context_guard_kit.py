@@ -537,6 +537,33 @@ def run_hook_payload(script: Path, payload: dict, cwd: Path = ROOT, env: dict[st
     )
 
 
+def failed_nudge_payload(
+    command: str,
+    tool_use_id: str,
+    *,
+    session_id: str = "session-a",
+    event: str = "PostToolUse",
+    exit_code: int = 1,
+    tool_name: str = "Bash",
+) -> dict:
+    payload = {
+        "session_id": session_id,
+        "hook_event_name": event,
+        "tool_name": tool_name,
+        "tool_input": {"command": command},
+        "tool_use_id": tool_use_id,
+    }
+    if event == "PostToolUse":
+        payload["tool_response"] = {
+            "exit_code": exit_code,
+            "interrupted": False,
+        }
+    else:
+        payload["error"] = "Command exited with non-zero status code 1"
+        payload["is_interrupt"] = False
+    return payload
+
+
 def hook_json(script: Path, command: str, cwd: Path = ROOT) -> dict:
     proc = run_hook(script, command, cwd)
     return json.loads(proc.stdout)
@@ -21670,14 +21697,15 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     commands = json.dumps(settings["hooks"])
                     self.assertIn("context-guard-rewrite-bash", commands)
                     self.assertIn("context-guard-guard-read", commands)
-                    post = settings["hooks"]["PostToolUse"]
-                    self.assertTrue(any(
-                        entry.get("matcher") == "Bash"
-                        and any("context-guard-failed-nudge" in (h.get("command") or "")
-                                or "failed_attempt_nudge.py" in (h.get("command") or "")
-                                for h in entry.get("hooks", []))
-                        for entry in post
-                    ), f"PostToolUse 에 nudge hook 이 추가되어야 한다 (got {post})")
+                    for event in ("PostToolUse", "PostToolUseFailure"):
+                        hooks = settings["hooks"][event]
+                        self.assertTrue(any(
+                            entry.get("matcher") == "Bash"
+                            and any("context-guard-failed-nudge" in (h.get("command") or "")
+                                    or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                    for h in entry.get("hooks", []))
+                            for entry in hooks
+                        ), f"{event} 에 nudge hook 이 추가되어야 한다 (got {hooks})")
 
                     again = subprocess.run(
                         [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--json"],
@@ -22367,13 +22395,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     explicit_data = json.loads(explicit.stdout)
                     self.assertTrue(explicit_data["choices"]["failed_attempt_nudge"])
                     explicit_settings = json.loads((explicit_root / ".claude" / "settings.json").read_text(encoding="utf-8"))
-                    self.assertTrue(any(
-                        entry.get("matcher") == "Bash"
-                        and any("context-guard-failed-nudge" in (h.get("command") or "")
-                                or "failed_attempt_nudge.py" in (h.get("command") or "")
-                                for h in entry.get("hooks", []))
-                        for entry in explicit_settings["hooks"]["PostToolUse"]
-                    ))
+                    for event in ("PostToolUse", "PostToolUseFailure"):
+                        self.assertTrue(any(
+                            entry.get("matcher") == "Bash"
+                            and any("context-guard-failed-nudge" in (h.get("command") or "")
+                                    or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                    for h in entry.get("hooks", []))
+                            for entry in explicit_settings["hooks"][event]
+                        ))
 
     def test_setup_wizard_upgrade_adds_default_failed_attempt_nudge_to_existing_settings(self):
         for script in SETUP_SCRIPTS:
@@ -22412,13 +22441,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     hooks_json = json.dumps(settings["hooks"])
                     self.assertIn("existing-bash-wrapper", hooks_json)
                     self.assertIn("existing-read-guard", hooks_json)
-                    self.assertTrue(any(
-                        entry.get("matcher") == "Bash"
-                        and any("context-guard-failed-nudge" in (h.get("command") or "")
-                                or "failed_attempt_nudge.py" in (h.get("command") or "")
-                                for h in entry.get("hooks", []))
-                        for entry in settings["hooks"]["PostToolUse"]
-                    ))
+                    for event in ("PostToolUse", "PostToolUseFailure"):
+                        self.assertTrue(any(
+                            entry.get("matcher") == "Bash"
+                            and any("context-guard-failed-nudge" in (h.get("command") or "")
+                                    or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                    for h in entry.get("hooks", []))
+                            for entry in settings["hooks"][event]
+                        ))
 
                     again = subprocess.run(
                         [
@@ -23673,64 +23703,81 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("updatedInput", out["hookSpecificOutput"])
 
     def test_failed_attempt_nudge_emits_only_after_two_consecutive_failures(self):
-        """동일 fingerprint Bash 명령이 두 번 연속 실패하면 nudge, 그 전에는 noop."""
+        """동일 logical Bash command의 두 고유 terminal failure에서 한 번만 nudge한다."""
         for script in NUDGE_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     cwd = Path(tmp)
-                    payload = {
-                        "session_id": "sess-a",
-                        "tool_name": "Bash",
-                        "tool_input": {"command": "pytest tests/auth.py"},
-                        "tool_response": {"exitCode": 1},
-                    }
-                    proc1 = run_hook_payload(script, payload, cwd=cwd)
+                    command = "pytest tests/auth.py"
+                    proc1 = run_hook_payload(
+                        script,
+                        failed_nudge_payload(command, "tool-a-1", session_id="sess-a"),
+                        cwd=cwd,
+                    )
                     self.assertEqual(json.loads(proc1.stdout), {})
-                    payload2 = dict(payload)
-                    payload2["tool_input"] = {"command": "pytest tests/auth.py -v"}
-                    proc2 = run_hook_payload(script, payload2, cwd=cwd)
+                    proc2 = run_hook_payload(
+                        script,
+                        failed_nudge_payload(
+                            command,
+                            "tool-a-2",
+                            session_id="sess-a",
+                            event="PostToolUseFailure",
+                        ),
+                        cwd=cwd,
+                    )
                     data = json.loads(proc2.stdout)
                     self.assertIn("hookSpecificOutput", data)
                     hook_out = data["hookSpecificOutput"]
-                    self.assertEqual(hook_out["hookEventName"], "PostToolUse")
+                    self.assertEqual(hook_out["hookEventName"], "PostToolUseFailure")
                     self.assertIn("/clear", hook_out["additionalContext"])
-                    self.assertIn("contextguard-artifact:<id>", hook_out["additionalContext"])
-                    self.assertIn("context-guard-artifact receipt/get/search", hook_out["additionalContext"])
                     state_files = list((cwd / ".context-guard").glob("failures-*.json"))
                     self.assertEqual(len(state_files), 1)
                     mode = state_files[0].stat().st_mode & 0o777
                     self.assertEqual(mode, 0o600)
 
-    def test_failed_attempt_nudge_adds_strategy_switch_after_three_failures(self):
+    def test_failed_attempt_nudge_emits_once_per_failure_episode(self):
         for script in NUDGE_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     cwd = Path(tmp)
-                    payload = {
-                        "session_id": "sess-strategy-switch",
-                        "tool_name": "Bash",
-                        "tool_input": {"command": "pytest tests/auth.py"},
-                        "tool_response": {"exitCode": 1},
-                    }
-                    outputs = [json.loads(run_hook_payload(script, payload, cwd=cwd).stdout) for _ in range(3)]
+                    outputs = [
+                        json.loads(
+                            run_hook_payload(
+                                script,
+                                failed_nudge_payload(
+                                    "pytest tests/auth.py",
+                                    f"tool-once-{index}",
+                                    session_id="sess-once",
+                                ),
+                                cwd=cwd,
+                            ).stdout
+                        )
+                        for index in range(3)
+                    ]
                     self.assertEqual(outputs[0], {})
-                    self.assertNotIn("Strategy-switch signal", outputs[1]["hookSpecificOutput"]["additionalContext"])
                     self.assertIn("/clear", outputs[1]["hookSpecificOutput"]["additionalContext"])
-                    self.assertIn("Strategy-switch signal", outputs[2]["hookSpecificOutput"]["additionalContext"])
+                    self.assertEqual(outputs[2], {})
+                    state = json.loads(
+                        (cwd / ".context-guard" / "failures-v2.json").read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(state["episodes"][0]["state"], "emitted")
+                    self.assertEqual(state["episodes"][0]["count"], 3)
 
     def test_failed_attempt_nudge_resets_when_pivoting_to_different_command(self):
         for script in NUDGE_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     cwd = Path(tmp)
-                    fail_a = {
-                        "session_id": "sess-b",
-                        "tool_name": "Bash",
-                        "tool_input": {"command": "pytest tests/auth.py"},
-                        "tool_response": {"exitCode": 1},
-                    }
-                    fail_b = dict(fail_a)
-                    fail_b["tool_input"] = {"command": "pytest tests/billing.py"}
+                    fail_a = failed_nudge_payload(
+                        "pytest tests/auth.py",
+                        "tool-pivot-a",
+                        session_id="sess-b",
+                    )
+                    fail_b = failed_nudge_payload(
+                        "pytest tests/billing.py",
+                        "tool-pivot-b",
+                        session_id="sess-b",
+                    )
                     proc_a = run_hook_payload(script, fail_a, cwd=cwd)
                     proc_b = run_hook_payload(script, fail_b, cwd=cwd)
                     self.assertEqual(json.loads(proc_a.stdout), {})
@@ -23777,36 +23824,43 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
     def test_failed_attempt_nudge_skips_success_and_non_bash_tools(self):
         """success Bash 호출과 non-Bash tool 모두 nudge 가 발화하지 않아야 한다.
 
-        non-Bash 호출은 상태 파일도 만들지 않는다. success Bash 호출은 fingerprint streak 을
-        끊기 위한 ok marker 를 기록하므로 상태 파일은 만들어진다 (의도된 동작).
+        non-Bash 호출은 상태 파일도 만들지 않는다. success Bash 호출은 동일 logical command의
+        active failure episode를 제거한다.
         """
         for script in NUDGE_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     cwd = Path(tmp)
-                    non_bash = {
-                        "session_id": "sess-c-readonly",
-                        "tool_name": "Read",
-                        "tool_input": {"file_path": "foo.py"},
-                        "tool_response": {"exitCode": 1},
-                    }
+                    non_bash = failed_nudge_payload(
+                        "ignored",
+                        "tool-read",
+                        session_id="sess-c-readonly",
+                        tool_name="Read",
+                    )
                     self.assertEqual(json.loads(run_hook_payload(script, non_bash, cwd=cwd).stdout), {})
                     self.assertFalse((cwd / ".context-guard").exists(),
                                      "non-Bash 호출은 상태 파일을 만들지 않아야 한다")
 
-                    success = {
-                        "session_id": "sess-c-success",
-                        "tool_name": "Bash",
-                        "tool_input": {"command": "pytest tests/auth.py"},
-                        "tool_response": {"exitCode": 0},
-                    }
+                    command = "pytest tests/auth.py"
+                    failure = failed_nudge_payload(
+                        command,
+                        "tool-success-failure",
+                        session_id="sess-c-success",
+                    )
+                    self.assertEqual(json.loads(run_hook_payload(script, failure, cwd=cwd).stdout), {})
+                    success = failed_nudge_payload(
+                        command,
+                        "tool-success",
+                        session_id="sess-c-success",
+                        exit_code=0,
+                    )
                     self.assertEqual(json.loads(run_hook_payload(script, success, cwd=cwd).stdout), {})
                     state_files = list((cwd / ".context-guard").glob("failures-*.json"))
                     self.assertEqual(len(state_files), 1,
-                                     "success 호출은 ok marker 를 위해 상태 파일을 만든다")
-                    entries = json.loads(state_files[0].read_text(encoding="utf-8"))
-                    self.assertTrue(entries and entries[-1].get("ok") is True,
-                                    "success 호출은 ok marker 로 streak 을 끊어야 한다")
+                                     "success terminal event는 durable state에 기록된다")
+                    state = json.loads(state_files[0].read_text(encoding="utf-8"))
+                    self.assertEqual(state["episodes"], [])
+                    self.assertEqual(len(state["events"]), 2)
 
     def test_failed_attempt_nudge_handles_malformed_payload(self):
         """malformed JSON / 누락 필드에서도 hook 이 죽지 않고 noop 응답해야 한다."""
@@ -23829,40 +23883,56 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     cwd = Path(tmp)
                     seq = [("pytest tests/auth.py", 1), ("pytest tests/auth.py", 0), ("pytest tests/auth.py", 1)]
                     outputs = []
-                    for cmd, exit_code in seq:
-                        payload = {
-                            "session_id": "sess-reset",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": cmd},
-                            "tool_response": {"exitCode": exit_code},
-                        }
+                    for index, (cmd, exit_code) in enumerate(seq):
+                        payload = failed_nudge_payload(
+                            cmd,
+                            f"tool-reset-{index}",
+                            session_id="sess-reset",
+                            exit_code=exit_code,
+                        )
                         proc = run_hook_payload(script, payload, cwd=cwd)
                         outputs.append(json.loads(proc.stdout))
                     self.assertEqual(outputs, [{}, {}, {}],
                                      "성공 marker 가 fingerprint streak 을 끊어야 한다")
 
     def test_failed_attempt_nudge_skips_when_session_id_missing(self):
-        """session_id 가 없으면 cross-session 오염 방지를 위해 noop 하고 상태 파일도 만들지 않는다."""
+        """session_id가 없으면 episode/event 전이는 없고 bounded reason counter만 남긴다."""
         for script in NUDGE_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     cwd = Path(tmp)
-                    payload_no_session = {
-                        "tool_name": "Bash",
-                        "tool_input": {"command": "pytest tests/auth.py"},
-                        "tool_response": {"exitCode": 1},
-                    }
+                    payload_no_session = failed_nudge_payload(
+                        "pytest tests/auth.py",
+                        "tool-no-session-1",
+                        session_id="",
+                    )
+                    payload_no_session.pop("session_id")
                     proc1 = run_hook_payload(script, payload_no_session, cwd=cwd)
-                    proc2 = run_hook_payload(script, payload_no_session, cwd=cwd)
+                    proc2 = run_hook_payload(
+                        script,
+                        {**payload_no_session, "tool_use_id": "tool-no-session-2"},
+                        cwd=cwd,
+                    )
                     self.assertEqual(json.loads(proc1.stdout), {})
                     self.assertEqual(json.loads(proc2.stdout), {})
-                    self.assertFalse((cwd / ".context-guard").exists(),
-                                     "session_id 가 없으면 상태 파일을 만들지 않아야 한다")
 
                     # 빈 문자열 session_id 도 동일하게 거부.
-                    proc3 = run_hook_payload(script, {**payload_no_session, "session_id": ""}, cwd=cwd)
+                    proc3 = run_hook_payload(
+                        script,
+                        {
+                            **payload_no_session,
+                            "session_id": "",
+                            "tool_use_id": "tool-no-session-3",
+                        },
+                        cwd=cwd,
+                    )
                     self.assertEqual(json.loads(proc3.stdout), {})
-                    self.assertFalse((cwd / ".context-guard").exists())
+                    state = json.loads(
+                        (cwd / ".context-guard" / "failures-v2.json").read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(state["episodes"], [])
+                    self.assertEqual(state["events"], [])
+                    self.assertEqual(state["counters"]["missing_session"], 3)
 
     def test_failed_attempt_nudge_hashes_sensitive_session_labels_and_state(self):
         """session_id/command 에 secret/control 문자가 있어도 파일명·상태·출력에 raw 로 남기지 않는다."""
@@ -23873,14 +23943,18 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     cwd = Path(tmp)
-                    payload = {
-                        "session_id": session_id,
-                        "tool_name": "Bash",
-                        "tool_input": {"command": command},
-                        "tool_response": {"exitCode": 1},
-                    }
-                    self.assertEqual(json.loads(run_hook_payload(script, payload, cwd=cwd).stdout), {})
-                    proc = run_hook_payload(script, payload, cwd=cwd)
+                    first = failed_nudge_payload(
+                        command,
+                        "tool-secret-1",
+                        session_id=session_id,
+                    )
+                    second = failed_nudge_payload(
+                        command,
+                        "tool-secret-2",
+                        session_id=session_id,
+                    )
+                    self.assertEqual(json.loads(run_hook_payload(script, first, cwd=cwd).stdout), {})
+                    proc = run_hook_payload(script, second, cwd=cwd)
                     data = json.loads(proc.stdout)
                     self.assertIn("hookSpecificOutput", data)
                     rendered = proc.stdout + proc.stderr
@@ -23894,7 +23968,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         self.assertNotIn("\x1b", text)
                         self.assertNotIn("[31m", text)
                         self.assertNotIn(command, text)
-                    self.assertRegex(state_files[0].name, r"^failures-sess-[0-9a-f]{16}\.json$")
+                    self.assertEqual(state_files[0].name, "failures-v2.json")
 
     def test_failed_attempt_nudge_rejects_symlinked_state_file(self):
         """state file 이 심볼릭 링크로 미리 만들어져 있어도 그 link 를 따라 쓰지 않는다."""
@@ -24070,65 +24144,63 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
 
     def test_failed_attempt_nudge_main_logs_unsupported_state_read_and_continues(self):
         """hook main 은 state read 진단을 stderr 에 남기되 Bash 흐름은 막지 않는다."""
-        payload = {
-            "session_id": "sess-read-unsupported",
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest tests/auth.py"},
-            "tool_response": {"exitCode": 1},
-        }
+        payload = failed_nudge_payload(
+            "pytest tests/auth.py",
+            "tool-read-unsupported",
+            session_id="sess-read-unsupported",
+        )
         for index, script in enumerate(NUDGE_SCRIPTS):
             with self.subTest(script=script):
                 module = load_python_script_module(script, f"_failed_nudge_main_read_diag_{index}")
-                original_load = module.load_entries
-                original_save = module.save_entries
+                original_load = module.load_state
+                original_save = module.save_state
                 original_stdin = module.sys.stdin
                 original_stdout = module.sys.stdout
                 original_stderr = module.sys.stderr
 
-                def unsupported_load(path):
+                def unsupported_load(path=module.STATE_PATH):
                     raise module.UnsupportedSafeStateIOError(
                         module.UNSUPPORTED_STATE_IO_ERRNO,
                         "unsupported read",
                     )
 
-                module.load_entries = unsupported_load
-                module.save_entries = lambda path, entries: None
+                module.load_state = unsupported_load
+                module.save_state = lambda state, path=module.STATE_PATH: None
                 module.sys.stdin = io.StringIO(json.dumps(payload))
                 module.sys.stdout = io.StringIO()
                 module.sys.stderr = io.StringIO()
                 try:
                     self.assertEqual(module.main(), 0)
                     self.assertEqual(json.loads(module.sys.stdout.getvalue()), {})
-                    self.assertIn("state read skipped", module.sys.stderr.getvalue())
+                    self.assertIn("state update skipped", module.sys.stderr.getvalue())
                 finally:
-                    module.load_entries = original_load
-                    module.save_entries = original_save
+                    module.load_state = original_load
+                    module.save_state = original_save
                     module.sys.stdin = original_stdin
                     module.sys.stdout = original_stdout
                     module.sys.stderr = original_stderr
 
     def test_failed_attempt_nudge_main_logs_permission_state_read_and_continues(self):
         """EACCES 같은 read 실패도 조용히 숨기지 않고 stderr 진단을 남긴다."""
-        payload = {
-            "session_id": "sess-read-permission",
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest tests/auth.py"},
-            "tool_response": {"exitCode": 1},
-        }
+        payload = failed_nudge_payload(
+            "pytest tests/auth.py",
+            "tool-read-permission",
+            session_id="sess-read-permission",
+        )
         for index, script in enumerate(NUDGE_SCRIPTS):
             with self.subTest(script=script):
                 module = load_python_script_module(script, f"_failed_nudge_main_read_eacces_{index}")
-                original_load = module.load_entries
-                original_save = module.save_entries
+                original_load = module.load_state
+                original_save = module.save_state
                 original_stdin = module.sys.stdin
                 original_stdout = module.sys.stdout
                 original_stderr = module.sys.stderr
 
-                def denied_load(path):
+                def denied_load(path=module.STATE_PATH):
                     raise PermissionError(errno.EACCES, "permission denied", str(path))
 
-                module.load_entries = denied_load
-                module.save_entries = lambda path, entries: None
+                module.load_state = denied_load
+                module.save_state = lambda state, path=module.STATE_PATH: None
                 module.sys.stdin = io.StringIO(json.dumps(payload))
                 module.sys.stdout = io.StringIO()
                 module.sys.stderr = io.StringIO()
@@ -24136,11 +24208,11 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(module.main(), 0)
                     self.assertEqual(json.loads(module.sys.stdout.getvalue()), {})
                     stderr = module.sys.stderr.getvalue()
-                    self.assertIn("state read skipped", stderr)
+                    self.assertIn("state update skipped", stderr)
                     self.assertIn("permission denied", stderr)
                 finally:
-                    module.load_entries = original_load
-                    module.save_entries = original_save
+                    module.load_state = original_load
+                    module.save_state = original_save
                     module.sys.stdin = original_stdin
                     module.sys.stdout = original_stdout
                     module.sys.stderr = original_stderr
@@ -24148,37 +24220,36 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
     def test_failed_attempt_nudge_main_sanitizes_state_diagnostics(self):
         """state 진단 stderr 는 cwd, secret-shaped 값, control 문자를 raw 로 노출하지 않는다."""
         secret = "ghp_" + ("B" * 36)
-        payload = {
-            "session_id": f"sess-token={secret}",
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest tests/auth.py"},
-            "tool_response": {"exitCode": 1},
-        }
+        payload = failed_nudge_payload(
+            "pytest tests/auth.py",
+            "tool-diag-sanitize",
+            session_id=f"sess-token={secret}",
+        )
         for index, script in enumerate(NUDGE_SCRIPTS):
             with self.subTest(script=script):
                 module = load_python_script_module(script, f"_failed_nudge_main_diag_sanitize_{index}")
-                original_load = module.load_entries
-                original_save = module.save_entries
+                original_load = module.load_state
+                original_save = module.save_state
                 original_stdin = module.sys.stdin
                 original_stdout = module.sys.stdout
                 original_stderr = module.sys.stderr
 
-                def noisy_load(path):
+                def noisy_load(path=module.STATE_PATH):
                     raise PermissionError(
                         errno.EACCES,
                         f"permission denied in {Path.cwd()} token={secret}\x1b[31m",
                         str(path),
                     )
 
-                module.load_entries = noisy_load
-                module.save_entries = lambda path, entries: None
+                module.load_state = noisy_load
+                module.save_state = lambda state, path=module.STATE_PATH: None
                 module.sys.stdin = io.StringIO(json.dumps(payload))
                 module.sys.stdout = io.StringIO()
                 module.sys.stderr = io.StringIO()
                 try:
                     self.assertEqual(module.main(), 0)
                     stderr = module.sys.stderr.getvalue()
-                    self.assertIn("state read skipped", stderr)
+                    self.assertIn("state update skipped", stderr)
                     self.assertIn("permission denied", stderr)
                     self.assertNotIn(secret, stderr)
                     self.assertNotIn("token=ghp_", stderr)
@@ -24186,8 +24257,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertNotIn("[31m", stderr)
                     self.assertNotIn(str(Path.cwd()), stderr)
                 finally:
-                    module.load_entries = original_load
-                    module.save_entries = original_save
+                    module.load_state = original_load
+                    module.save_state = original_save
                     module.sys.stdin = original_stdin
                     module.sys.stdout = original_stdout
                     module.sys.stderr = original_stderr
@@ -24340,6 +24411,7 @@ if spec is None:
     spec = importlib.util.spec_from_loader("hook_under_test", loader)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 malformed_values = [
@@ -25683,7 +25755,7 @@ for malformed in malformed_values:
 
     def test_transcript_audit_reads_usage_and_reports_skips(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sample = Path(tmp) / "session.json"
+            sample = Path(tmp) / "session.jsonl"
             sample.write_text(
                 json.dumps({
                     "message": {
@@ -25795,11 +25867,11 @@ for malformed in malformed_values:
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
             sample.write_bytes(
-                b'{"usage":{"input_tokens":1}}\n'
+                b'{"message":{"usage":{"input_tokens":1}}}\n'
                 + b'{"blob":"'
                 + (b"x" * 200)
                 + b'"}\n'
-                + b'{"usage":{"output_tokens":2}}\n'
+                + b'{"message":{"usage":{"output_tokens":2}}}\n'
             )
             for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
                 with self.subTest(script=script):
@@ -25854,7 +25926,10 @@ for malformed in malformed_values:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "target.jsonl"
-            target.write_text(json.dumps({"usage": {"input_tokens": 7}}) + "\n", encoding="utf-8")
+            target.write_text(
+                json.dumps({"message": {"usage": {"input_tokens": 7}}}) + "\n",
+                encoding="utf-8",
+            )
             link = root / "00-linked.jsonl"
             try:
                 link.symlink_to(target)
@@ -25996,11 +26071,11 @@ for malformed in malformed_values:
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(
-                '{"usage":{"input_tokens":5},"total_cost_usd":0.25}\n'
-                '{"usage":{"input_tokens":NaN},"cost_usd":Infinity}\n'
-                '{"usage":{"input_tokens":-3},"total_cost_usd":-1,"cost_usd":0.5}\n'
+                '{"message":{"usage":{"input_tokens":5}},"total_cost_usd":0.25}\n'
+                '{"message":{"usage":{"input_tokens":NaN}},"cost_usd":Infinity}\n'
+                '{"message":{"usage":{"input_tokens":-3}},"total_cost_usd":-1,"cost_usd":0.5}\n'
                 '{"name":"claude_code.token.usage","value":Infinity,"attributes":{"type":"output"}}\n'
-                '{"usage":{"input_tokens":999999999999999999999999999999999999999999},"cost_usd":999999999999999999999999999999999999999999}\n',
+                '{"message":{"usage":{"input_tokens":999999999999999999999999999999999999999999}},"cost_usd":999999999999999999999999999999999999999999}\n',
                 encoding="utf-8",
             )
             for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
@@ -26012,16 +26087,16 @@ for malformed in malformed_values:
                         check=True,
                     )
                     data = json.loads(proc.stdout)
-                    self.assertEqual(data["tokens"]["input"], 1000000000000000005)
+                    self.assertEqual(data["tokens"]["input"], 5)
                     self.assertNotIn("output", data["tokens"])
                     self.assertEqual(data["cost_usd_observed"], 1e18 + 0.75)
 
-    def test_transcript_audit_preserves_unknown_otel_token_types_in_legacy_json(self):
+    def test_transcript_audit_ignores_unknown_message_usage_token_types(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(
-                '{"name":"claude_code.token.usage","value":9,"attributes":{"type":"mystery"}}\n'
-                '{"name":"claude_code.token.usage","value":3,"attributes":{"type":"cacheRead"}}\n',
+                '{"message":{"usage":{"mystery":9}}}\n'
+                '{"message":{"usage":{"cacheRead":3}}}\n',
                 encoding="utf-8",
             )
             for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
@@ -26033,16 +26108,16 @@ for malformed in malformed_values:
                         check=True,
                     )
                     data = json.loads(proc.stdout)
-                    self.assertEqual(data["tokens"]["mystery"], 9)
+                    self.assertNotIn("mystery", data["tokens"])
                     self.assertEqual(data["tokens"]["cache_read"], 3)
-                    self.assertEqual(data["total_tokens"], 12)
+                    self.assertEqual(data["total_tokens"], 3)
 
     def test_transcript_audit_feasibility_filters_unknown_otel_token_types(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(
-                '{"name":"claude_code.token.usage","value":9,"attributes":{"type":"mystery"}}\n'
-                '{"name":"claude_code.token.usage","value":3,"attributes":{"type":"cacheRead"}}\n',
+                '{"message":{"usage":{"mystery":9}}}\n'
+                '{"message":{"usage":{"cacheRead":3}}}\n',
                 encoding="utf-8",
             )
             for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
@@ -26058,17 +26133,19 @@ for malformed in malformed_values:
                     self.assertEqual(data["totals"]["total_tokens"], 3)
                     self.assertEqual(data["metric_availability"]["tokens"]["present_fields"], {"cache_read": 1})
                     self.assertNotIn("mystery", data["metric_availability"]["tokens"]["present_fields"])
-                    self.assertEqual(data["summary"]["tokens"]["mystery"], 9)
+                    self.assertNotIn("mystery", data["summary"]["tokens"])
 
     def test_transcript_audit_uses_stable_model_key_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(json.dumps({
-                "model": "preferred-model",
+                "message": {
+                    "model": "preferred-model",
+                    "usage": {"input_tokens": 1},
+                },
                 "model_id": "secondary-model",
                 "query_source": "main",
                 "querySource": "secondary",
-                "usage": {"input_tokens": 1},
             }) + "\n", encoding="utf-8")
             proc = subprocess.run(
                 [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
@@ -26083,7 +26160,13 @@ for malformed in malformed_values:
     def test_transcript_audit_handles_deep_json_iteratively(self):
         # Build the deep fixture as text so Python 3.11's recursive json encoder
         # does not fail before the iterative parser under test can run.
-        deep_json = '{"child":' * 1100 + '{"usage":{"input_tokens":1}}' + "}" * 1100
+        deep_json = (
+            '{"message":{"usage":{"input_tokens":1}},"child":'
+            + '{"child":' * 1100
+            + '{"leaf":true}'
+            + "}" * 1100
+            + "}"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "deep.jsonl"
             sample.write_text(deep_json + "\n", encoding="utf-8")
@@ -26101,14 +26184,16 @@ for malformed in malformed_values:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(
                 json.dumps({
-                    "model": "claude-sonnet-test",
                     "query_source": "tool",
                     "tool_name": "Bash",
                     "command": "pytest tests -q",
-                    "usage": {
-                        "input_tokens": 1000,
-                        "output_tokens": 9000,
-                        "cache_creation_input_tokens": 1200,
+                    "message": {
+                        "model": "claude-sonnet-test",
+                        "usage": {
+                            "input_tokens": 1000,
+                            "output_tokens": 9000,
+                            "cache_creation_input_tokens": 1200,
+                        },
                     },
                 }) + "\n",
                 encoding="utf-8",
@@ -26164,7 +26249,7 @@ for malformed in malformed_values:
                     "tool_name": "Bash",
                     "author": {"name": "Alice Should Not Be A Tool"},
                     "command": f"curl -H 'Authorization: Bearer {secret}' {dsn}; pytest tests -q",
-                    "usage": {"input_tokens": 1, "output_tokens": 6000},
+                    "message": {"usage": {"input_tokens": 1, "output_tokens": 6000}},
                 }) + "\n",
                 encoding="utf-8",
             )
@@ -26220,7 +26305,10 @@ for malformed in malformed_values:
             secret_dir = root / secret_component
             secret_dir.mkdir()
             sample = secret_dir / "session.jsonl"
-            sample.write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            sample.write_text(
+                json.dumps({"message": {"usage": {"input_tokens": 1}}}) + "\n",
+                encoding="utf-8",
+            )
             raw_path_hash = hashlib.sha256(str(sample.resolve()).encode("utf-8", errors="replace")).hexdigest()[:12]
 
             for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
@@ -27445,7 +27533,10 @@ for malformed in malformed_values:
             with self.subTest(label=label):
                 with tempfile.TemporaryDirectory() as tmp:
                     sample = Path(tmp) / "session.jsonl"
-                    sample.write_text(json.dumps({"usage": usage}) + "\n", encoding="utf-8")
+                    sample.write_text(
+                        json.dumps({"message": {"usage": usage}}) + "\n",
+                        encoding="utf-8",
+                    )
                     proc = subprocess.run(
                         [
                             sys.executable,
@@ -27501,7 +27592,10 @@ for malformed in malformed_values:
             with self.subTest(label=label):
                 with tempfile.TemporaryDirectory() as tmp:
                     sample = Path(tmp) / "session.jsonl"
-                    sample.write_text(json.dumps({"usage": usage}) + "\n", encoding="utf-8")
+                    sample.write_text(
+                        json.dumps({"message": {"usage": usage}}) + "\n",
+                        encoding="utf-8",
+                    )
                     proc = subprocess.run(
                         [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
                         text=True,
@@ -27527,10 +27621,12 @@ for malformed in malformed_values:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(
                 json.dumps({
-                    "usage": {
-                        "input_tokens": 100,
-                        "cache_read_input_tokens": 25,
-                        "cache_creation_input_tokens": 5,
+                    "message": {
+                        "usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 25,
+                            "cache_creation_input_tokens": 5,
+                        },
                     },
                     "total_cost_usd": 0.01,
                 }) + "\n{malformed json\n",
@@ -27576,7 +27672,10 @@ for malformed in malformed_values:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sample = root / "session.jsonl"
-            sample.write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            sample.write_text(
+                json.dumps({"message": {"usage": {"input_tokens": 1}}}) + "\n",
+                encoding="utf-8",
+            )
             sitecustomize = root / "sitecustomize.py"
             sitecustomize.write_text(
                 "import socket\n"
@@ -27874,26 +27973,32 @@ for malformed in malformed_values:
             records = [
                 {
                     "timestamp": "2026-06-06T00:00:00Z",
-                    "usage": {
-                        "input_tokens": 100,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0,
+                    "message": {
+                        "usage": {
+                            "input_tokens": 100,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 0,
+                        },
                     },
                 },
                 {
                     "timestamp": "2026-06-06T00:10:00Z",
-                    "usage": {
-                        "input_tokens": 100,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0,
+                    "message": {
+                        "usage": {
+                            "input_tokens": 100,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 0,
+                        },
                     },
                 },
                 {
                     "timestamp": "2026-06-06T00:20:00Z",
-                    "usage": {
-                        "input_tokens": 100,
-                        "cache_creation_input_tokens": 60_000,
-                        "cache_read_input_tokens": 0,
+                    "message": {
+                        "usage": {
+                            "input_tokens": 100,
+                            "cache_creation_input_tokens": 60_000,
+                            "cache_read_input_tokens": 0,
+                        },
                     },
                 },
             ]
@@ -28489,11 +28594,11 @@ for malformed in malformed_values:
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / "session.jsonl"
             transcript.write_text(
-                json.dumps({"usage": {
+                json.dumps({"message": {"usage": {
                     "input_tokens": 100,
                     "cacheRead": 600,
                     "cacheCreation": 100,
-                }}) + "\n",
+                }}}) + "\n",
                 encoding="utf-8",
             )
             payload = {
