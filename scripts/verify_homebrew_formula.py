@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,124 @@ def homebrew_commands(
     )
 
 
+def context_guard_is_installed(
+    brew: Path,
+    environment: dict[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> bool:
+    completed = runner(
+        [str(brew), "list", "--versions", "context-guard"],
+        cwd=ROOT,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=60,
+        text=True,
+        capture_output=True,
+    )
+    output = completed.stdout.strip()
+    if completed.returncode == 0 and output:
+        return True
+    if completed.returncode == 1 and not output:
+        return False
+    raise SystemExit("could not determine whether context-guard is installed")
+
+
+def verify_with_homebrew(
+    brew: Path,
+    output: Path,
+    formula: str,
+    environment: dict[str, str],
+    *,
+    tap_name: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> None:
+    if context_guard_is_installed(brew, environment, runner):
+        raise SystemExit(
+            "context-guard is already installed; use --no-brew or a clean runner"
+        )
+    formula_name = f"{tap_name}/context-guard"
+    tap_created = False
+    install_attempted = False
+    primary_error: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
+    try:
+        runner(
+            [str(brew), "tap-new", "--no-git", tap_name],
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            check=True,
+            timeout=900,
+        )
+        tap_created = True
+        tap_repository = runner(
+            [str(brew), "--repo", tap_name],
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            check=True,
+            timeout=60,
+            text=True,
+            capture_output=True,
+        )
+        tap_root_text = tap_repository.stdout.strip()
+        if not tap_root_text or not Path(tap_root_text).is_absolute():
+            raise SystemExit("Homebrew returned an invalid temporary tap path")
+        tap_root = Path(tap_root_text).resolve(strict=True)
+        tap_formula = tap_root / "Formula" / "context-guard.rb"
+        write_regular_atomic(tap_formula, formula)
+        for index, command in enumerate(
+            homebrew_commands(brew, output, formula_name)
+        ):
+            if index == 2:
+                install_attempted = True
+            runner(
+                command,
+                cwd=ROOT,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                check=True,
+                timeout=900,
+            )
+    except BaseException as error:
+        primary_error = error
+    finally:
+        if install_attempted:
+            try:
+                if context_guard_is_installed(brew, environment, runner):
+                    runner(
+                        [str(brew), "uninstall", "--force", formula_name],
+                        cwd=ROOT,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        check=True,
+                        timeout=900,
+                    )
+            except BaseException as error:
+                cleanup_errors.append(error)
+        if tap_created:
+            try:
+                runner(
+                    [str(brew), "untap", tap_name],
+                    cwd=ROOT,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    check=True,
+                    timeout=900,
+                )
+            except BaseException as error:
+                cleanup_errors.append(error)
+    if primary_error is not None:
+        for cleanup_error in cleanup_errors:
+            primary_error.add_note(
+                f"Homebrew cleanup also failed: {type(cleanup_error).__name__}"
+            )
+        raise primary_error
+    if cleanup_errors:
+        raise cleanup_errors[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -99,46 +218,9 @@ def main() -> int:
             "LC_ALL": "C.UTF-8", "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         }
         tap_name = f"contextguard/release-verification-{uuid.uuid4().hex[:12]}"
-        formula_name = f"{tap_name}/context-guard"
-        tap_created = False
-        installed_by_verifier = False
-        try:
-            subprocess.run(
-                [str(brew), "tap-new", "--no-git", tap_name],
-                cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
-                check=True, timeout=900,
-            )
-            tap_created = True
-            tap_repository = subprocess.run(
-                [str(brew), "--repo", tap_name],
-                cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
-                check=True, timeout=60, text=True, capture_output=True,
-            )
-            tap_root = Path(tap_repository.stdout.strip()).resolve(strict=True)
-            tap_formula = tap_root / "Formula" / "context-guard.rb"
-            write_regular_atomic(tap_formula, formula)
-            for index, command in enumerate(
-                homebrew_commands(brew, tap_formula, formula_name)
-            ):
-                subprocess.run(
-                    command, cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
-                    check=True, timeout=900,
-                )
-                if index == 2:
-                    installed_by_verifier = True
-        finally:
-            if installed_by_verifier:
-                subprocess.run(
-                    [str(brew), "uninstall", "--force", formula_name],
-                    cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
-                    check=True, timeout=900,
-                )
-            if tap_created:
-                subprocess.run(
-                    [str(brew), "untap", tap_name],
-                    cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
-                    check=True, timeout=900,
-                )
+        verify_with_homebrew(
+            brew, args.output, formula, environment, tap_name=tap_name
+        )
     print(f"homebrew formula verification: OK ({args.output.name})")
     return 0
 
