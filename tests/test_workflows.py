@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -49,11 +50,19 @@ class WorkflowSecurityTests(unittest.TestCase):
 
         self.assertEqual(
             set(jobs),
-            {"fast-pr", "security-pr", "exhaustive-linux", "exhaustive-macos"},
+            {
+                "fast-pr",
+                "core-pr",
+                "security-pr",
+                "exhaustive-linux",
+                "exhaustive-macos",
+            },
         )
         self.assertIn("github.event_name == 'pull_request'", jobs["fast-pr"])
         self.assertIn("python scripts/ci_test_gate.py fast", jobs["fast-pr"])
         self.assertIn("scripts/prepublish_check.py --skip-tests", jobs["fast-pr"])
+        self.assertIn("github.event_name == 'pull_request'", jobs["core-pr"])
+        self.assertIn("python scripts/ci_test_gate.py core", jobs["core-pr"])
         for partition in ("provider-free", "provider-live", "history", "serial"):
             self.assertIn(f"scripts/ci_test_gate.py {partition}", jobs["security-pr"])
         for name in ("exhaustive-linux", "exhaustive-macos"):
@@ -110,6 +119,76 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("release_tarball_sha256", homebrew)
         self.assertIn("python3 scripts/verify_homebrew_formula.py", homebrew)
         self.assertLess(homebrew.index("Preflight Homebrew tap credential"), homebrew.index("verify_homebrew_formula.py"))
+
+    def test_release_workflows_bind_main_push_ci_and_do_not_interpolate_string_inputs(self):
+        candidate = read(".github/workflows/npm-candidate.yml")
+        release = read(".github/workflows/github-release.yml")
+        release_preflight = release.split(
+            "- name: Preflight release credential and tag", 1
+        )[1].split("- name: Download exact build-once candidate assets", 1)[0]
+
+        self.assertIn("WORKFLOW_REF: ${{ github.ref }}", candidate)
+        self.assertIn('test "$WORKFLOW_REF" = "refs/heads/main"', candidate)
+        self.assertIn("python3 scripts/verify_release_commit.py", candidate)
+        self.assertIn("WORKFLOW_REF: ${{ github.ref }}", release_preflight)
+        self.assertIn('test "$WORKFLOW_REF" = "refs/heads/main"', release_preflight)
+        self.assertIn("python3 scripts/verify_release_commit.py", release_preflight)
+        self.assertIn(
+            "CANDIDATE_RUN_ID: ${{ github.event.inputs.candidate_run_id }}",
+            release_preflight,
+        )
+        self.assertIn(
+            "CANDIDATE_ARTIFACT_IDS: ${{ github.event.inputs.candidate_artifact_ids }}",
+            release_preflight,
+        )
+        self.assertNotIn(
+            '[[ "${{ github.event.inputs.candidate_run_id }}"',
+            release_preflight,
+        )
+        self.assertNotIn(
+            '[[ "${{ github.event.inputs.candidate_artifact_ids }}"',
+            release_preflight,
+        )
+
+    def test_release_commit_verifier_requires_successful_main_push_ci(self):
+        script = ROOT / "scripts" / "verify_release_commit.py"
+        commit = "a" * 40
+        valid = {
+            "workflow_runs": [
+                {
+                    "conclusion": "success",
+                    "event": "push",
+                    "head_branch": "main",
+                    "head_sha": commit,
+                    "path": ".github/workflows/ci.yml",
+                    "status": "completed",
+                }
+            ]
+        }
+
+        def run(payload):
+            return subprocess.run(
+                ["python3", str(script), "--commit-sha", commit],
+                input=json.dumps(payload),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(run(valid).returncode, 0)
+        for field, changed in (
+            ("conclusion", "failure"),
+            ("event", "workflow_dispatch"),
+            ("head_branch", "feature"),
+            ("head_sha", "b" * 40),
+            ("path", ".github/workflows/other.yml"),
+            ("status", "in_progress"),
+        ):
+            invalid = json.loads(json.dumps(valid))
+            invalid["workflow_runs"][0][field] = changed
+            with self.subTest(field=field):
+                self.assertNotEqual(run(invalid).returncode, 0)
 
     def test_pages_workflow_uses_pages_deployment_permissions_not_repo_write_token(self):
         pages = read(".github/workflows/pages.yml")
@@ -462,6 +541,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         ci = read(".github/workflows/ci.yml")
         job_blocks = workflow_job_blocks(ci)
         self.assertIn("timeout-minutes: 12", job_blocks["fast-pr"])
+        self.assertIn("timeout-minutes: 35", job_blocks["core-pr"])
         self.assertIn("timeout-minutes: 35", job_blocks["security-pr"])
         self.assertIn("timeout-minutes: 45", job_blocks["exhaustive-linux"])
         self.assertIn("timeout-minutes: 40", job_blocks["exhaustive-macos"])
@@ -471,8 +551,8 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_release_gates_install_node_before_npm_checks(self):
         ci = read(".github/workflows/ci.yml")
-        self.assertEqual(ci.count("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"), 3)
-        self.assertEqual(ci.count('node-version: "22"'), 3)
+        self.assertEqual(ci.count("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"), 4)
+        self.assertEqual(ci.count('node-version: "22"'), 4)
         for name in ("fast-pr", "exhaustive-linux", "exhaustive-macos"):
             job = workflow_job_blocks(ci)[name]
             self.assertLess(job.index("name: Set up Node"), job.index("prepublish_check.py"))
@@ -480,8 +560,8 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_normalizes_only_exact_hosted_runtime_files(self):
         ci = read(".github/workflows/ci.yml")
-        self.assertEqual(ci.count("Normalize expected hosted runtime permissions"), 2)
-        self.assertEqual(ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'), 2)
+        self.assertEqual(ci.count("Normalize expected hosted runtime permissions"), 3)
+        self.assertEqual(ci.count('sudo chmod go-w "$python_runtime" "$node_runtime"'), 3)
         self.assertNotIn("chmod -R", ci)
         self.assertIn("/opt/hostedtoolcache/*", ci)
         self.assertIn("/Library/Frameworks/Python.framework/Versions/*", ci)

@@ -32,10 +32,12 @@ jobs:
         shell: bash
         env:
           CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}
+          CONFIRM_BUILD: ${{ github.event.inputs.confirm_build }}
           WORKFLOW_COMMIT: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event.inputs.confirm_build }}" != "true" ]; then
+          if [ "$CONFIRM_BUILD" != "true" ]; then
             echo "::error::candidate builds require confirm_build=true"
             exit 1
           fi
@@ -44,6 +46,7 @@ jobs:
             exit 1
           fi
           test "$WORKFLOW_COMMIT" = "$CANDIDATE_COMMIT"
+          test "$WORKFLOW_REF" = "refs/heads/main"
 
       - name: Preflight GitHub OIDC and attestation trust
         shell: bash
@@ -73,6 +76,18 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
           test -z "$(git status --short)"
+
+      - name: Verify merged commit and successful main CI
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$CANDIDATE_COMMIT" refs/remotes/origin/main
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$CANDIDATE_COMMIT&event=push&per_page=100" |
+            python3 scripts/verify_release_commit.py --commit-sha "$CANDIDATE_COMMIT"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6

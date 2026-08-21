@@ -41,21 +41,39 @@ jobs:
       attestations: read
       contents: write
     steps:
+      - name: Checkout the exact release commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.inputs.release_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Preflight release credential and tag
         shell: bash
         env:
+          CANDIDATE_ARTIFACT_IDS: ${{ github.event.inputs.candidate_artifact_ids }}
+          CANDIDATE_RUN_ID: ${{ github.event.inputs.candidate_run_id }}
+          CONFIRM_RELEASE: ${{ github.event.inputs.confirm_release }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.event.inputs.release_commit_sha }}
           VERSION: ${{ github.event.inputs.version }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          test "${{ github.event.inputs.confirm_release }}" = true || { echo "::error::confirm_release=true is required"; exit 1; }
+          test "$CONFIRM_RELEASE" = true || { echo "::error::confirm_release=true is required"; exit 1; }
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || { echo "::error::version must be bare semver"; exit 1; }
           [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_commit_sha must be an exact lowercase commit"; exit 1; }
-          [[ "${{ github.event.inputs.candidate_run_id }}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::candidate_run_id must be numeric"; exit 1; }
-          [[ "${{ github.event.inputs.candidate_artifact_ids }}" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] || { echo "::error::candidate_artifact_ids must contain exactly two numeric IDs"; exit 1; }
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::candidate_run_id must be numeric"; exit 1; }
+          [[ "$CANDIDATE_ARTIFACT_IDS" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] || { echo "::error::candidate_artifact_ids must contain exactly two numeric IDs"; exit 1; }
+          IFS=, read -r first_artifact_id second_artifact_id <<< "$CANDIDATE_ARTIFACT_IDS"
+          test "$first_artifact_id" != "$second_artifact_id" || { echo "::error::candidate artifact IDs must be distinct"; exit 1; }
+          test "$WORKFLOW_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$RELEASE_COMMIT" refs/remotes/origin/main
           gh auth status
-          gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_COMMIT" --jq '.sha' | grep -Fx "$RELEASE_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$RELEASE_COMMIT&event=push&per_page=100" |
+            python3 scripts/verify_release_commit.py --commit-sha "$RELEASE_COMMIT"
           if gh release view "v$VERSION" >/dev/null 2>&1; then echo "::error::release tag already exists"; exit 1; fi
       - name: Download exact build-once candidate assets
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -75,10 +93,10 @@ jobs:
           manifest="$RUNNER_TEMP/release-assets/candidate-manifest.json"
           test -f "$manifest"
           test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="ascii"))["commit_sha"])' "$manifest")" = "$CANDIDATE_COMMIT"
-          gh attestation verify "$manifest" --repo ictechgy/context-guard --source-digest "$CANDIDATE_COMMIT" --signer-workflow ictechgy/context-guard/.github/workflows/npm-candidate.yml
+          gh attestation verify "$manifest" --repo ictechgy/context-guard --source-digest "$CANDIDATE_COMMIT" --signer-digest "$CANDIDATE_COMMIT" --signer-workflow ictechgy/context-guard/.github/workflows/npm-candidate.yml --deny-self-hosted-runners
           for asset in "$RUNNER_TEMP"/release-assets/*.tgz; do
             test -f "$asset"
-            gh attestation verify "$asset" --repo ictechgy/context-guard --source-digest "$CANDIDATE_COMMIT" --signer-workflow ictechgy/context-guard/.github/workflows/npm-candidate.yml
+            gh attestation verify "$asset" --repo ictechgy/context-guard --source-digest "$CANDIDATE_COMMIT" --signer-digest "$CANDIDATE_COMMIT" --signer-workflow ictechgy/context-guard/.github/workflows/npm-candidate.yml --deny-self-hosted-runners
           done
       - name: Publish GitHub release without rebuilding
         shell: bash
