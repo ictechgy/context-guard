@@ -85,6 +85,8 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
                 str(assets),
                 "--commit-sha",
                 "a" * 40,
+                "--version",
+                "0.6.0",
             ],
             cwd=ROOT,
             text=True,
@@ -98,7 +100,13 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
             assets, _manifest = self.stage(Path(name))
             self.assertEqual(self.run_verifier(assets).returncode, 0)
 
-        mutations = ("extra", "digest", "checksum", "single-package")
+        mutations = (
+            "extra",
+            "digest",
+            "checksum",
+            "single-package",
+            "version-mismatch",
+        )
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as name:
                 assets, manifest = self.stage(Path(name))
@@ -109,8 +117,16 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
                 elif mutation == "checksum":
                     (assets / "candidate-sha256sums.txt").write_text("not canonical\n")
                 else:
-                    removed = manifest["packages"].pop()
-                    (assets / removed["filename"]).unlink()
+                    if mutation == "single-package":
+                        removed = manifest["packages"].pop()
+                        (assets / removed["filename"]).unlink()
+                    else:
+                        root_package = next(
+                            package
+                            for package in manifest["packages"]
+                            if package["name"] == "@ictechgy/context-guard"
+                        )
+                        root_package["version"] = "9.9.9"
                     (assets / "candidate-manifest.json").write_text(
                         json.dumps(
                             manifest,
@@ -119,6 +135,13 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
                             sort_keys=True,
                         )
                         + "\n",
+                        encoding="ascii",
+                    )
+                    (assets / "candidate-sha256sums.txt").write_text(
+                        "".join(
+                            f'{package["sha256"]}  {package["filename"]}\n'
+                            for package in manifest["packages"]
+                        ),
                         encoding="ascii",
                     )
                 self.assertNotEqual(self.run_verifier(assets).returncode, 0)

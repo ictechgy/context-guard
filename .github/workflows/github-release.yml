@@ -88,12 +88,14 @@ jobs:
         env:
           CANDIDATE_COMMIT: ${{ github.event.inputs.release_commit_sha }}
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
           manifest="$RUNNER_TEMP/release-assets/candidate-manifest.json"
           python3 scripts/verify_release_assets.py \
             --assets-dir "$RUNNER_TEMP/release-assets" \
-            --commit-sha "$CANDIDATE_COMMIT"
+            --commit-sha "$CANDIDATE_COMMIT" \
+            --version "$VERSION"
           gh attestation verify "$manifest" --repo ictechgy/context-guard --source-digest "$CANDIDATE_COMMIT" --signer-digest "$CANDIDATE_COMMIT" --signer-workflow ictechgy/context-guard/.github/workflows/npm-candidate.yml --deny-self-hosted-runners
           for asset in "$RUNNER_TEMP"/release-assets/*.tgz; do
             test -f "$asset"

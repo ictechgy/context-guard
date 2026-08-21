@@ -156,6 +156,13 @@ class WorkflowSecurityTests(unittest.TestCase):
             '[[ "${{ github.event.inputs.candidate_artifact_ids }}"',
             release_preflight,
         )
+        self.assertIn('--version "$VERSION"', release)
+
+    def test_release_runbook_requires_all_three_pr_gates(self):
+        runbook = read("docs/release-runbook.md")
+
+        for check in ("fast-pr", "core-pr", "security-pr"):
+            self.assertIn(check, runbook)
 
     def test_release_commit_verifier_requires_successful_main_push_ci(self):
         script = ROOT / "scripts" / "verify_release_commit.py"

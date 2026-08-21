@@ -88,7 +88,7 @@ def read_regular(path: Path, maximum: int) -> bytes:
     return raw
 
 
-def verify(assets: Path, commit_sha: str) -> None:
+def verify(assets: Path, commit_sha: str, expected_version: str) -> None:
     try:
         directory = assets.resolve(strict=True)
         metadata = assets.lstat()
@@ -123,6 +123,7 @@ def verify(assets: Path, commit_sha: str) -> None:
     package_names: set[str] = set()
     filenames: set[str] = set()
     receipt_version: str | None = None
+    root_version: str | None = None
     for package in packages:
         if type(package) is not dict or set(package) != PACKAGE_KEYS:
             raise ReleaseAssetError("candidate package record is invalid")
@@ -157,8 +158,12 @@ def verify(assets: Path, commit_sha: str) -> None:
         filenames.add(filename)
         if name == RECEIPT_NAME:
             receipt_version = version
+        elif name == ROOT_NAME:
+            root_version = version
     if package_names != expected_names:
         raise ReleaseAssetError("candidate package set is incomplete")
+    if root_version != expected_version:
+        raise ReleaseAssetError("candidate root version does not match the release tag")
     if manifest.get("exact_dependency") != {
         "name": RECEIPT_NAME,
         "version": receipt_version,
@@ -181,11 +186,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--assets-dir", type=Path, required=True)
     parser.add_argument("--commit-sha", required=True)
+    parser.add_argument("--version", required=True)
     args = parser.parse_args()
     if COMMIT_RE.fullmatch(args.commit_sha) is None:
         raise SystemExit("commit SHA must be 40 lowercase hexadecimal characters")
+    if VERSION_RE.fullmatch(args.version) is None:
+        raise SystemExit("version must be a bare canonical semver")
     try:
-        verify(args.assets_dir, args.commit_sha)
+        verify(args.assets_dir, args.commit_sha, args.version)
     except (OSError, ReleaseAssetError) as exc:
         raise SystemExit(str(exc)) from None
     print("release asset verification: OK")
