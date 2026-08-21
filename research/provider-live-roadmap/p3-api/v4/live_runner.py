@@ -896,15 +896,15 @@ def _bound_selection_snapshot() -> dict[str, dict[str, object]]:
         for path, expected, label in declarations
     )
     with _SELECTION_SNAPSHOT_LOCK:
+        bound_raw = tuple(_read_bound(path, expected, label) for path, expected, label in declarations)
         if snapshot_key == _SELECTION_SNAPSHOT_KEY and _SELECTION_SNAPSHOT is not None:
             return _SELECTION_SNAPSHOT
 
-        _read_bound(*declarations[0])
         capture = parse_json(
-            _read_bound(*declarations[1]), "provider_input_capture"
+            bound_raw[1], "provider_input_capture"
         )
         report = parse_json(
-            _read_bound(*declarations[2]), "budget_policy_report"
+            bound_raw[2], "budget_policy_report"
         )
         decisions = report.get("decisions")
         if type(decisions) is not list:

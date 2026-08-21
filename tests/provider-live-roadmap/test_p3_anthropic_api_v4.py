@@ -381,13 +381,15 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                 )
             )
 
-    def test_selection_artifacts_are_parsed_once_per_unchanged_snapshot(self) -> None:
-        """Removing the selection snapshot cache must increase bound file reads."""
+    def test_selection_artifacts_are_reverified_but_parsed_once_per_snapshot(self) -> None:
+        """Cached decisions still require fresh bound-byte verification."""
 
         runner = load_runner()
         with mock.patch.object(
             runner, "_read_bound", wraps=runner._read_bound
-        ) as read_bound:
+        ) as read_bound, mock.patch.object(
+            runner, "parse_json", wraps=runner.parse_json
+        ) as parse_json:
             first = runner._expected_bound_selection(
                 "requests_boundary_hardening", "a111"
             )
@@ -396,7 +398,52 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
             )
 
         self.assertEqual(first, second)
-        self.assertEqual(read_bound.call_count, 3)
+        self.assertEqual(read_bound.call_count, 6)
+        self.assertEqual(parse_json.call_count, 2)
+
+    def test_selection_cache_refuses_artifact_changed_after_identity_collection(self) -> None:
+        """A warm cache cannot authorize bytes changed before its reuse decision."""
+
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as name:
+            temporary_root = Path(name)
+            artifacts = copy.deepcopy(runner.EXPECTED_ARTIFACTS)
+            for artifact_name in (
+                "budget_policy",
+                "provider_input_capture",
+                "budget_policy_report",
+            ):
+                source = ROOT / artifacts[artifact_name]["path"]
+                copied = temporary_root / source.name
+                copied.write_bytes(source.read_bytes())
+                artifacts[artifact_name]["path"] = str(copied)
+
+            with mock.patch.object(runner, "EXPECTED_ARTIFACTS", artifacts):
+                runner._expected_bound_selection(
+                    "requests_boundary_hardening", "a111"
+                )
+                original_identity = runner._selection_artifact_identity
+                changed = False
+
+                def change_after_identity(path, expected_sha256, label):
+                    nonlocal changed
+                    identity = original_identity(path, expected_sha256, label)
+                    if label == "budget_policy_report" and not changed:
+                        path.write_bytes(path.read_bytes() + b"\n")
+                        changed = True
+                    return identity
+
+                with mock.patch.object(
+                    runner,
+                    "_selection_artifact_identity",
+                    side_effect=change_after_identity,
+                ):
+                    with self.assertRaisesRegex(
+                        runner.LiveRunError, "changed_budget_policy_report"
+                    ):
+                        runner._expected_bound_selection(
+                            "requests_boundary_hardening", "a111"
+                        )
 
     def test_reservation_builds_each_request_body_once(self) -> None:
         """A duplicate request-body pass must fail this call-count contract."""
