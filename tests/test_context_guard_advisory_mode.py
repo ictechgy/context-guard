@@ -643,10 +643,12 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
             target.parent.mkdir(parents=True)
             bin_dir.mkdir()
             current = prefix
-            while current != target.parent:
+            fixture_directories = [current]
+            for part in target.parent.relative_to(prefix).parts:
+                current /= part
+                fixture_directories.append(current)
+            for current in fixture_directories:
                 current.chmod(0o755)
-                current /= target.parent.relative_to(current).parts[0]
-            target.parent.chmod(0o755)
             bin_dir.chmod(0o755)
             target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             target.chmod(0o755)
@@ -673,14 +675,45 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                 self.assertFalse(direct_directory_policy(bin_dir))
                 self.assertTrue(direct_directory_policy(target.parent))
                 self.assertIsNone(module["trusted_executable_candidate"](candidate))
+                negative_checked_directories = list(checked_directories)
+                checked_directories.clear()
                 bin_dir.chmod(0o755)
                 self.assertTrue(direct_directory_policy(bin_dir))
                 self.assertEqual(
                     module["trusted_executable_candidate"](candidate), target.resolve()
                 )
+            self.assertEqual(negative_checked_directories, [bin_dir.resolve()])
+            self.assertEqual(
+                set(checked_directories), {bin_dir.resolve(), target.parent.resolve()}
+            )
+
+    def test_live_collector_ancestor_chain_rejects_untrusted_intermediate(
+        self,
+    ) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_chain_test")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            descendant = root / "trusted" / "blocked" / "candidate"
+            descendant.mkdir(parents=True)
+            blocked = (root / "trusted" / "blocked").resolve()
+            checked_directories = []
+
+            def recording_policy(path: Path) -> bool:
+                resolved = path.resolve()
+                checked_directories.append(resolved)
+                return resolved != blocked
+
+            chain_globals = module["_trusted_ancestor_chain"].__globals__
+            self.assertIs(
+                chain_globals["_trusted_directory"], module["_trusted_directory"]
+            )
+            with mock.patch.dict(
+                chain_globals, {"_trusted_directory": recording_policy}
+            ):
+                self.assertFalse(module["_trusted_ancestor_chain"](descendant))
             self.assertEqual(
                 checked_directories,
-                [bin_dir.resolve(), bin_dir.resolve(), target.parent.resolve()],
+                [descendant.resolve(), blocked],
             )
 
     def test_live_codex_collection_refuses_before_any_local_or_provider_action(self) -> None:
