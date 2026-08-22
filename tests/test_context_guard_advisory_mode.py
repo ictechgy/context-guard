@@ -634,7 +634,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
 
     def test_live_collector_rejects_group_writable_executable_ancestors(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_path_test")
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=Path.home()) as directory:
             prefix = Path(directory) / "homebrew"
             bin_dir = prefix / "bin"
             target = prefix / "lib/node_modules/vendor/bin/codex.js"
