@@ -401,7 +401,8 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout)
-        self.assertFalse(plan["provider_calls_performed"])
+        self.assertFalse(plan["provider_cli_invocations_performed"])
+        self.assertFalse(plan["provider_transport_calls_observed"])
         self.assertEqual(plan["maximum_cli_invocations"], 16)
         self.assertNotIn("maximum_provider_calls", plan)
         self.assertLess(plan["treatment_prompt_bytes"], plan["control_prompt_bytes"])
@@ -484,6 +485,38 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                     }
                 )
             )
+        for conflicting_usage in (
+            {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cached_input_tokens": 7,
+                "cache_read_input_tokens": 400,
+            },
+            {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_creation_input_tokens": 5,
+                "cache_creation": {"ephemeral_5m_input_tokens": 300},
+            },
+            {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_creation": {"ephemeral_2h_input_tokens": 1000},
+            },
+            {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "future_cache_tokens": 1000,
+            },
+        ):
+            with self.subTest(usage=conflicting_usage), self.assertRaisesRegex(
+                Exception, "cache token"
+            ):
+                module["parsed_usage"](
+                    EXPECTED_RESPONSE,
+                    conflicting_usage,
+                    cached_is_input_breakout=False,
+                )
         with self.assertRaisesRegex(Exception, "tool event"):
             module["parse_codex_result"](
                 "\n".join(
@@ -796,6 +829,9 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         ).encode() + b"\n"
         self.assertEqual(raw, canonical)
         self.assertEqual(evidence["status"], "excluded")
+        self.assertEqual(evidence["cli_invocations_performed"], 18)
+        self.assertFalse(evidence["provider_transport_calls_observed"])
+        self.assertNotIn("provider_calls_performed", evidence)
         self.assertIn("fixed_arm_order", evidence["blocking_reasons"])
         self.assertIn("weak_quality_checker", evidence["blocking_reasons"])
         self.assertFalse(evidence["claim_boundary"]["long_term_savings_claim_allowed"])

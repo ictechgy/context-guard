@@ -192,14 +192,18 @@ def optional_token_field(usage: dict[str, Any], key: str) -> int | None:
 
 def cache_creation_tokens(usage: dict[str, Any]) -> int:
     flat = optional_token_field(usage, "cache_creation_input_tokens")
-    if flat is not None:
-        return flat
-    nested = usage.get("cache_creation")
+    if "cache_creation" not in usage:
+        return 0 if flat is None else flat
+    nested = usage["cache_creation"]
     if type(nested) is not dict:
-        return 0
-    five_minutes = optional_token_field(nested, "ephemeral_5m_input_tokens") or 0
-    one_hour = optional_token_field(nested, "ephemeral_1h_input_tokens") or 0
-    return five_minutes + one_hour
+        raise SampleError("provider cache token breakdown was invalid")
+    allowed = {"ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"}
+    if set(nested) - allowed:
+        raise SampleError("provider cache token breakdown contained unknown fields")
+    nested_total = sum(optional_token_field(nested, key) or 0 for key in allowed)
+    if flat is not None and flat != nested_total:
+        raise SampleError("provider cache token fields conflicted")
+    return nested_total
 
 
 def parsed_usage(
@@ -209,14 +213,31 @@ def parsed_usage(
     *,
     cached_is_input_breakout: bool,
 ) -> dict[str, Any]:
+    allowed_token_fields = {
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    }
+    if any(
+        "token" in key and key not in allowed_token_fields
+        for key in usage
+    ):
+        raise SampleError("provider cache token fields contained an unknown field")
     input_tokens = numeric_int(usage.get("input_tokens"))
     output_tokens = numeric_int(usage.get("output_tokens"))
     if input_tokens is None or output_tokens is None:
         raise SampleError("provider usage was incomplete")
-    if "cached_input_tokens" in usage:
-        cached = optional_token_field(usage, "cached_input_tokens")
-    else:
-        cached = optional_token_field(usage, "cache_read_input_tokens")
+    cached_alias = optional_token_field(usage, "cached_input_tokens")
+    cache_read = optional_token_field(usage, "cache_read_input_tokens")
+    if (
+        cached_alias is not None
+        and cache_read is not None
+        and cached_alias != cache_read
+    ):
+        raise SampleError("provider cache token fields conflicted")
+    cached = cached_alias if cached_alias is not None else cache_read
     cached = 0 if cached is None else cached
     cache_creation = cache_creation_tokens(usage)
     total_tokens = input_tokens + output_tokens
@@ -536,7 +557,8 @@ def dry_run_plan(
         "vendors": vendors,
         "repetitions": repetitions,
         "maximum_cli_invocations": len(vendors) * repetitions * 2,
-        "provider_calls_performed": False,
+        "provider_cli_invocations_performed": False,
+        "provider_transport_calls_observed": False,
         "task_or_repository_content_read": False,
         "control_prompt_bytes": len(control.encode("utf-8")),
         "treatment_prompt_bytes": len(treatment.encode("utf-8")),
