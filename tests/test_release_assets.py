@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,64 @@ SCRIPT = ROOT / "scripts" / "verify_release_assets.py"
 
 
 class ReleaseAssetVerificationTests(unittest.TestCase):
+    def test_release_metadata_versions_and_receipt_payload_boundary_are_exact(
+        self,
+    ) -> None:
+        root_package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        receipt_package = json.loads(
+            (ROOT / "packages/context-guard-receipt/package.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        root_version = root_package["version"]
+        receipt_version = receipt_package["version"]
+        self.assertEqual(
+            root_package["dependencies"]["@ictechgy/context-guard-receipt"],
+            receipt_version,
+        )
+
+        plugin = json.loads(
+            (ROOT / "plugins/context-guard/.claude-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        marketplace = json.loads(
+            (ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(plugin["version"], root_version)
+        self.assertEqual(marketplace["plugins"][0]["version"], root_version)
+
+        documents = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            ROOT / "docs/distribution.md",
+            ROOT / "plugins/context-guard/README.md",
+            ROOT / "plugins/context-guard/README.ko.md",
+        )
+        root_pattern = re.compile(r"@ictechgy/context-guard@(\d+\.\d+\.\d+)")
+        receipt_pattern = re.compile(
+            r"@ictechgy/context-guard-receipt@(\d+\.\d+\.\d+)"
+        )
+        observed_root_versions = set()
+        observed_receipt_versions = set()
+        for document in documents:
+            content = document.read_text(encoding="utf-8")
+            observed_root_versions.update(root_pattern.findall(content))
+            observed_receipt_versions.update(receipt_pattern.findall(content))
+        self.assertEqual(observed_root_versions, {root_version})
+        self.assertEqual(observed_receipt_versions, {receipt_version})
+
+        published_inventory = json.loads(
+            (
+                ROOT / "packages/context-guard-receipt/package-files.json"
+            ).read_text(encoding="utf-8")
+        )
+        published_paths = {entry["path"] for entry in published_inventory["files"]}
+        self.assertFalse(any(path.startswith("scripts/") for path in published_paths))
+        self.assertFalse(any(path.startswith("tests/") for path in published_paths))
+        self.assertNotIn("scripts/verify_protected_surfaces.py", published_paths)
+        self.assertNotIn("tests/contract/test_boundary.py", published_paths)
+
     def stage(self, root: Path) -> tuple[Path, dict[str, object]]:
         assets = root / "assets"
         assets.mkdir()
