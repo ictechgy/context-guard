@@ -642,22 +642,46 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
             target = prefix / "lib/node_modules/vendor/bin/codex.js"
             target.parent.mkdir(parents=True)
             bin_dir.mkdir()
+            current = prefix
+            while current != target.parent:
+                current.chmod(0o755)
+                current /= target.parent.relative_to(current).parts[0]
+            target.parent.chmod(0o755)
+            bin_dir.chmod(0o755)
             target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             target.chmod(0o755)
             candidate = bin_dir / "codex"
             candidate.symlink_to(target)
 
             direct_directory_policy = module["_trusted_directory"]
+            candidate_globals = module["trusted_executable_candidate"].__globals__
+            self.assertIs(
+                candidate_globals["_trusted_ancestor_chain"],
+                module["_trusted_ancestor_chain"],
+            )
+            checked_directories = []
+
+            def isolated_ancestor_policy(path: Path) -> bool:
+                checked_directories.append(path.resolve())
+                return direct_directory_policy(path)
+
             with mock.patch.dict(
-                module["trusted_executable_candidate"].__globals__,
-                {"_trusted_ancestor_chain": direct_directory_policy},
+                candidate_globals,
+                {"_trusted_ancestor_chain": isolated_ancestor_policy},
             ):
                 bin_dir.chmod(0o775)
+                self.assertFalse(direct_directory_policy(bin_dir))
+                self.assertTrue(direct_directory_policy(target.parent))
                 self.assertIsNone(module["trusted_executable_candidate"](candidate))
                 bin_dir.chmod(0o755)
+                self.assertTrue(direct_directory_policy(bin_dir))
                 self.assertEqual(
                     module["trusted_executable_candidate"](candidate), target.resolve()
                 )
+            self.assertEqual(
+                checked_directories,
+                [bin_dir.resolve(), bin_dir.resolve(), target.parent.resolve()],
+            )
 
     def test_live_codex_collection_refuses_before_any_local_or_provider_action(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_codex_gate_test")
