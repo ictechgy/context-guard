@@ -557,7 +557,7 @@ def dry_run_plan(
         "vendors": vendors,
         "repetitions": repetitions,
         "maximum_cli_invocations": len(vendors) * repetitions * 2,
-        "provider_cli_invocations_performed": False,
+        "provider_cli_invocations_performed": 0,
         "provider_transport_calls_observed": False,
         "task_or_repository_content_read": False,
         "control_prompt_bytes": len(control.encode("utf-8")),

@@ -401,7 +401,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout)
-        self.assertFalse(plan["provider_cli_invocations_performed"])
+        self.assertEqual(plan["provider_cli_invocations_performed"], 0)
         self.assertFalse(plan["provider_transport_calls_observed"])
         self.assertEqual(plan["maximum_cli_invocations"], 16)
         self.assertNotIn("maximum_provider_calls", plan)
