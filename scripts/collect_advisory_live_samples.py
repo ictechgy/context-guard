@@ -202,7 +202,7 @@ def cache_creation_tokens(usage: dict[str, Any]) -> int:
         raise SampleError("provider cache token breakdown contained unknown fields")
     nested_total = sum(optional_token_field(nested, key) or 0 for key in allowed)
     if flat is not None and flat != nested_total:
-        raise SampleError("provider cache token fields conflicted")
+        raise SampleError("provider cache token creation fields conflicted")
     return nested_total
 
 
@@ -236,7 +236,7 @@ def parsed_usage(
         and cache_read is not None
         and cached_alias != cache_read
     ):
-        raise SampleError("provider cache token fields conflicted")
+        raise SampleError("provider cache token read aliases conflicted")
     cached = cached_alias if cached_alias is not None else cache_read
     cached = 0 if cached is None else cached
     cache_creation = cache_creation_tokens(usage)

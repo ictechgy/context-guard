@@ -829,7 +829,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         ).encode() + b"\n"
         self.assertEqual(raw, canonical)
         self.assertEqual(evidence["status"], "excluded")
-        self.assertEqual(evidence["cli_invocations_performed"], 18)
+        self.assertEqual(evidence["provider_cli_invocations_performed"], 18)
         self.assertFalse(evidence["provider_transport_calls_observed"])
         self.assertNotIn("provider_calls_performed", evidence)
         self.assertIn("fixed_arm_order", evidence["blocking_reasons"])
