@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,93 @@ SCRIPT = ROOT / "scripts" / "verify_release_assets.py"
 
 
 class ReleaseAssetVerificationTests(unittest.TestCase):
+    def test_release_metadata_versions_and_receipt_payload_boundary_are_exact(
+        self,
+    ) -> None:
+        root_package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        receipt_package = json.loads(
+            (ROOT / "packages/context-guard-receipt/package.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        root_version = root_package["version"]
+        receipt_version = receipt_package["version"]
+        self.assertEqual(receipt_version, "0.2.1")
+        self.assertEqual(
+            root_package["dependencies"]["@ictechgy/context-guard-receipt"],
+            receipt_version,
+        )
+        receipt_file_patterns = set(receipt_package["files"])
+        self.assertFalse(
+            any(pattern.startswith("scripts") for pattern in receipt_file_patterns)
+        )
+        self.assertFalse(
+            any(pattern.startswith("tests") for pattern in receipt_file_patterns)
+        )
+
+        plugin = json.loads(
+            (ROOT / "plugins/context-guard/.claude-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        marketplace = json.loads(
+            (ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(plugin["version"], root_version)
+        marketplace_entries = [
+            entry
+            for entry in marketplace["plugins"]
+            if entry.get("name") == plugin["name"]
+        ]
+        self.assertEqual(len(marketplace_entries), 1)
+        self.assertEqual(marketplace_entries[0]["version"], root_version)
+
+        documents = {
+            ROOT / "README.md": f"@ictechgy/context-guard-receipt@{receipt_version}",
+            ROOT / "README.ko.md": f"@ictechgy/context-guard-receipt@{receipt_version}",
+            ROOT / "docs/distribution.md": (
+                f"@ictechgy/context-guard-receipt: {receipt_version}"
+            ),
+            ROOT / "plugins/context-guard/README.md": (
+                f"@ictechgy/context-guard-receipt@{receipt_version}"
+            ),
+            ROOT / "plugins/context-guard/README.ko.md": (
+                f"@ictechgy/context-guard-receipt@{receipt_version}"
+            ),
+        }
+        root_pattern = re.compile(r"@ictechgy/context-guard@(\d+\.\d+\.\d+)")
+        for document, receipt_reference in documents.items():
+            content = document.read_text(encoding="utf-8")
+            self.assertEqual(set(root_pattern.findall(content)), {root_version})
+            self.assertIn(receipt_reference, content)
+
+        inventory_path = ROOT / "packages/context-guard-receipt/package-files.json"
+        inventory_bytes = inventory_path.read_bytes()
+        self.assertEqual(
+            hashlib.sha256(inventory_bytes).hexdigest(),
+            "8d7b5cd94b34c89f37547eaf069be21a117b30a519bf499df2c52bd6459fe946",
+        )
+        policy = runpy.run_path(
+            str(ROOT / "context-guard-kit/bash_reference_policy.py"),
+            run_name="release_asset_policy_test",
+        )
+        self.assertEqual(
+            policy["EXPECTED_RECEIPT_PACKAGE_FILES_SHA256_BY_VERSION"][
+                receipt_version
+            ],
+            hashlib.sha256(inventory_bytes).hexdigest(),
+        )
+        published_inventory = json.loads(inventory_bytes)
+        receipt_root = ROOT / "packages/context-guard-receipt"
+        for entry in published_inventory["files"]:
+            content = (receipt_root / entry["path"]).read_bytes()
+            self.assertEqual(hashlib.sha256(content).hexdigest(), entry["sha256"])
+        published_paths = {entry["path"] for entry in published_inventory["files"]}
+        self.assertFalse(any(path.startswith("scripts/") for path in published_paths))
+        self.assertFalse(any(path.startswith("tests/") for path in published_paths))
+        self.assertNotIn("scripts/verify_protected_surfaces.py", published_paths)
+        self.assertNotIn("tests/contract/test_boundary.py", published_paths)
+
     def stage(self, root: Path) -> tuple[Path, dict[str, object]]:
         assets = root / "assets"
         assets.mkdir()
