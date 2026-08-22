@@ -334,6 +334,10 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_workflows.py",
     }
 )
+PROVIDER_FREE_PINNED_SUPPORT_SHA256 = {
+    "context-guard-kit/cost_guard.py": "b077d36d07349e36951523d76aed2f5e8bb9acb8f0a72ffbe13e215a61d3904a",
+    "plugins/context-guard/bin/context-guard-cost": "b077d36d07349e36951523d76aed2f5e8bb9acb8f0a72ffbe13e215a61d3904a",
+}
 EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 127
 RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/LICENSE', 'sha256': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/NOTICE', 'sha256': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779'},
@@ -719,6 +723,12 @@ def validate_stage2_historical_baseline_identity(
 ) -> None:
     if revision != EXPECTED_STAGE2_BASELINE_COMMIT:
         raise AssertionError("Stage 2 historical baseline revision drifted")
+    current_inventory = production_surface_inventory()
+    current_by_path = {entry["path"]: entry for entry in current_inventory}
+    for path, expected_sha256 in PROVIDER_FREE_PINNED_SUPPORT_SHA256.items():
+        entry = current_by_path.get(path)
+        if entry is None or entry.get("sha256") != expected_sha256:
+            raise AssertionError("pinned provider-free support identity drifted")
     historical_inventory = (
         historical_production_surface_inventory(revision) if inventory is None else inventory
     )
@@ -728,7 +738,7 @@ def validate_stage2_historical_baseline_identity(
         if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
     ]
     current_unchanged = [
-        entry for entry in production_surface_inventory()
+        entry for entry in current_inventory
         if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
     ]
     if historical_unchanged != current_unchanged:
@@ -859,6 +869,21 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
                 "tests/test_context_guard_advisory_mode.py",
             }.issubset(PROVIDER_FREE_SUPPORT_PATHS)
         )
+
+    def test_advisory_production_support_paths_are_exact_hash_pinned(self) -> None:
+        self.assertIn("PROVIDER_FREE_PINNED_SUPPORT_SHA256", globals())
+        pinned = globals()["PROVIDER_FREE_PINNED_SUPPORT_SHA256"]
+        expected_paths = {
+            "context-guard-kit/cost_guard.py",
+            "plugins/context-guard/bin/context-guard-cost",
+        }
+        self.assertEqual(set(pinned), expected_paths)
+        for relative_path, expected_sha256 in pinned.items():
+            with self.subTest(path=relative_path):
+                self.assertEqual(
+                    hashlib.sha256((REPO_ROOT / relative_path).read_bytes()).hexdigest(),
+                    expected_sha256,
+                )
 
     def test_historical_baseline_is_reconstructed_from_the_frozen_commit(self) -> None:
         historical_inventory = historical_production_surface_inventory()

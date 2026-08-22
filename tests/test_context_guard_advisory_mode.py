@@ -86,7 +86,8 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "below_break_even")
         self.assertEqual(decision["provider_context"], "")
         self.assertEqual(decision["provider_context_bytes"], 0)
-        self.assertIn("estimated_net_saved_bytes", decision["accounting"])
+        self.assertIn("estimated_gross_context_saved_bytes", decision["accounting"])
+        self.assertNotIn("estimated_net_saved_bytes", decision["accounting"])
         self.assertNotIn("provider_net_saved_bytes", decision["accounting"])
         self.assertEqual(decision["actions"], [])
         self.assertTrue(decision["measurement_eligible"])
@@ -193,7 +194,11 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         candidate["signals"]["repo_map_cached"] = True
         cached = self.planner()(candidate)
         self.assertTrue(cached["selected_features"]["graph"])
-        self.assertEqual(cached["accounting"]["graph_net_saved_bytes"], 2000)
+        self.assertEqual(cached["accounting"]["graph_replacement_delta_bytes"], 2000)
+        self.assertEqual(
+            cached["accounting"]["estimated_treatment_context_bytes"],
+            uncached["accounting"]["estimated_treatment_context_bytes"],
+        )
 
         candidate["signals"].update(
             {
@@ -204,6 +209,28 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         )
         no_candidate = self.planner()(candidate)
         self.assertFalse(no_candidate["selected_features"]["graph"])
+
+    def test_graph_delta_cannot_invent_pack_savings_or_cross_activation_floor(self) -> None:
+        candidate = workload()
+        candidate["signals"].update(
+            {
+                "candidate_context_bytes": 10000,
+                "selected_file_count": 3,
+                "graph_candidate_count": 1,
+                "graph_candidate_bytes": 100,
+                "graph_replacement_bytes": 10000,
+                "repo_map_cached": True,
+            }
+        )
+        candidate["limits"].update(
+            {"pack_bytes": 9000, "minimum_net_savings_bytes": 5000}
+        )
+        decision = self.planner()(candidate)
+        self.assertEqual(decision["decision"], "bypass")
+        self.assertEqual(decision["reason"], "below_break_even")
+        self.assertEqual(
+            decision["accounting"]["estimated_treatment_context_bytes"], 10000
+        )
 
     def test_local_overhead_budget_can_force_bypass(self) -> None:
         candidate = workload()
@@ -261,6 +288,38 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertNotIn("path", encoded)
         self.assertEqual(decision["provider_context_bytes"], 0)
 
+    def test_cli_rejects_duplicate_keys_at_every_advisory_depth(self) -> None:
+        encoded = json.dumps(workload(), separators=(",", ":"))
+        candidates = [
+            encoded.replace(
+                '"vendor":"codex"', '"vendor":"claude","vendor":"codex"'
+            ),
+            encoded.replace(
+                '"safe_mode":false', '"safe_mode":true,"safe_mode":false'
+            ),
+        ]
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-B",
+                        str(COST_GUARD),
+                        "advisory",
+                        "--workload",
+                        "-",
+                        "--json",
+                    ],
+                    cwd=ROOT,
+                    input=candidate,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(completed.stdout, "")
+                self.assertIn("duplicate JSON key", completed.stderr)
+
     def test_provider_free_sample_matrix_is_closed_and_factor_specific(self) -> None:
         completed = subprocess.run(
             [
@@ -288,6 +347,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertFalse(by_name["graph_no_candidate"]["selected_features"]["graph"])
         self.assertTrue(by_name["graph_cached_positive"]["selected_features"]["graph"])
         self.assertEqual(report["summary"]["provider_context_bytes"], 0)
+        self.assertLess(report["summary"]["planner_median_ms"], 5.0)
         encoded = json.dumps(report, sort_keys=True)
         self.assertNotIn("task_prompt", encoded)
         self.assertNotIn("path", encoded)
@@ -316,6 +376,14 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(plan["maximum_provider_calls"], 12)
         self.assertLess(plan["treatment_prompt_bytes"], plan["control_prompt_bytes"])
         self.assertFalse(plan["task_or_repository_content_read"])
+        self.assertEqual(
+            plan["arm_orders"],
+            ["control,advisory", "advisory,control", "control,advisory"],
+        )
+        self.assertEqual(
+            plan["advisory_decisions"],
+            {"claude": "trim_output", "codex": "trim_output"},
+        )
 
     def test_live_collector_parses_vendor_usage_without_double_counting_cache(self) -> None:
         self.assertTrue(LIVE_COLLECTOR.exists())
@@ -366,6 +434,31 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(codex["cached_input_tokens"], 40)
         self.assertEqual(codex["cache_creation_input_tokens"], 0)
 
+    def test_live_quality_gate_requires_one_exact_result_line(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_quality_test")
+        expected = "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry"
+        self.assertTrue(module["quality_passed"](expected))
+        self.assertTrue(module["quality_passed"](expected + "\n"))
+        self.assertFalse(module["quality_passed"](expected + "\nextra"))
+        self.assertFalse(
+            module["quality_passed"](
+                "CG_RESULT command=sample_suite check=sample_test_alpha actual=ok"
+            )
+        )
+        self.assertFalse(module["quality_passed"](expected + "\n" + expected))
+
+    def test_live_vendor_plans_bind_capabilities_and_measured_overhead(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_plan_test")
+        raw = module["synthetic_log"]()
+        claude = module["advisory_plan"](raw, "claude", 100)
+        codex = module["advisory_plan"](raw, "codex", 100)
+        self.assertFalse(claude["capabilities"]["hooks_effective"])
+        self.assertFalse(codex["capabilities"]["hooks_effective"])
+        self.assertEqual(claude["decision"], "trim_output")
+        self.assertEqual(codex["decision"], "trim_output")
+        blocked = module["advisory_plan"](raw, "codex", 251)
+        self.assertEqual(blocked["reason"], "local_overhead_budget_exceeded")
+
     def test_live_collector_refuses_network_without_confirmation(self) -> None:
         self.assertTrue(LIVE_COLLECTOR.exists())
         completed = subprocess.run(
@@ -394,14 +487,21 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
             evidence, ensure_ascii=True, separators=(",", ":"), sort_keys=True
         ).encode() + b"\n"
         self.assertEqual(raw, canonical)
-        self.assertEqual(evidence["repetitions_per_arm"], 3)
-        self.assertEqual(evidence["quality_passed"], {"advisory": 6, "control": 6})
-        self.assertEqual(evidence["prompt_bytes"], {"advisory": 420, "control": 16764})
+        self.assertEqual(evidence["status"], "excluded")
+        self.assertIn("fixed_arm_order", evidence["blocking_reasons"])
+        self.assertIn("weak_quality_checker", evidence["blocking_reasons"])
         self.assertFalse(evidence["claim_boundary"]["long_term_savings_claim_allowed"])
-        self.assertIsNone(evidence["vendors"]["codex"]["advisory"]["cost_usd"])
-        self.assertEqual(
-            evidence["vendors"]["claude"]["control"]["total_tokens"], 14519
+        self.assertNotIn("vendors", evidence)
+
+    def test_small_bypass_metric_captures_final_payload_equality(self) -> None:
+        module = runpy.run_path(str(BENCHMARK), run_name="advisory_payload_test")
+        decision = self.planner()(workload())
+        control = b"exact provider request"
+        treatment = module["final_provider_payload"](
+            decision, control=control, transformed=b"different"
         )
+        self.assertEqual(treatment, control)
+        self.assertEqual(module["provider_overhead_bytes"](control, treatment), 0)
 
 
 if __name__ == "__main__":

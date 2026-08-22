@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COST_GUARD = ROOT / "context-guard-kit" / "cost_guard.py"
 COMPRESSOR = ROOT / "context-guard-kit" / "context_compress.py"
 QUALITY_MARKERS = ("sample_suite", "sample_test_alpha", "retry")
+EXPECTED_RESPONSE = "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry"
 MAX_REPETITIONS = 5
 MAX_PROVIDER_CALLS = 20
 MAX_PROMPT_BYTES = 100_000
@@ -115,7 +116,9 @@ def compress_log(raw_log: str) -> tuple[str, float]:
     return compressed, elapsed_ms
 
 
-def advisory_plan(raw_log: str) -> dict[str, Any]:
+def advisory_plan(
+    raw_log: str, vendor: str, estimated_local_overhead_ms: int
+) -> dict[str, Any]:
     planner = runpy.run_path(
         str(COST_GUARD), run_name="contextguard_live_advisory"
     ).get("advisory_decision")
@@ -125,10 +128,10 @@ def advisory_plan(raw_log: str) -> dict[str, Any]:
     return planner(
         {
             "schema_version": "contextguard.advisory-workload.v1",
-            "vendor": "claude",
+            "vendor": vendor,
             "invocation": {
-                "safe_mode": True,
-                "hooks_available": True,
+                "safe_mode": vendor == "claude",
+                "hooks_available": vendor == "claude",
                 "explicit_wrappers_available": True,
                 "rules_loaded": False,
                 "skills_loaded": False,
@@ -136,7 +139,7 @@ def advisory_plan(raw_log: str) -> dict[str, Any]:
             },
             "signals": {
                 "candidate_context_bytes": raw_bytes,
-                "estimated_local_overhead_ms": 0,
+                "estimated_local_overhead_ms": estimated_local_overhead_ms,
                 "graph_candidate_bytes": 0,
                 "graph_candidate_count": 0,
                 "graph_replacement_bytes": 0,
@@ -253,6 +256,13 @@ def parse_codex_result(raw: str) -> dict[str, Any]:
     return parsed_usage(response, usage, cached_is_input_breakout=True)
 
 
+def quality_passed(response: str) -> bool:
+    normalized = response.replace("\r\n", "\n")
+    if normalized.endswith("\n"):
+        normalized = normalized[:-1]
+    return normalized == EXPECTED_RESPONSE
+
+
 def trusted_executable(vendor: str) -> Path:
     candidates = {
         "claude": (
@@ -335,7 +345,7 @@ def run_provider(vendor: str, prompt: str, timeout: int) -> dict[str, Any]:
         raise SampleError(f"{vendor} provider process failed")
     parsed = parse_claude_result(completed.stdout) if vendor == "claude" else parse_codex_result(completed.stdout)
     parsed["wall_time_seconds"] = wall_time
-    parsed["quality_passed"] = all(marker in parsed["response"] for marker in QUALITY_MARKERS)
+    parsed["quality_passed"] = quality_passed(parsed["response"])
     parsed.pop("response", None)
     return parsed
 
@@ -364,10 +374,39 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 ),
             }
         )
+    paired_deltas = []
+    by_pair: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        by_pair.setdefault((row["vendor"], row["repetition"]), {})[row["arm"]] = row
+    for (vendor, repetition), pair in sorted(by_pair.items()):
+        if set(pair) != {"control", "advisory"}:
+            raise SampleError("paired live sample was incomplete")
+        control = pair["control"]
+        advisory = pair["advisory"]
+        paired_deltas.append(
+            {
+                "vendor": vendor,
+                "repetition": repetition,
+                "arm_order": control["arm_order"],
+                "total_tokens_delta": advisory["total_tokens"] - control["total_tokens"],
+                "total_wall_time_seconds_delta": round(
+                    advisory["wall_time_seconds"]
+                    + advisory["local_preprocessing_ms"] / 1000
+                    - control["wall_time_seconds"],
+                    6,
+                ),
+                "cost_usd_delta": (
+                    round(advisory["cost_usd"] - control["cost_usd"], 8)
+                    if advisory["cost_usd"] is not None and control["cost_usd"] is not None
+                    else None
+                ),
+            }
+        )
     return {
         "schema_version": "contextguard.advisory-live-samples.v1",
         "runs": rows,
         "summaries": summaries,
+        "paired_deltas": paired_deltas,
         "claim_boundary": {
             "descriptive_only": True,
             "long_term_savings_claim_allowed": False,
@@ -376,7 +415,17 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def dry_run_plan(vendors: list[str], repetitions: int, control: str, treatment: str, decision: dict[str, Any]) -> dict[str, Any]:
+def arm_order(repetition: int) -> tuple[str, str]:
+    return ("control", "advisory") if repetition % 2 else ("advisory", "control")
+
+
+def dry_run_plan(
+    vendors: list[str],
+    repetitions: int,
+    control: str,
+    treatment: str,
+    decisions: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "schema_version": "contextguard.advisory-live-plan.v1",
         "vendors": vendors,
@@ -386,8 +435,13 @@ def dry_run_plan(vendors: list[str], repetitions: int, control: str, treatment: 
         "task_or_repository_content_read": False,
         "control_prompt_bytes": len(control.encode("utf-8")),
         "treatment_prompt_bytes": len(treatment.encode("utf-8")),
-        "advisory_decision": decision["decision"],
-        "provider_context_bytes": decision["provider_context_bytes"],
+        "advisory_decisions": {
+            vendor: decisions[vendor]["decision"] for vendor in vendors
+        },
+        "provider_context_bytes": sum(
+            decisions[vendor]["provider_context_bytes"] for vendor in vendors
+        ),
+        "arm_orders": [",".join(arm_order(repetition)) for repetition in range(1, repetitions + 1)],
     }
 
 
@@ -409,16 +463,26 @@ def main(argv: list[str] | None = None) -> int:
         raise SampleError("provider call cap exceeded")
     raw_log = synthetic_log()
     compressed, preprocessing_ms = compress_log(raw_log)
-    decision = advisory_plan(raw_log)
-    if decision["decision"] != "trim_output" or decision["provider_context_bytes"] != 0:
-        raise SampleError("advisory planner did not select zero-context trim output")
+    measured_overhead_ms = math.ceil(preprocessing_ms)
+    decisions = {
+        vendor: advisory_plan(raw_log, vendor, measured_overhead_ms)
+        for vendor in vendors
+    }
+    for decision in decisions.values():
+        if (
+            decision["decision"] != "trim_output"
+            or decision["activation_status"] != "active"
+            or not decision["measurement_eligible"]
+            or decision["provider_context_bytes"] != 0
+        ):
+            raise SampleError("advisory planner did not select eligible zero-context trim output")
     control_prompt = prompt_for(raw_log)
     treatment_prompt = prompt_for(compressed)
     if args.dry_run:
         print(
             json.dumps(
                 dry_run_plan(
-                    vendors, args.repetitions, control_prompt, treatment_prompt, decision
+                    vendors, args.repetitions, control_prompt, treatment_prompt, decisions
                 ),
                 sort_keys=True,
                 indent=2,
@@ -431,13 +495,18 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict[str, Any]] = []
     for vendor in vendors:
         for repetition in range(1, args.repetitions + 1):
-            for arm, prompt in (("control", control_prompt), ("advisory", treatment_prompt)):
+            order = arm_order(repetition)
+            prompts = {"control": control_prompt, "advisory": treatment_prompt}
+            for position, arm in enumerate(order, start=1):
+                prompt = prompts[arm]
                 result = run_provider(vendor, prompt, args.timeout_seconds)
                 rows.append(
                     {
                         "vendor": vendor,
                         "arm": arm,
                         "repetition": repetition,
+                        "sequence_position": position,
+                        "arm_order": ",".join(order),
                         "prompt_bytes": len(prompt.encode("utf-8")),
                         "local_preprocessing_ms": round(
                             preprocessing_ms if arm == "advisory" else 0.0, 6

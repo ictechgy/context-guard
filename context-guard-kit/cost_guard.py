@@ -303,6 +303,33 @@ def load_json_input(path: str, *, max_bytes: int = DEFAULT_MAX_BYTES) -> tuple[A
     return data, truncated
 
 
+def reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            fail("duplicate JSON key is not allowed")
+        result[key] = value
+    return result
+
+
+def load_advisory_json_input(path: str, *, max_bytes: int) -> Any:
+    text, truncated = read_text_path(path, max_bytes=max_bytes)
+    if truncated:
+        fail("JSON input exceeded max bytes")
+    try:
+        return json.loads(
+            text,
+            parse_constant=reject_json_constant,
+            object_pairs_hook=reject_duplicate_json_pairs,
+        )
+    except json.JSONDecodeError as exc:
+        fail(f"invalid JSON input at line {exc.lineno}: {exc.msg}")
+    except ValueError as exc:
+        if isinstance(exc, CostGuardError):
+            raise
+        fail(f"invalid JSON input: {exc}")
+
+
 def secret_count_in_text(text: str) -> int:
     return sum(1 for _ in SECRET_RE.finditer(text))
 
@@ -2601,7 +2628,7 @@ def advisory_result(
     minimum_savings: int,
     local_overhead_ms: int,
     max_local_overhead_ms: int,
-    graph_net_saved_bytes: int,
+    graph_replacement_delta_bytes: int,
 ) -> dict[str, Any]:
     gross_saved = max(0, control_bytes - treatment_bytes)
     return {
@@ -2621,12 +2648,11 @@ def advisory_result(
         "accounting": {
             "control_candidate_context_bytes": control_bytes,
             "estimated_treatment_context_bytes": treatment_bytes,
-            "gross_saved_bytes": gross_saved,
-            "estimated_net_saved_bytes": gross_saved,
+            "estimated_gross_context_saved_bytes": gross_saved,
             "minimum_net_savings_bytes": minimum_savings,
             "estimated_local_overhead_ms": local_overhead_ms,
             "max_local_overhead_ms": max_local_overhead_ms,
-            "graph_net_saved_bytes": graph_net_saved_bytes,
+            "graph_replacement_delta_bytes": graph_replacement_delta_bytes,
         },
         "claim_boundary": {
             "provider_token_or_cost_savings_claim_allowed": False,
@@ -2791,14 +2817,14 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
             activation_status="bypass", decision="bypass",
             reason="persistent_context_loaded", measurement_eligible=False,
             selected_features=no_features, actions=[], treatment_bytes=control_bytes,
-            graph_net_saved_bytes=0, **result_common,
+            graph_replacement_delta_bytes=0, **result_common,
         )
     if not invocation_values["host_tool_surface_equal_to_control"]:
         return advisory_result(
             activation_status="bypass", decision="bypass",
             reason="host_tool_surface_mismatch", measurement_eligible=False,
             selected_features=no_features, actions=[], treatment_bytes=control_bytes,
-            graph_net_saved_bytes=0, **result_common,
+            graph_replacement_delta_bytes=0, **result_common,
         )
 
     candidates: list[dict[str, Any]] = []
@@ -2810,7 +2836,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
             "treatment_bytes": control_bytes - (log_bytes - inline_log_bytes),
             "features": {**no_features, "trim_output": True},
             "actions": [{"kind": "trim_output", "max_inline_bytes": inline_log_bytes}],
-            "graph_net_saved_bytes": 0,
+            "graph_replacement_delta_bytes": 0,
         })
     largest_file_bytes = signal_values["largest_file_bytes"]
     symbol_slice_bytes = limit_values["symbol_slice_bytes"]
@@ -2820,7 +2846,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
             "treatment_bytes": control_bytes - (largest_file_bytes - symbol_slice_bytes),
             "features": {**no_features, "symbol": True},
             "actions": [{"kind": "symbol_slice", "max_bytes": symbol_slice_bytes}],
-            "graph_net_saved_bytes": 0,
+            "graph_replacement_delta_bytes": 0,
         })
     if signal_values["selected_file_count"] >= 3 and control_bytes > limit_values["pack_bytes"]:
         graph_net_saved = 0
@@ -2831,7 +2857,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
         ):
             graph_net_saved = graph_replacement_bytes - graph_candidate_bytes
             graph_selected = True
-        pack_bytes = max(0, limit_values["pack_bytes"] - graph_net_saved)
+        pack_bytes = limit_values["pack_bytes"]
         candidates.append({
             "decision": "adaptive_pack", "reason": "context_pack_savings",
             "treatment_bytes": pack_bytes,
@@ -2840,7 +2866,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
                 "kind": "context_pack", "budget_bytes": limit_values["pack_bytes"],
                 "adaptive": True, "symbol": False, "graph": graph_selected,
             }],
-            "graph_net_saved_bytes": graph_net_saved,
+            "graph_replacement_delta_bytes": graph_net_saved,
         })
     candidate = min(candidates, key=lambda item: item["treatment_bytes"]) if candidates else None
     if candidate is None or (
@@ -2850,33 +2876,33 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
         return advisory_result(
             activation_status="bypass", decision="bypass", reason="below_break_even",
             measurement_eligible=True, selected_features=no_features, actions=[],
-            treatment_bytes=control_bytes, graph_net_saved_bytes=0, **result_common,
+            treatment_bytes=control_bytes, graph_replacement_delta_bytes=0, **result_common,
         )
     if signal_values["estimated_local_overhead_ms"] > limit_values["max_local_overhead_ms"]:
         return advisory_result(
             activation_status="bypass", decision="bypass",
             reason="local_overhead_budget_exceeded", measurement_eligible=True,
             selected_features=no_features, actions=[], treatment_bytes=control_bytes,
-            graph_net_saved_bytes=0, **result_common,
+            graph_replacement_delta_bytes=0, **result_common,
         )
     if not invocation_values["explicit_wrappers_available"]:
         return advisory_result(
             activation_status="inactive", decision="bypass",
             reason="explicit_wrappers_unavailable", measurement_eligible=False,
             selected_features=no_features, actions=[], treatment_bytes=control_bytes,
-            graph_net_saved_bytes=0, **result_common,
+            graph_replacement_delta_bytes=0, **result_common,
         )
     return advisory_result(
         activation_status="active", decision=str(candidate["decision"]),
         reason=str(candidate["reason"]), measurement_eligible=True,
         selected_features=dict(candidate["features"]), actions=list(candidate["actions"]),
         treatment_bytes=int(candidate["treatment_bytes"]),
-        graph_net_saved_bytes=int(candidate["graph_net_saved_bytes"]), **result_common,
+        graph_replacement_delta_bytes=int(candidate["graph_replacement_delta_bytes"]), **result_common,
     )
 
 
 def advisory_command(args: argparse.Namespace) -> int:
-    workload, _truncated = load_json_input(args.workload, max_bytes=args.max_bytes)
+    workload = load_advisory_json_input(args.workload, max_bytes=args.max_bytes)
     emit(advisory_decision(workload), json_mode=args.json)
     return 0
 
@@ -3330,7 +3356,7 @@ def emit(data: dict[str, Any], *, json_mode: bool) -> None:
         accounting = data.get("accounting", {}) if isinstance(data.get("accounting"), dict) else {}
         print(
             f"{TOOL_NAME}: advisory {data.get('decision', 'bypass')} "
-            f"estimated_net_bytes={accounting.get('estimated_net_saved_bytes', 0)}"
+            f"gross_context_bytes={accounting.get('estimated_gross_context_saved_bytes', 0)}"
         )
     else:
         summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}

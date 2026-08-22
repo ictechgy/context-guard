@@ -80,8 +80,9 @@ local-overhead, and persistent-context cases without task content:
 python3 -B scripts/benchmark_advisory_mode.py --matrix-json --repetitions 1000
 ```
 
-The default benchmark output remains the small-task provider-visible overhead
-metric used by the performance gate.
+The default benchmark output remains the small-task final-payload overhead
+metric used by the advisory regression test. Planner timing is descriptive and
+not a cross-platform CI performance gate.
 
 ### Provider-free sample collected 2026-08-22
 
@@ -113,28 +114,16 @@ Claude runs in safe mode with tools disabled; Codex runs ephemeral, read-only,
 and with user config and exec-policy rules ignored. Each CLI owns its existing
 authentication. The harness does not read credential files.
 
-### Descriptive live sample collected 2026-08-22
+### Excluded live attempt collected 2026-08-22
 
-The bounded harness ran one synthetic sanitized-log task with three repetitions
-per arm and vendor. Control and advisory both passed quality 3/3 for Claude and
-3/3 for Codex. Prompt bytes fell from 16,764 to 420 (97.49%).
+The first bounded synthetic-log collection is retained only as an excluded
+attempt record. It used a fixed control-then-advisory order, a substring quality
+check, one Claude-shaped capability plan for both vendors, and an initial Claude
+cache-bucket parser that required correction. Those defects make its numeric
+token, cost, time, and quality comparisons non-authoritative; this document does
+not publish them as advisory evidence.
 
-| Vendor | Metric | Control median | Advisory median | Change |
-| --- | ---: | ---: | ---: | ---: |
-| Claude Sonnet 5 | total provider tokens | 14,519 | 6,857 | -52.77% |
-| Claude Sonnet 5 | provider-reported cost | $0.0737887 | $0.0237387 | -67.83% |
-| Claude Sonnet 5 | provider wall time | 3.762374 s | 3.654458 s | -2.87% |
-| Claude Sonnet 5 | wall time plus 100.689 ms local compression | 3.762374 s | 3.755147 s | -0.19% |
-| Codex Luna | total provider tokens | 19,296 | 15,717 | -18.55% |
-| Codex Luna | provider wall time | 5.052055 s | 4.366928 s | -13.56% |
-| Codex Luna | wall time plus 89.751 ms local compression | 5.052055 s | 4.456679 s | -11.78% |
-
-Claude totals include disjoint uncached input, cache-read input, cache-creation
-input, and output buckets. Codex cached input remains a breakout inside input
-tokens and is not double-counted. Codex subscription output did not provide an
-authoritative cost field, so no Codex cost change is reported.
-
-This is a small synthetic descriptive sample, not evidence for long-term average
-savings or every task type. The corrected Claude sample was recollected after a
-test caught and fixed an initial cache-bucket parser omission; the invalid token
-totals from that first collection are excluded.
+The corrected harness now alternates AB/BA order, records paired deltas, requires
+one exact result line, builds a separate capability plan for each vendor, and
+feeds measured local compression time into the overhead gate. A new provider
+sample must be collected and reviewed before any live numeric table is added.

@@ -131,7 +131,9 @@ def matrix_report(planner, repetitions: int) -> dict:
                 "estimated_treatment_context_bytes": accounting[
                     "estimated_treatment_context_bytes"
                 ],
-                "estimated_net_saved_bytes": accounting["estimated_net_saved_bytes"],
+                "estimated_gross_context_saved_bytes": accounting[
+                    "estimated_gross_context_saved_bytes"
+                ],
                 "provider_context_bytes": decision["provider_context_bytes"],
                 "planner_median_ms": round(statistics.median(durations_ms), 6),
             }
@@ -153,8 +155,8 @@ def matrix_report(planner, repetitions: int) -> dict:
             "estimated_treatment_context_bytes": sum(
                 row["estimated_treatment_context_bytes"] for row in rows
             ),
-            "estimated_net_saved_bytes": sum(
-                row["estimated_net_saved_bytes"] for row in rows
+            "estimated_gross_context_saved_bytes": sum(
+                row["estimated_gross_context_saved_bytes"] for row in rows
             ),
             "provider_context_bytes": sum(row["provider_context_bytes"] for row in rows),
             "planner_median_ms": round(
@@ -172,6 +174,16 @@ def repetition_count(value: str) -> int:
     if count < 1 or count > 10_000:
         raise argparse.ArgumentTypeError("must be between 1 and 10000")
     return count
+
+
+def final_provider_payload(
+    decision: dict, *, control: bytes, transformed: bytes
+) -> bytes:
+    return control if decision.get("decision") == "bypass" else transformed
+
+
+def provider_overhead_bytes(control: bytes, treatment: bytes) -> int:
+    return max(0, len(treatment) - len(control))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -203,7 +215,15 @@ def main(argv: list[str] | None = None) -> int:
         decision = planner(small_task_workload())
         if decision.get("decision") != "bypass":
             raise SystemExit("small advisory task did not bypass")
-        overhead = int(decision.get("provider_context_bytes", -1))
+        if int(decision.get("provider_context_bytes", -1)) != 0:
+            raise SystemExit("small advisory task exposed provider context")
+        control_payload = b"synthetic provider request"
+        treatment_payload = final_provider_payload(
+            decision,
+            control=control_payload,
+            transformed=control_payload + b"unexpected context",
+        )
+        overhead = provider_overhead_bytes(control_payload, treatment_payload)
     else:
         overhead = persistent_overhead
     print(f"small_task_provider_overhead_bytes={overhead}")
