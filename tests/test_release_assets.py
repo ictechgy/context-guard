@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,13 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
         self.assertEqual(
             root_package["dependencies"]["@ictechgy/context-guard-receipt"],
             receipt_version,
+        )
+        receipt_file_patterns = set(receipt_package["files"])
+        self.assertFalse(
+            any(pattern.startswith("scripts") for pattern in receipt_file_patterns)
+        )
+        self.assertFalse(
+            any(pattern.startswith("tests") for pattern in receipt_file_patterns)
         )
 
         plugin = json.loads(
@@ -75,7 +83,21 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
             hashlib.sha256(inventory_bytes).hexdigest(),
             "8d7b5cd94b34c89f37547eaf069be21a117b30a519bf499df2c52bd6459fe946",
         )
+        policy = runpy.run_path(
+            str(ROOT / "context-guard-kit/bash_reference_policy.py"),
+            run_name="release_asset_policy_test",
+        )
+        self.assertEqual(
+            policy["EXPECTED_RECEIPT_PACKAGE_FILES_SHA256_BY_VERSION"][
+                receipt_version
+            ],
+            hashlib.sha256(inventory_bytes).hexdigest(),
+        )
         published_inventory = json.loads(inventory_bytes)
+        receipt_root = ROOT / "packages/context-guard-receipt"
+        for entry in published_inventory["files"]:
+            content = (receipt_root / entry["path"]).read_bytes()
+            self.assertEqual(hashlib.sha256(content).hexdigest(), entry["sha256"])
         published_paths = {entry["path"] for entry in published_inventory["files"]}
         self.assertFalse(any(path.startswith("scripts/") for path in published_paths))
         self.assertFalse(any(path.startswith("tests/") for path in published_paths))
