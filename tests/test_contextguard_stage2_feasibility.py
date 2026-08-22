@@ -85,6 +85,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "context-guard-kit/context_pack_rendering.py",
         "context-guard-kit/context_pack_scanning.py",
         "context-guard-kit/context_pack_selection.py",
+        "context-guard-kit/cost_guard.py",
         "context-guard-kit/failed_attempt_nudge.py",
         "context-guard-kit/guard_large_read.py",
         "context-guard-kit/README.md",
@@ -98,6 +99,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "context-guard-kit/trim_command_output.py",
         "docs/distribution.md",
         "docs/release-runbook.md",
+        "docs/weightclass-advisory-mode.md",
         "package.json",
         "packaging/homebrew/context-guard.rb.template",
         "packages/context-guard-receipt/python/context_guard_receipt/external_approval_v2.py",
@@ -109,6 +111,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/bin/bash_reference_policy.py",
         "plugins/context-guard/bin/context-guard-bench",
         "plugins/context-guard/bin/context-guard-artifact",
+        "plugins/context-guard/bin/context-guard-cost",
         "plugins/context-guard/bin/context-guard-failed-nudge",
         "plugins/context-guard/bin/context-guard-guard-read",
         "plugins/context-guard/bin/context-guard-pack",
@@ -268,8 +271,11 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-free-roadmap/g6/v1/verify.py",
         "research/provider-free-roadmap/p1-v8-evidence-manifest.json",
         "research/token-savings-roadmap.md",
+        "research/weightclass-advisory-live-sample-2026-08-22.json",
+        "scripts/benchmark_advisory_mode.py",
         "scripts/build_npm_candidates.py",
         "scripts/ci_test_gate.py",
+        "scripts/collect_advisory_live_samples.py",
         "scripts/prepublish_check.py",
         "scripts/rehearse_measurement_study.py",
         "scripts/longitudinal_study.py",
@@ -322,6 +328,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_provider_live_ci_discovery.py",
         "tests/test_context_guard_shell_contract.py",
         "tests/test_context_guard_usage_reducer_v2.py",
+        "tests/test_context_guard_advisory_mode.py",
         "tests/test_release_candidate_smoke.py",
         "tests/test_release_assets.py",
         "tests/test_workflows.py",
@@ -838,6 +845,19 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
         self.assertIn(
             "packaging/homebrew/context-guard.rb.template",
             PROVIDER_FREE_SUPPORT_PATHS,
+        )
+
+    def test_weightclass_advisory_files_are_declared_support_paths(self) -> None:
+        self.assertTrue(
+            {
+                "context-guard-kit/cost_guard.py",
+                "docs/weightclass-advisory-mode.md",
+                "plugins/context-guard/bin/context-guard-cost",
+                "research/weightclass-advisory-live-sample-2026-08-22.json",
+                "scripts/benchmark_advisory_mode.py",
+                "scripts/collect_advisory_live_samples.py",
+                "tests/test_context_guard_advisory_mode.py",
+            }.issubset(PROVIDER_FREE_SUPPORT_PATHS)
         )
 
     def test_historical_baseline_is_reconstructed_from_the_frozen_commit(self) -> None:

@@ -88,6 +88,7 @@ context-guard-compress --json --type prose --mode readable < sanitized-prose.txt
 context-guard cost preflight --request request.json --budget-krw 3000 --json
 context-guard cost observe --usage usage.json --json
 context-guard route-advisor --workload workload.json --json
+context-guard cost advisory --workload advisory-workload.json --json
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .

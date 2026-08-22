@@ -91,6 +91,37 @@ ROUTE_STRUCTURED_TASK_KINDS = {
     "batch_eval",
     "eval",
 }
+ADVISORY_WORKLOAD_SCHEMA_VERSION = "contextguard.advisory-workload.v1"
+ADVISORY_DECISION_SCHEMA_VERSION = "contextguard.advisory-decision.v1"
+ADVISORY_MAX_INTEGER = 1_000_000_000
+ADVISORY_TOP_LEVEL_KEYS = {"invocation", "limits", "schema_version", "signals", "vendor"}
+ADVISORY_INVOCATION_KEYS = {
+    "explicit_wrappers_available",
+    "hooks_available",
+    "host_tool_surface_equal_to_control",
+    "rules_loaded",
+    "safe_mode",
+    "skills_loaded",
+}
+ADVISORY_SIGNAL_INTEGER_KEYS = {
+    "candidate_context_bytes",
+    "estimated_local_overhead_ms",
+    "graph_candidate_bytes",
+    "graph_candidate_count",
+    "graph_replacement_bytes",
+    "largest_file_bytes",
+    "log_bytes",
+    "selected_file_count",
+    "task_prompt_bytes",
+}
+ADVISORY_SIGNAL_KEYS = ADVISORY_SIGNAL_INTEGER_KEYS | {"repo_map_cached"}
+ADVISORY_LIMIT_KEYS = {
+    "inline_log_bytes",
+    "max_local_overhead_ms",
+    "minimum_net_savings_bytes",
+    "pack_bytes",
+    "symbol_slice_bytes",
+}
 ALLOWED_FIRST_COMPONENT_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
@@ -2532,6 +2563,81 @@ def route_recommendations(
     return recs
 
 
+def advisory_plain_object(value: Any, label: str, expected_keys: set[str]) -> dict[str, Any]:
+    if type(value) is not dict:
+        fail(f"{label} must be a plain JSON object")
+    if set(value) != expected_keys:
+        fail(f"{label} has missing or unknown fields")
+    return value
+
+
+def advisory_bool(value: Any, label: str) -> bool:
+    if type(value) is not bool:
+        fail(f"{label} must be boolean")
+    return value
+
+
+def advisory_integer(value: Any, label: str, *, positive: bool = False) -> int:
+    if type(value) is not int:
+        fail(f"{label} must be an integer")
+    lower_bound = 1 if positive else 0
+    if value < lower_bound or value > ADVISORY_MAX_INTEGER:
+        relation = "> 0" if positive else ">= 0"
+        fail(f"{label} must be {relation} and bounded")
+    return value
+
+
+def advisory_result(
+    *,
+    activation_status: str,
+    decision: str,
+    reason: str,
+    measurement_eligible: bool,
+    capabilities: dict[str, bool],
+    selected_features: dict[str, bool],
+    actions: list[dict[str, Any]],
+    control_bytes: int,
+    treatment_bytes: int,
+    minimum_savings: int,
+    local_overhead_ms: int,
+    max_local_overhead_ms: int,
+    graph_net_saved_bytes: int,
+) -> dict[str, Any]:
+    gross_saved = max(0, control_bytes - treatment_bytes)
+    return {
+        "schema_version": ADVISORY_DECISION_SCHEMA_VERSION,
+        "mode": "router_advisory",
+        "activation_status": activation_status,
+        "decision": decision,
+        "reason": reason,
+        "provider_context": "",
+        "provider_context_bytes": 0,
+        "persistent_writes_allowed": False,
+        "receipts_enabled": False,
+        "measurement_eligible": measurement_eligible,
+        "capabilities": capabilities,
+        "selected_features": selected_features,
+        "actions": actions,
+        "accounting": {
+            "control_candidate_context_bytes": control_bytes,
+            "estimated_treatment_context_bytes": treatment_bytes,
+            "gross_saved_bytes": gross_saved,
+            "estimated_net_saved_bytes": gross_saved,
+            "minimum_net_savings_bytes": minimum_savings,
+            "estimated_local_overhead_ms": local_overhead_ms,
+            "max_local_overhead_ms": max_local_overhead_ms,
+            "graph_net_saved_bytes": graph_net_saved_bytes,
+        },
+        "claim_boundary": {
+            "provider_token_or_cost_savings_claim_allowed": False,
+            "requires_paired_provider_measurement": True,
+            "requires_non_inferior_quality": True,
+            "task_content_accepted": False,
+            "persistent_context_allowed": False,
+        },
+    }
+
+
 def route_advisor_command(args: argparse.Namespace) -> int:
     workload_raw, _truncated = load_json_input(args.workload, max_bytes=args.max_bytes)
     workload = require_json_object(workload_raw.get("workload") if isinstance(workload_raw, dict) and isinstance(workload_raw.get("workload"), dict) else workload_raw, "workload")
@@ -2596,6 +2702,182 @@ def route_advisor_command(args: argparse.Namespace) -> int:
         },
     }
     emit(report, json_mode=args.json)
+    return 0
+
+
+def advisory_decision(raw: Any) -> dict[str, Any]:
+    workload = advisory_plain_object(raw, "advisory workload", ADVISORY_TOP_LEVEL_KEYS)
+    if workload["schema_version"] != ADVISORY_WORKLOAD_SCHEMA_VERSION:
+        fail("advisory workload schema version is unsupported")
+    vendor = workload["vendor"]
+    if vendor not in {"claude", "codex"}:
+        fail("advisory vendor must be claude or codex")
+    invocation = advisory_plain_object(
+        workload["invocation"], "advisory invocation", ADVISORY_INVOCATION_KEYS
+    )
+    invocation_values = {
+        key: advisory_bool(invocation[key], f"advisory invocation.{key}")
+        for key in ADVISORY_INVOCATION_KEYS
+    }
+    if invocation_values["safe_mode"] and vendor != "claude":
+        fail("advisory safe_mode is only valid for claude")
+    signals = advisory_plain_object(
+        workload["signals"], "advisory signals", ADVISORY_SIGNAL_KEYS
+    )
+    signal_values = {
+        key: advisory_integer(signals[key], f"advisory signals.{key}")
+        for key in ADVISORY_SIGNAL_INTEGER_KEYS
+    }
+    signal_values["repo_map_cached"] = advisory_bool(
+        signals["repo_map_cached"], "advisory signals.repo_map_cached"
+    )
+    limits = advisory_plain_object(
+        workload["limits"], "advisory limits", ADVISORY_LIMIT_KEYS
+    )
+    limit_values = {
+        key: advisory_integer(
+            limits[key],
+            f"advisory limits.{key}",
+            positive=key in {"inline_log_bytes", "pack_bytes", "symbol_slice_bytes"},
+        )
+        for key in ADVISORY_LIMIT_KEYS
+    }
+
+    control_bytes = signal_values["candidate_context_bytes"]
+    if signal_values["largest_file_bytes"] > control_bytes:
+        fail("largest_file_bytes exceeds candidate_context_bytes")
+    if signal_values["log_bytes"] > control_bytes:
+        fail("log_bytes exceeds candidate_context_bytes")
+    if signal_values["graph_replacement_bytes"] > control_bytes:
+        fail("graph_replacement_bytes exceeds candidate_context_bytes")
+    graph_count = signal_values["graph_candidate_count"]
+    graph_candidate_bytes = signal_values["graph_candidate_bytes"]
+    graph_replacement_bytes = signal_values["graph_replacement_bytes"]
+    if graph_count == 0 and (graph_candidate_bytes or graph_replacement_bytes):
+        fail("graph bytes require at least one graph candidate")
+    if graph_count > 0 and not (graph_candidate_bytes and graph_replacement_bytes):
+        fail("graph candidates require nonzero candidate and replacement bytes")
+
+    hooks_effective = bool(
+        invocation_values["hooks_available"]
+        and not (vendor == "claude" and invocation_values["safe_mode"])
+    )
+    persistent_context_absent = not (
+        invocation_values["rules_loaded"] or invocation_values["skills_loaded"]
+    )
+    capabilities = {
+        "hooks_effective": hooks_effective,
+        "explicit_wrappers_available": invocation_values["explicit_wrappers_available"],
+        "persistent_context_absent": persistent_context_absent,
+        "host_tool_surface_equal_to_control": invocation_values[
+            "host_tool_surface_equal_to_control"
+        ],
+    }
+    no_features = {
+        "adaptive": False,
+        "graph": False,
+        "symbol": False,
+        "trim_output": False,
+    }
+    result_common = {
+        "capabilities": capabilities,
+        "control_bytes": control_bytes,
+        "minimum_savings": limit_values["minimum_net_savings_bytes"],
+        "local_overhead_ms": signal_values["estimated_local_overhead_ms"],
+        "max_local_overhead_ms": limit_values["max_local_overhead_ms"],
+    }
+    if not persistent_context_absent:
+        return advisory_result(
+            activation_status="bypass", decision="bypass",
+            reason="persistent_context_loaded", measurement_eligible=False,
+            selected_features=no_features, actions=[], treatment_bytes=control_bytes,
+            graph_net_saved_bytes=0, **result_common,
+        )
+    if not invocation_values["host_tool_surface_equal_to_control"]:
+        return advisory_result(
+            activation_status="bypass", decision="bypass",
+            reason="host_tool_surface_mismatch", measurement_eligible=False,
+            selected_features=no_features, actions=[], treatment_bytes=control_bytes,
+            graph_net_saved_bytes=0, **result_common,
+        )
+
+    candidates: list[dict[str, Any]] = []
+    log_bytes = signal_values["log_bytes"]
+    inline_log_bytes = limit_values["inline_log_bytes"]
+    if log_bytes > inline_log_bytes:
+        candidates.append({
+            "decision": "trim_output", "reason": "log_savings",
+            "treatment_bytes": control_bytes - (log_bytes - inline_log_bytes),
+            "features": {**no_features, "trim_output": True},
+            "actions": [{"kind": "trim_output", "max_inline_bytes": inline_log_bytes}],
+            "graph_net_saved_bytes": 0,
+        })
+    largest_file_bytes = signal_values["largest_file_bytes"]
+    symbol_slice_bytes = limit_values["symbol_slice_bytes"]
+    if largest_file_bytes > symbol_slice_bytes:
+        candidates.append({
+            "decision": "symbol_slice", "reason": "symbol_slice_savings",
+            "treatment_bytes": control_bytes - (largest_file_bytes - symbol_slice_bytes),
+            "features": {**no_features, "symbol": True},
+            "actions": [{"kind": "symbol_slice", "max_bytes": symbol_slice_bytes}],
+            "graph_net_saved_bytes": 0,
+        })
+    if signal_values["selected_file_count"] >= 3 and control_bytes > limit_values["pack_bytes"]:
+        graph_net_saved = 0
+        graph_selected = False
+        if (
+            signal_values["repo_map_cached"] and graph_count > 0
+            and graph_replacement_bytes > graph_candidate_bytes
+        ):
+            graph_net_saved = graph_replacement_bytes - graph_candidate_bytes
+            graph_selected = True
+        pack_bytes = max(0, limit_values["pack_bytes"] - graph_net_saved)
+        candidates.append({
+            "decision": "adaptive_pack", "reason": "context_pack_savings",
+            "treatment_bytes": pack_bytes,
+            "features": {**no_features, "adaptive": True, "graph": graph_selected},
+            "actions": [{
+                "kind": "context_pack", "budget_bytes": limit_values["pack_bytes"],
+                "adaptive": True, "symbol": False, "graph": graph_selected,
+            }],
+            "graph_net_saved_bytes": graph_net_saved,
+        })
+    candidate = min(candidates, key=lambda item: item["treatment_bytes"]) if candidates else None
+    if candidate is None or (
+        control_bytes - int(candidate["treatment_bytes"])
+        < limit_values["minimum_net_savings_bytes"]
+    ):
+        return advisory_result(
+            activation_status="bypass", decision="bypass", reason="below_break_even",
+            measurement_eligible=True, selected_features=no_features, actions=[],
+            treatment_bytes=control_bytes, graph_net_saved_bytes=0, **result_common,
+        )
+    if signal_values["estimated_local_overhead_ms"] > limit_values["max_local_overhead_ms"]:
+        return advisory_result(
+            activation_status="bypass", decision="bypass",
+            reason="local_overhead_budget_exceeded", measurement_eligible=True,
+            selected_features=no_features, actions=[], treatment_bytes=control_bytes,
+            graph_net_saved_bytes=0, **result_common,
+        )
+    if not invocation_values["explicit_wrappers_available"]:
+        return advisory_result(
+            activation_status="inactive", decision="bypass",
+            reason="explicit_wrappers_unavailable", measurement_eligible=False,
+            selected_features=no_features, actions=[], treatment_bytes=control_bytes,
+            graph_net_saved_bytes=0, **result_common,
+        )
+    return advisory_result(
+        activation_status="active", decision=str(candidate["decision"]),
+        reason=str(candidate["reason"]), measurement_eligible=True,
+        selected_features=dict(candidate["features"]), actions=list(candidate["actions"]),
+        treatment_bytes=int(candidate["treatment_bytes"]),
+        graph_net_saved_bytes=int(candidate["graph_net_saved_bytes"]), **result_common,
+    )
+
+
+def advisory_command(args: argparse.Namespace) -> int:
+    workload, _truncated = load_json_input(args.workload, max_bytes=args.max_bytes)
+    emit(advisory_decision(workload), json_mode=args.json)
     return 0
 
 
@@ -3044,6 +3326,12 @@ def emit(data: dict[str, Any], *, json_mode: bool) -> None:
             f"candidates={routing.get('candidate_count', 0)} conditional={routing.get('conditional_count', 0)} "
             f"total_with_shift=${total.get('total_cost_with_shift_usd', 0)}"
         )
+    elif mode == "router_advisory":
+        accounting = data.get("accounting", {}) if isinstance(data.get("accounting"), dict) else {}
+        print(
+            f"{TOOL_NAME}: advisory {data.get('decision', 'bypass')} "
+            f"estimated_net_bytes={accounting.get('estimated_net_saved_bytes', 0)}"
+        )
     else:
         summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
         print(f"{TOOL_NAME}: ledger entries={summary.get('entries', 0)}")
@@ -3112,6 +3400,19 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--task-kind", help="task kind label such as extract, summarize, code_edit, or unknown")
     add_common_cost_args(route)
     route.set_defaults(func=route_advisor_command)
+
+    advisory = sub.add_parser(
+        "advisory",
+        help="plan zero-persistent-context WeightClass/router advisory actions",
+        description=(
+            "select a zero-provider-instruction bypass or explicit local wrapper from "
+            "closed numeric capability signals; never reads task text or project files"
+        ),
+    )
+    advisory.add_argument("--workload", default="-", help="closed advisory workload JSON path, or '-' for stdin")
+    advisory.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help=f"maximum advisory JSON bytes (default: {DEFAULT_MAX_BYTES})")
+    advisory.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    advisory.set_defaults(func=advisory_command)
 
     return parser
 

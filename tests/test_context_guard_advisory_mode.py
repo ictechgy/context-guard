@@ -1,0 +1,408 @@
+from __future__ import annotations
+
+import copy
+import json
+import runpy
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+COST_GUARD = ROOT / "context-guard-kit" / "cost_guard.py"
+BENCHMARK = ROOT / "scripts" / "benchmark_advisory_mode.py"
+LIVE_COLLECTOR = ROOT / "scripts" / "collect_advisory_live_samples.py"
+LIVE_EVIDENCE = ROOT / "research" / "weightclass-advisory-live-sample-2026-08-22.json"
+
+
+def workload() -> dict:
+    return {
+        "schema_version": "contextguard.advisory-workload.v1",
+        "vendor": "codex",
+        "invocation": {
+            "safe_mode": False,
+            "hooks_available": False,
+            "explicit_wrappers_available": True,
+            "rules_loaded": False,
+            "skills_loaded": False,
+            "host_tool_surface_equal_to_control": True,
+        },
+        "signals": {
+            "candidate_context_bytes": 2048,
+            "estimated_local_overhead_ms": 0,
+            "graph_candidate_bytes": 0,
+            "graph_candidate_count": 0,
+            "graph_replacement_bytes": 0,
+            "largest_file_bytes": 2048,
+            "log_bytes": 0,
+            "repo_map_cached": False,
+            "selected_file_count": 1,
+            "task_prompt_bytes": 512,
+        },
+        "limits": {
+            "inline_log_bytes": 4096,
+            "max_local_overhead_ms": 250,
+            "minimum_net_savings_bytes": 2048,
+            "pack_bytes": 8192,
+            "symbol_slice_bytes": 8192,
+        },
+    }
+
+
+def load_module() -> dict:
+    return runpy.run_path(str(COST_GUARD), run_name="contextguard_advisory_test")
+
+
+class ContextGuardAdvisoryModeTests(unittest.TestCase):
+    def planner(self):
+        module = load_module()
+        self.assertIn("advisory_decision", module)
+        return module["advisory_decision"]
+
+    def test_small_task_is_zero_overhead_bypass(self) -> None:
+        decision = self.planner()(workload())
+        self.assertEqual(
+            set(decision),
+            {
+                "accounting",
+                "actions",
+                "activation_status",
+                "capabilities",
+                "claim_boundary",
+                "decision",
+                "measurement_eligible",
+                "mode",
+                "persistent_writes_allowed",
+                "provider_context",
+                "provider_context_bytes",
+                "reason",
+                "receipts_enabled",
+                "schema_version",
+                "selected_features",
+            },
+        )
+        self.assertEqual(decision["decision"], "bypass")
+        self.assertEqual(decision["reason"], "below_break_even")
+        self.assertEqual(decision["provider_context"], "")
+        self.assertEqual(decision["provider_context_bytes"], 0)
+        self.assertIn("estimated_net_saved_bytes", decision["accounting"])
+        self.assertNotIn("provider_net_saved_bytes", decision["accounting"])
+        self.assertEqual(decision["actions"], [])
+        self.assertTrue(decision["measurement_eligible"])
+        self.assertFalse(decision["persistent_writes_allowed"])
+        self.assertFalse(decision["receipts_enabled"])
+        self.assertEqual(
+            decision["selected_features"],
+            {"adaptive": False, "graph": False, "symbol": False, "trim_output": False},
+        )
+
+    def test_claude_safe_mode_uses_explicit_wrapper_without_claiming_hooks(self) -> None:
+        candidate = workload()
+        candidate["vendor"] = "claude"
+        candidate["invocation"].update(
+            {"safe_mode": True, "hooks_available": True}
+        )
+        candidate["signals"].update(
+            {"candidate_context_bytes": 20000, "log_bytes": 16000}
+        )
+        decision = self.planner()(candidate)
+        self.assertEqual(decision["decision"], "trim_output")
+        self.assertEqual(decision["activation_status"], "active")
+        self.assertFalse(decision["capabilities"]["hooks_effective"])
+        self.assertTrue(decision["capabilities"]["explicit_wrappers_available"])
+        self.assertEqual(
+            decision["actions"],
+            [{"kind": "trim_output", "max_inline_bytes": 4096}],
+        )
+
+    def test_unavailable_wrapper_makes_large_task_inactive(self) -> None:
+        candidate = workload()
+        candidate["vendor"] = "claude"
+        candidate["invocation"].update(
+            {
+                "safe_mode": True,
+                "hooks_available": True,
+                "explicit_wrappers_available": False,
+            }
+        )
+        candidate["signals"].update(
+            {"candidate_context_bytes": 20000, "log_bytes": 16000}
+        )
+        decision = self.planner()(candidate)
+        self.assertEqual(decision["activation_status"], "inactive")
+        self.assertEqual(decision["decision"], "bypass")
+        self.assertEqual(decision["reason"], "explicit_wrappers_unavailable")
+        self.assertFalse(decision["measurement_eligible"])
+
+    def test_persistent_context_or_host_surface_mismatch_blocks_measurement(self) -> None:
+        for field in ("rules_loaded", "skills_loaded"):
+            with self.subTest(field=field):
+                candidate = workload()
+                candidate["invocation"][field] = True
+                decision = self.planner()(candidate)
+                self.assertEqual(decision["reason"], "persistent_context_loaded")
+                self.assertFalse(decision["measurement_eligible"])
+        candidate = workload()
+        candidate["invocation"]["host_tool_surface_equal_to_control"] = False
+        decision = self.planner()(candidate)
+        self.assertEqual(decision["reason"], "host_tool_surface_mismatch")
+        self.assertFalse(decision["measurement_eligible"])
+
+    def test_large_file_and_broad_context_select_only_profitable_factor(self) -> None:
+        symbol_candidate = workload()
+        symbol_candidate["signals"].update(
+            {
+                "candidate_context_bytes": 14000,
+                "largest_file_bytes": 12000,
+            }
+        )
+        symbol = self.planner()(symbol_candidate)
+        self.assertEqual(symbol["decision"], "symbol_slice")
+        self.assertTrue(symbol["selected_features"]["symbol"])
+
+        adaptive_candidate = workload()
+        adaptive_candidate["signals"].update(
+            {
+                "candidate_context_bytes": 50000,
+                "largest_file_bytes": 12000,
+                "selected_file_count": 8,
+            }
+        )
+        adaptive = self.planner()(adaptive_candidate)
+        self.assertEqual(adaptive["decision"], "adaptive_pack")
+        self.assertTrue(adaptive["selected_features"]["adaptive"])
+        self.assertFalse(adaptive["selected_features"]["symbol"])
+        self.assertFalse(adaptive["selected_features"]["graph"])
+
+    def test_graph_requires_cached_positive_replacement_and_never_runs_as_noop(self) -> None:
+        candidate = workload()
+        candidate["signals"].update(
+            {
+                "candidate_context_bytes": 50000,
+                "largest_file_bytes": 12000,
+                "selected_file_count": 8,
+                "graph_candidate_count": 1,
+                "graph_candidate_bytes": 1000,
+                "graph_replacement_bytes": 3000,
+                "repo_map_cached": False,
+            }
+        )
+        uncached = self.planner()(candidate)
+        self.assertFalse(uncached["selected_features"]["graph"])
+        candidate["signals"]["repo_map_cached"] = True
+        cached = self.planner()(candidate)
+        self.assertTrue(cached["selected_features"]["graph"])
+        self.assertEqual(cached["accounting"]["graph_net_saved_bytes"], 2000)
+
+        candidate["signals"].update(
+            {
+                "graph_candidate_count": 0,
+                "graph_candidate_bytes": 0,
+                "graph_replacement_bytes": 0,
+            }
+        )
+        no_candidate = self.planner()(candidate)
+        self.assertFalse(no_candidate["selected_features"]["graph"])
+
+    def test_local_overhead_budget_can_force_bypass(self) -> None:
+        candidate = workload()
+        candidate["signals"].update(
+            {
+                "candidate_context_bytes": 50000,
+                "estimated_local_overhead_ms": 251,
+                "selected_file_count": 8,
+            }
+        )
+        decision = self.planner()(candidate)
+        self.assertEqual(decision["decision"], "bypass")
+        self.assertEqual(decision["reason"], "local_overhead_budget_exceeded")
+
+    def test_contract_rejects_unknown_negative_boolean_and_inconsistent_values(self) -> None:
+        planner = self.planner()
+        invalid = []
+        unknown = workload()
+        unknown["invented"] = True
+        invalid.append(unknown)
+        negative = workload()
+        negative["signals"]["log_bytes"] = -1
+        invalid.append(negative)
+        boolean_integer = workload()
+        boolean_integer["signals"]["log_bytes"] = True
+        invalid.append(boolean_integer)
+        inconsistent = workload()
+        inconsistent["signals"]["log_bytes"] = 4096
+        invalid.append(inconsistent)
+        for candidate in invalid:
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                planner(candidate)
+
+    def test_cli_emits_closed_json_without_task_or_path_fields(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(COST_GUARD),
+                "advisory",
+                "--workload",
+                "-",
+                "--json",
+            ],
+            cwd=ROOT,
+            input=json.dumps(workload()),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        decision = json.loads(completed.stdout)
+        encoded = json.dumps(decision, sort_keys=True)
+        self.assertNotIn("task_prompt", encoded)
+        self.assertNotIn("path", encoded)
+        self.assertEqual(decision["provider_context_bytes"], 0)
+
+    def test_provider_free_sample_matrix_is_closed_and_factor_specific(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(BENCHMARK),
+                "--matrix-json",
+                "--repetitions",
+                "5",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.startswith("{"), completed.stdout)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["schema_version"], "contextguard.advisory-benchmark.v1")
+        self.assertEqual(report["repetitions"], 5)
+        self.assertEqual(len(report["cases"]), 10)
+        by_name = {row["name"]: row for row in report["cases"]}
+        self.assertEqual(by_name["small_codex"]["decision"], "bypass")
+        self.assertEqual(by_name["safe_mode_large_log"]["decision"], "trim_output")
+        self.assertFalse(by_name["graph_no_candidate"]["selected_features"]["graph"])
+        self.assertTrue(by_name["graph_cached_positive"]["selected_features"]["graph"])
+        self.assertEqual(report["summary"]["provider_context_bytes"], 0)
+        encoded = json.dumps(report, sort_keys=True)
+        self.assertNotIn("task_prompt", encoded)
+        self.assertNotIn("path", encoded)
+
+    def test_live_collector_dry_run_bounds_provider_egress(self) -> None:
+        self.assertTrue(LIVE_COLLECTOR.exists())
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(LIVE_COLLECTOR),
+                "--dry-run",
+                "--vendor",
+                "all",
+                "--repetitions",
+                "3",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        plan = json.loads(completed.stdout)
+        self.assertFalse(plan["provider_calls_performed"])
+        self.assertEqual(plan["maximum_provider_calls"], 12)
+        self.assertLess(plan["treatment_prompt_bytes"], plan["control_prompt_bytes"])
+        self.assertFalse(plan["task_or_repository_content_read"])
+
+    def test_live_collector_parses_vendor_usage_without_double_counting_cache(self) -> None:
+        self.assertTrue(LIVE_COLLECTOR.exists())
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_live_parser_test")
+        claude = module["parse_claude_result"](
+            json.dumps(
+                {
+                    "result": "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 40,
+                        "cache_creation_input_tokens": 10,
+                        "output_tokens": 20,
+                    },
+                    "total_cost_usd": 0.01,
+                }
+            )
+        )
+        self.assertEqual(claude["total_tokens"], 170)
+        self.assertEqual(claude["cached_input_tokens"], 40)
+        self.assertEqual(claude["cache_creation_input_tokens"], 10)
+        codex = module["parse_codex_result"](
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "type": "agent_message",
+                                "text": "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry",
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn.completed",
+                            "usage": {
+                                "input_tokens": 100,
+                                "cached_input_tokens": 40,
+                                "output_tokens": 20,
+                            },
+                        }
+                    ),
+                ]
+            )
+        )
+        self.assertEqual(codex["total_tokens"], 120)
+        self.assertEqual(codex["cached_input_tokens"], 40)
+        self.assertEqual(codex["cache_creation_input_tokens"], 0)
+
+    def test_live_collector_refuses_network_without_confirmation(self) -> None:
+        self.assertTrue(LIVE_COLLECTOR.exists())
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(LIVE_COLLECTOR),
+                "--vendor",
+                "claude",
+                "--repetitions",
+                "1",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("confirm-provider-egress", completed.stderr)
+
+    def test_live_sample_evidence_is_canonical_aggregate_and_claim_safe(self) -> None:
+        self.assertTrue(LIVE_EVIDENCE.exists())
+        raw = LIVE_EVIDENCE.read_bytes()
+        evidence = json.loads(raw)
+        canonical = json.dumps(
+            evidence, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ).encode() + b"\n"
+        self.assertEqual(raw, canonical)
+        self.assertEqual(evidence["repetitions_per_arm"], 3)
+        self.assertEqual(evidence["quality_passed"], {"advisory": 6, "control": 6})
+        self.assertEqual(evidence["prompt_bytes"], {"advisory": 420, "control": 16764})
+        self.assertFalse(evidence["claim_boundary"]["long_term_savings_claim_allowed"])
+        self.assertIsNone(evidence["vendors"]["codex"]["advisory"]["cost_usd"])
+        self.assertEqual(
+            evidence["vendors"]["claude"]["control"]["total_tokens"], 14519
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
