@@ -118,7 +118,7 @@ ADVISORY_SIGNAL_KEYS = ADVISORY_SIGNAL_INTEGER_KEYS | {"repo_map_cached"}
 ADVISORY_LIMIT_KEYS = {
     "inline_log_bytes",
     "max_local_overhead_ms",
-    "minimum_net_savings_bytes",
+    "minimum_gross_context_savings_bytes",
     "pack_bytes",
     "symbol_slice_bytes",
 }
@@ -2649,7 +2649,7 @@ def advisory_result(
             "control_candidate_context_bytes": control_bytes,
             "estimated_treatment_context_bytes": treatment_bytes,
             "estimated_gross_context_saved_bytes": gross_saved,
-            "minimum_net_savings_bytes": minimum_savings,
+            "minimum_gross_context_savings_bytes": minimum_savings,
             "estimated_local_overhead_ms": local_overhead_ms,
             "max_local_overhead_ms": max_local_overhead_ms,
             "graph_replacement_delta_bytes": graph_replacement_delta_bytes,
@@ -2743,7 +2743,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
     )
     invocation_values = {
         key: advisory_bool(invocation[key], f"advisory invocation.{key}")
-        for key in ADVISORY_INVOCATION_KEYS
+        for key in sorted(ADVISORY_INVOCATION_KEYS)
     }
     if invocation_values["safe_mode"] and vendor != "claude":
         fail("advisory safe_mode is only valid for claude")
@@ -2752,7 +2752,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
     )
     signal_values = {
         key: advisory_integer(signals[key], f"advisory signals.{key}")
-        for key in ADVISORY_SIGNAL_INTEGER_KEYS
+        for key in sorted(ADVISORY_SIGNAL_INTEGER_KEYS)
     }
     signal_values["repo_map_cached"] = advisory_bool(
         signals["repo_map_cached"], "advisory signals.repo_map_cached"
@@ -2766,7 +2766,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
             f"advisory limits.{key}",
             positive=key in {"inline_log_bytes", "pack_bytes", "symbol_slice_bytes"},
         )
-        for key in ADVISORY_LIMIT_KEYS
+        for key in sorted(ADVISORY_LIMIT_KEYS)
     }
 
     control_bytes = signal_values["candidate_context_bytes"]
@@ -2808,7 +2808,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
     result_common = {
         "capabilities": capabilities,
         "control_bytes": control_bytes,
-        "minimum_savings": limit_values["minimum_net_savings_bytes"],
+        "minimum_savings": limit_values["minimum_gross_context_savings_bytes"],
         "local_overhead_ms": signal_values["estimated_local_overhead_ms"],
         "max_local_overhead_ms": limit_values["max_local_overhead_ms"],
     }
@@ -2871,7 +2871,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
     candidate = min(candidates, key=lambda item: item["treatment_bytes"]) if candidates else None
     if candidate is None or (
         control_bytes - int(candidate["treatment_bytes"])
-        < limit_values["minimum_net_savings_bytes"]
+        < limit_values["minimum_gross_context_savings_bytes"]
     ):
         return advisory_result(
             activation_status="bypass", decision="bypass", reason="below_break_even",

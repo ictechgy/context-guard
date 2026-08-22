@@ -41,7 +41,7 @@ def small_task_workload() -> dict:
         "limits": {
             "inline_log_bytes": 4096,
             "max_local_overhead_ms": 250,
-            "minimum_net_savings_bytes": 2048,
+            "minimum_gross_context_savings_bytes": 2048,
             "pack_bytes": 8192,
             "symbol_slice_bytes": 8192,
         },
@@ -191,16 +191,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--matrix-json", action="store_true")
     parser.add_argument("--repetitions", type=repetition_count, default=100)
     args = parser.parse_args(argv)
-    setup = runpy.run_path(
-        str(ROOT / "context-guard-kit" / "setup_wizard.py"),
-        run_name="contextguard_advisory_baseline",
-    )
-    persistent_overhead = len(
-        (
-            setup["render_repo_rule_block"]()
-            + setup["render_codex_skill"]()
-        ).encode("utf-8")
-    )
     cost_guard = runpy.run_path(
         str(ROOT / "context-guard-kit" / "cost_guard.py"),
         run_name="contextguard_advisory_candidate",
@@ -211,22 +201,21 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("advisory planner is unavailable")
         print(json.dumps(matrix_report(planner, args.repetitions), sort_keys=True, indent=2))
         return 0
-    if callable(planner):
-        decision = planner(small_task_workload())
-        if decision.get("decision") != "bypass":
-            raise SystemExit("small advisory task did not bypass")
-        if int(decision.get("provider_context_bytes", -1)) != 0:
-            raise SystemExit("small advisory task exposed provider context")
-        control_payload = b"synthetic provider request"
-        treatment_payload = final_provider_payload(
-            decision,
-            control=control_payload,
-            transformed=control_payload + b"unexpected context",
-        )
-        overhead = provider_overhead_bytes(control_payload, treatment_payload)
-    else:
-        overhead = persistent_overhead
-    print(f"small_task_provider_overhead_bytes={overhead}")
+    if not callable(planner):
+        raise SystemExit("advisory planner is unavailable")
+    decision = planner(small_task_workload())
+    if decision.get("decision") != "bypass":
+        raise SystemExit("small advisory task did not bypass")
+    if int(decision.get("provider_context_bytes", -1)) != 0:
+        raise SystemExit("small advisory task exposed provider context")
+    control_payload = b"synthetic provider request"
+    treatment_payload = final_provider_payload(
+        decision,
+        control=control_payload,
+        transformed=control_payload + b"unexpected context",
+    )
+    overhead = provider_overhead_bytes(control_payload, treatment_payload)
+    print(f"reference_small_bypass_overhead_bytes={overhead}")
     return 0
 
 

@@ -22,7 +22,7 @@ append the advisory JSON or explanatory text to a provider request.
 
 ## Activation rules
 
-- Small tasks and candidates below the configured net-savings floor return
+- Small tasks and candidates below the configured gross context-byte floor return
   `decision: bypass` with no actions.
 - Existing ContextGuard rules or skills make the run measurement-ineligible.
 - A treatment whose host tool surface differs from control is
@@ -80,9 +80,10 @@ local-overhead, and persistent-context cases without task content:
 python3 -B scripts/benchmark_advisory_mode.py --matrix-json --repetitions 1000
 ```
 
-The default benchmark output remains the small-task final-payload overhead
-metric used by the advisory regression test. Planner timing is descriptive and
-not a cross-platform CI performance gate.
+The default benchmark output is a reference-composer small-task bypass overhead
+metric used by the advisory regression test. It does not capture a WeightClass
+production request builder. Planner timing is descriptive and not a
+cross-platform CI performance gate.
 
 ### Provider-free sample collected 2026-08-22
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import runpy
 import subprocess
@@ -43,7 +44,7 @@ def workload() -> dict:
         "limits": {
             "inline_log_bytes": 4096,
             "max_local_overhead_ms": 250,
-            "minimum_net_savings_bytes": 2048,
+            "minimum_gross_context_savings_bytes": 2048,
             "pack_bytes": 8192,
             "symbol_slice_bytes": 8192,
         },
@@ -223,7 +224,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
             }
         )
         candidate["limits"].update(
-            {"pack_bytes": 9000, "minimum_net_savings_bytes": 5000}
+            {"pack_bytes": 9000, "minimum_gross_context_savings_bytes": 5000}
         )
         decision = self.planner()(candidate)
         self.assertEqual(decision["decision"], "bypass")
@@ -363,7 +364,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                 "--vendor",
                 "all",
                 "--repetitions",
-                "3",
+                "4",
             ],
             cwd=ROOT,
             text=True,
@@ -373,16 +374,24 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout)
         self.assertFalse(plan["provider_calls_performed"])
-        self.assertEqual(plan["maximum_provider_calls"], 12)
+        self.assertEqual(plan["maximum_provider_calls"], 16)
         self.assertLess(plan["treatment_prompt_bytes"], plan["control_prompt_bytes"])
         self.assertFalse(plan["task_or_repository_content_read"])
         self.assertEqual(
             plan["arm_orders"],
-            ["control,advisory", "advisory,control", "control,advisory"],
+            [
+                "control,advisory",
+                "advisory,control",
+                "control,advisory",
+                "advisory,control",
+            ],
         )
         self.assertEqual(
             plan["advisory_decisions"],
             {"claude": "trim_output", "codex": "trim_output"},
+        )
+        self.assertLessEqual(
+            plan["compressed_log_bytes"], plan["selected_inline_log_bytes"]
         )
 
     def test_live_collector_parses_vendor_usage_without_double_counting_cache(self) -> None:
@@ -433,6 +442,38 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(codex["total_tokens"], 120)
         self.assertEqual(codex["cached_input_tokens"], 40)
         self.assertEqual(codex["cache_creation_input_tokens"], 0)
+        with self.assertRaisesRegex(Exception, "cache token"):
+            module["parse_claude_result"](
+                json.dumps(
+                    {
+                        "result": "x",
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": 1,
+                            "cache_read_input_tokens": None,
+                        },
+                    }
+                )
+            )
+        with self.assertRaisesRegex(Exception, "tool event"):
+            module["parse_codex_result"](
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "item.completed",
+                                "item": {"type": "command_execution", "command": "pwd"},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "turn.completed",
+                                "usage": {"input_tokens": 1, "output_tokens": 1},
+                            }
+                        ),
+                    ]
+                )
+            )
 
     def test_live_quality_gate_requires_one_exact_result_line(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_quality_test")
@@ -478,6 +519,38 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("confirm-provider-egress", completed.stderr)
+
+    def test_live_collector_requires_even_counterbalanced_repetitions(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(LIVE_COLLECTOR),
+                "--dry-run",
+                "--repetitions",
+                "3",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("even", completed.stderr)
+
+    def test_live_run_row_is_flushed_as_safe_jsonl_before_later_work(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_emit_test")
+        stream = io.StringIO()
+        row = {
+            "vendor": "codex",
+            "arm": "control",
+            "repetition": 1,
+            "quality_passed": True,
+            "total_tokens": 10,
+        }
+        module["emit_run_record"](row, stream=stream)
+        emitted = json.loads(stream.getvalue())
+        self.assertEqual(emitted, {"type": "run", "run": row})
 
     def test_live_sample_evidence_is_canonical_aggregate_and_claim_safe(self) -> None:
         self.assertTrue(LIVE_EVIDENCE.exists())

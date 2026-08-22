@@ -36,8 +36,8 @@ def bounded_positive_int(value: str) -> int:
         number = int(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be an integer") from exc
-    if number < 1 or number > MAX_REPETITIONS:
-        raise argparse.ArgumentTypeError(f"must be between 1 and {MAX_REPETITIONS}")
+    if number not in {2, 4}:
+        raise argparse.ArgumentTypeError("must be even and equal to 2 or 4")
     return number
 
 
@@ -152,7 +152,7 @@ def advisory_plan(
             "limits": {
                 "inline_log_bytes": 4096,
                 "max_local_overhead_ms": 250,
-                "minimum_net_savings_bytes": 2048,
+                "minimum_gross_context_savings_bytes": 2048,
                 "pack_bytes": 8192,
                 "symbol_slice_bytes": 8192,
             },
@@ -173,15 +173,24 @@ def numeric_float(value: Any) -> float | None:
     return number if math.isfinite(number) and number >= 0 else None
 
 
+def optional_token_field(usage: dict[str, Any], key: str) -> int | None:
+    if key not in usage:
+        return None
+    value = numeric_int(usage[key])
+    if value is None:
+        raise SampleError("provider cache token field was invalid")
+    return value
+
+
 def cache_creation_tokens(usage: dict[str, Any]) -> int:
-    flat = numeric_int(usage.get("cache_creation_input_tokens"))
+    flat = optional_token_field(usage, "cache_creation_input_tokens")
     if flat is not None:
         return flat
     nested = usage.get("cache_creation")
     if type(nested) is not dict:
         return 0
-    five_minutes = numeric_int(nested.get("ephemeral_5m_input_tokens")) or 0
-    one_hour = numeric_int(nested.get("ephemeral_1h_input_tokens")) or 0
+    five_minutes = optional_token_field(nested, "ephemeral_5m_input_tokens") or 0
+    one_hour = optional_token_field(nested, "ephemeral_1h_input_tokens") or 0
     return five_minutes + one_hour
 
 
@@ -196,9 +205,10 @@ def parsed_usage(
     output_tokens = numeric_int(usage.get("output_tokens"))
     if input_tokens is None or output_tokens is None:
         raise SampleError("provider usage was incomplete")
-    cached = numeric_int(
-        usage.get("cached_input_tokens", usage.get("cache_read_input_tokens", 0))
-    )
+    if "cached_input_tokens" in usage:
+        cached = optional_token_field(usage, "cached_input_tokens")
+    else:
+        cached = optional_token_field(usage, "cache_read_input_tokens")
     cached = 0 if cached is None else cached
     cache_creation = cache_creation_tokens(usage)
     total_tokens = input_tokens + output_tokens
@@ -249,6 +259,14 @@ def parse_codex_result(raw: str) -> dict[str, Any]:
             item = event.get("item")
             if type(item) is dict and item.get("type") == "agent_message" and type(item.get("text")) is str:
                 response = item["text"]
+            elif type(item) is dict and item.get("type") in {
+                "command_execution",
+                "file_change",
+                "mcp_tool_call",
+                "tool_call",
+                "web_search",
+            }:
+                raise SampleError("Codex tool event is not allowed")
         elif event.get("type") == "turn.completed" and type(event.get("usage")) is dict:
             usage = event["usage"]
     if response is None or usage is None:
@@ -280,9 +298,22 @@ def trusted_executable(vendor: str) -> Path:
         try:
             resolved = candidate.resolve(strict=True)
             metadata = resolved.stat()
+            candidate_parent = candidate.parent.resolve(strict=True).stat()
+            resolved_parent = resolved.parent.stat()
         except OSError:
             continue
-        if stat.S_ISREG(metadata.st_mode) and not metadata.st_mode & 0o022:
+        trusted_owners = {0, os.getuid()}
+        if (
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_uid in trusted_owners
+            and not metadata.st_mode & 0o022
+            and stat.S_ISDIR(candidate_parent.st_mode)
+            and candidate_parent.st_uid in trusted_owners
+            and not candidate_parent.st_mode & 0o022
+            and stat.S_ISDIR(resolved_parent.st_mode)
+            and resolved_parent.st_uid in trusted_owners
+            and not resolved_parent.st_mode & 0o022
+        ):
             return resolved
     raise SampleError(f"trusted {vendor} executable is unavailable")
 
@@ -340,7 +371,7 @@ def run_provider(vendor: str, prompt: str, timeout: int) -> dict[str, Any]:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise SampleError(f"{vendor} provider process did not complete") from exc
-    wall_time = time.perf_counter() - started
+        wall_time = time.perf_counter() - started
     if completed.returncode != 0:
         raise SampleError(f"{vendor} provider process failed")
     parsed = parse_claude_result(completed.stdout) if vendor == "claude" else parse_codex_result(completed.stdout)
@@ -383,25 +414,40 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             raise SampleError("paired live sample was incomplete")
         control = pair["control"]
         advisory = pair["advisory"]
+        pair_quality_passed = bool(
+            control["quality_passed"] and advisory["quality_passed"]
+        )
         paired_deltas.append(
             {
                 "vendor": vendor,
                 "repetition": repetition,
                 "arm_order": control["arm_order"],
-                "total_tokens_delta": advisory["total_tokens"] - control["total_tokens"],
-                "total_wall_time_seconds_delta": round(
-                    advisory["wall_time_seconds"]
-                    + advisory["local_preprocessing_ms"] / 1000
-                    - control["wall_time_seconds"],
-                    6,
+                "pair_quality_passed": pair_quality_passed,
+                "total_tokens_delta": (
+                    advisory["total_tokens"] - control["total_tokens"]
+                    if pair_quality_passed
+                    else None
+                ),
+                "total_wall_time_seconds_delta": (
+                    round(
+                        advisory["wall_time_seconds"]
+                        + advisory["local_preprocessing_ms"] / 1000
+                        - control["wall_time_seconds"],
+                        6,
+                    )
+                    if pair_quality_passed
+                    else None
                 ),
                 "cost_usd_delta": (
                     round(advisory["cost_usd"] - control["cost_usd"], 8)
-                    if advisory["cost_usd"] is not None and control["cost_usd"] is not None
+                    if pair_quality_passed
+                    and advisory["cost_usd"] is not None
+                    and control["cost_usd"] is not None
                     else None
                 ),
             }
         )
+    eligible_pairs = sum(pair["pair_quality_passed"] for pair in paired_deltas)
     return {
         "schema_version": "contextguard.advisory-live-samples.v1",
         "runs": rows,
@@ -410,9 +456,16 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "claim_boundary": {
             "descriptive_only": True,
             "long_term_savings_claim_allowed": False,
+            "numeric_savings_claim_allowed": False,
             "requires_more_tasks_and_quality_review": True,
+            "quality_eligible_pair_count": eligible_pairs,
+            "quality_excluded_pair_count": len(paired_deltas) - eligible_pairs,
         },
     }
+
+
+def emit_run_record(row: dict[str, Any], *, stream: Any = sys.stdout) -> None:
+    print(json.dumps({"type": "run", "run": row}, sort_keys=True), file=stream, flush=True)
 
 
 def arm_order(repetition: int) -> tuple[str, str]:
@@ -442,13 +495,20 @@ def dry_run_plan(
             decisions[vendor]["provider_context_bytes"] for vendor in vendors
         ),
         "arm_orders": [",".join(arm_order(repetition)) for repetition in range(1, repetitions + 1)],
+        "compressed_log_bytes": len(
+            treatment.split("LOG\n", 1)[-1].encode("utf-8")
+        ),
+        "selected_inline_log_bytes": min(
+            int(decisions[vendor]["actions"][0]["max_inline_bytes"])
+            for vendor in vendors
+        ),
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--vendor", choices=("claude", "codex", "all"), default="all")
-    parser.add_argument("--repetitions", type=bounded_positive_int, default=3)
+    parser.add_argument("--repetitions", type=bounded_positive_int, default=4)
     parser.add_argument("--timeout-seconds", type=bounded_timeout, default=180)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--confirm-provider-egress", action="store_true")
@@ -476,6 +536,12 @@ def main(argv: list[str] | None = None) -> int:
             or decision["provider_context_bytes"] != 0
         ):
             raise SampleError("advisory planner did not select eligible zero-context trim output")
+    selected_inline_log_bytes = min(
+        int(decision["actions"][0]["max_inline_bytes"])
+        for decision in decisions.values()
+    )
+    if len(compressed.encode("utf-8")) > selected_inline_log_bytes:
+        raise SampleError("compressed log exceeded the selected inline byte limit")
     control_prompt = prompt_for(raw_log)
     treatment_prompt = prompt_for(compressed)
     if args.dry_run:
@@ -496,25 +562,29 @@ def main(argv: list[str] | None = None) -> int:
     for vendor in vendors:
         for repetition in range(1, args.repetitions + 1):
             order = arm_order(repetition)
-            prompts = {"control": control_prompt, "advisory": treatment_prompt}
             for position, arm in enumerate(order, start=1):
-                prompt = prompts[arm]
+                if arm == "advisory":
+                    run_compressed, run_preprocessing_ms = compress_log(raw_log)
+                    if len(run_compressed.encode("utf-8")) > selected_inline_log_bytes:
+                        raise SampleError("compressed log exceeded the selected inline byte limit")
+                    prompt = prompt_for(run_compressed)
+                else:
+                    run_preprocessing_ms = 0.0
+                    prompt = control_prompt
                 result = run_provider(vendor, prompt, args.timeout_seconds)
-                rows.append(
-                    {
+                row = {
                         "vendor": vendor,
                         "arm": arm,
                         "repetition": repetition,
                         "sequence_position": position,
                         "arm_order": ",".join(order),
                         "prompt_bytes": len(prompt.encode("utf-8")),
-                        "local_preprocessing_ms": round(
-                            preprocessing_ms if arm == "advisory" else 0.0, 6
-                        ),
+                        "local_preprocessing_ms": round(run_preprocessing_ms, 6),
                         **result,
                     }
-                )
-    print(json.dumps(aggregate(rows), sort_keys=True, indent=2))
+                rows.append(row)
+                emit_run_record(row)
+    print(json.dumps({"type": "summary", "report": aggregate(rows)}, sort_keys=True))
     return 0
 
 
