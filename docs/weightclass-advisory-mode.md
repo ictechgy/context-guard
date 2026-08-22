@@ -109,11 +109,17 @@ python3 -B scripts/collect_advisory_live_samples.py \
 ```
 
 The live path requires `--confirm-provider-egress`, caps repetitions at four and
-calls at sixteen, uses only a generated sanitized log, reads no repository task
-content, and reports aggregate usage/quality rows without prompt or model output.
-Claude runs in safe mode with tools disabled; Codex runs ephemeral, read-only,
-and with user config and exec-policy rules ignored. Each CLI owns its existing
-authentication. The harness does not read credential files.
+CLI invocations at sixteen, uses only a generated sanitized log, reads no
+repository task content, and reports aggregate usage/quality rows without prompt
+or model output. Provider transport retries are unobserved and therefore are not
+claimed as part of that CLI-invocation cap or as a hard spend/egress bound.
+Claude live collection runs in safe mode with tools disabled. Codex remains
+available in the provider-free dry-run plan, but live Codex collection fails
+closed before any local action or provider call because the current subscription
+CLI exposes a read-only agent sandbox rather than a preventive no-tools mode.
+Post-run tool-event rejection is retained only as evidence validation, not as a
+privacy boundary. Each CLI owns its existing authentication; the harness does
+not read credential files.
 
 ### Excluded live attempt collected 2026-08-22
 

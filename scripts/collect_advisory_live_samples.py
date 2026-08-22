@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import pwd
 import runpy
 import stat
 import statistics
@@ -23,10 +24,9 @@ COMPRESSOR = ROOT / "context-guard-kit" / "context_compress.py"
 QUALITY_MARKERS = ("sample_suite", "sample_test_alpha", "retry")
 EXPECTED_RESPONSE = "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry"
 MAX_REPETITIONS = 4
-MAX_PROVIDER_CALLS = 16
+MAX_CLI_INVOCATIONS = 16
 MAX_PROMPT_BYTES = 100_000
 MAX_LOCAL_PREPROCESSING_MS = 250
-HOMEBREW_PREFIX = Path("/opt/homebrew")
 
 
 class SampleError(RuntimeError):
@@ -56,14 +56,12 @@ def bounded_timeout(value: str) -> int:
 
 
 def synthetic_log() -> str:
-    lines = ["command: python3 -m unittest sample_suite"]
+    lines = [
+        "command: python3 -m unittest sample_suite",
+        "FAIL sample_test_alpha expected status ok actual status retry",
+        "Traceback sample_module.py line 42 assertion failed",
+    ]
     lines.extend("INFO worker heartbeat status=ok" for _ in range(512))
-    lines.extend(
-        [
-            "FAIL sample_test_alpha expected status ok actual status retry",
-            "Traceback sample_module.py line 42 assertion failed",
-        ]
-    )
     return "\n".join(lines) + "\n"
 
 
@@ -72,7 +70,7 @@ def prompt_for(log_text: str) -> str:
         "Synthetic sanitized log benchmark. Do not use tools. "
         "Identify the command, failing check, and actual status. "
         "Reply with exactly one line in this form: "
-        "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry\n\n"
+        "CG_RESULT command=<command> check=<failing_check> actual=<actual_status>\n\n"
         "LOG\n"
         + log_text
     )
@@ -81,7 +79,13 @@ def prompt_for(log_text: str) -> str:
     return prompt
 
 
-def compress_log(raw_log: str) -> tuple[str, float]:
+def compress_log(raw_log: str, max_output_bytes: int) -> tuple[str, float]:
+    if (
+        type(max_output_bytes) is not int
+        or max_output_bytes < 1
+        or max_output_bytes > MAX_PROMPT_BYTES
+    ):
+        raise SampleError("local compression output limit is invalid")
     environment = {
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -99,7 +103,7 @@ def compress_log(raw_log: str) -> tuple[str, float]:
                 "log",
                 "--quiet",
                 "--max-bytes",
-                str(MAX_PROMPT_BYTES),
+                str(max_output_bytes),
             ],
             cwd=ROOT,
             env=environment,
@@ -250,6 +254,8 @@ def parse_claude_result(raw: str) -> dict[str, Any]:
 def parse_codex_result(raw: str) -> dict[str, Any]:
     response = None
     usage = None
+    seen_thread_started = False
+    seen_turn_started = False
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -259,20 +265,32 @@ def parse_codex_result(raw: str) -> dict[str, Any]:
             raise SampleError("Codex emitted invalid JSONL") from exc
         if type(event) is not dict:
             raise SampleError("Codex event was not an object")
-        if event.get("type") == "item.completed":
+        event_type = event.get("type")
+        if event_type == "thread.started":
+            if seen_thread_started or usage is not None:
+                raise SampleError("Codex lifecycle event was duplicated or out of order")
+            seen_thread_started = True
+        elif event_type == "turn.started":
+            if seen_turn_started or usage is not None:
+                raise SampleError("Codex lifecycle event was duplicated or out of order")
+            seen_turn_started = True
+        elif event_type in {"item.started", "item.completed"}:
             item = event.get("item")
-            if type(item) is dict and item.get("type") == "agent_message" and type(item.get("text")) is str:
+            if type(item) is not dict or usage is not None:
+                raise SampleError("Codex item event shape was invalid")
+            item_type = item.get("type")
+            if event_type == "item.completed" and item_type == "agent_message":
+                if response is not None or type(item.get("text")) is not str:
+                    raise SampleError("Codex agent message was duplicated or invalid")
                 response = item["text"]
-            elif type(item) is dict and item.get("type") in {
-                "command_execution",
-                "file_change",
-                "mcp_tool_call",
-                "tool_call",
-                "web_search",
-            }:
+            elif item_type != "reasoning":
                 raise SampleError("Codex tool event is not allowed")
-        elif event.get("type") == "turn.completed" and type(event.get("usage")) is dict:
+        elif event_type == "turn.completed":
+            if usage is not None or response is None or type(event.get("usage")) is not dict:
+                raise SampleError("Codex completion was duplicated or out of order")
             usage = event["usage"]
+        else:
+            raise SampleError("Codex event type is not allowed")
     if response is None or usage is None:
         raise SampleError("Codex result or usage was unavailable")
     return parsed_usage(response, usage, cached_is_input_breakout=True)
@@ -285,7 +303,7 @@ def quality_passed(response: str) -> bool:
     return normalized == EXPECTED_RESPONSE
 
 
-def _trusted_directory(path: Path, *, allow_user_group_write: bool) -> bool:
+def _trusted_directory(path: Path) -> bool:
     try:
         metadata = path.stat()
     except OSError:
@@ -294,38 +312,28 @@ def _trusted_directory(path: Path, *, allow_user_group_write: bool) -> bool:
     if (
         not stat.S_ISDIR(metadata.st_mode)
         or metadata.st_uid not in trusted_owners
-        or metadata.st_mode & 0o002
+        or metadata.st_mode & 0o022
     ):
         return False
-    if metadata.st_mode & 0o020:
-        return allow_user_group_write and metadata.st_uid == os.getuid()
     return True
 
 
-def _trusted_ancestor_chain(
-    root: Path, descendant: Path, *, allow_user_group_write: bool
-) -> bool:
+def _trusted_ancestor_chain(descendant: Path) -> bool:
     try:
-        root = root.resolve(strict=True)
-        descendant = descendant.resolve(strict=True)
-        relative = descendant.relative_to(root)
-    except (OSError, ValueError):
+        current = descendant.resolve(strict=True)
+    except OSError:
         return False
-    current = root
-    if not _trusted_directory(current, allow_user_group_write=allow_user_group_write):
-        return False
-    for part in relative.parts:
-        current /= part
-        if not _trusted_directory(
-            current, allow_user_group_write=allow_user_group_write
-        ):
+    while True:
+        if not _trusted_directory(current):
             return False
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
     return True
 
 
-def trusted_executable_candidate(
-    candidate: Path, *, writable_prefix: Path | None = None
-) -> Path | None:
+def trusted_executable_candidate(candidate: Path) -> Path | None:
     try:
         candidate_metadata = candidate.lstat()
         resolved = candidate.resolve(strict=True)
@@ -341,92 +349,62 @@ def trusted_executable_candidate(
         or metadata.st_mode & 0o022
     ):
         return None
-    if writable_prefix is not None:
-        try:
-            prefix = writable_prefix.resolve(strict=True)
-            candidate.parent.resolve(strict=True).relative_to(prefix)
-            resolved.relative_to(prefix)
-        except (OSError, ValueError):
-            return None
-        if not _trusted_ancestor_chain(
-            prefix, candidate.parent, allow_user_group_write=True
-        ) or not _trusted_ancestor_chain(
-            prefix, resolved.parent, allow_user_group_write=True
-        ):
-            return None
-    elif not _trusted_directory(
-        candidate.parent.resolve(strict=True), allow_user_group_write=False
-    ) or not _trusted_directory(
-        resolved.parent.resolve(strict=True), allow_user_group_write=False
+    if not _trusted_ancestor_chain(candidate.parent) or not _trusted_ancestor_chain(
+        resolved.parent
     ):
         return None
     return resolved
 
 
 def trusted_executable(vendor: str) -> Path:
-    candidates = {
-        "claude": (
-            Path.home() / ".local/bin/claude",
-            Path("/opt/homebrew/bin/claude"),
-            Path("/usr/local/bin/claude"),
-        ),
-        "codex": (
-            Path("/opt/homebrew/bin/codex"),
-            Path("/usr/local/bin/codex"),
-            Path.home() / ".local/bin/codex",
-        ),
-    }[vendor]
+    if vendor != "claude":
+        raise SampleError("Codex live collection requires a supported no-tools mode")
+    candidates = (
+        Path.home() / ".local/bin/claude",
+        Path("/opt/homebrew/bin/claude"),
+        Path("/usr/local/bin/claude"),
+    )
     for candidate in candidates:
-        writable_prefix = (
-            HOMEBREW_PREFIX
-            if candidate.parent == HOMEBREW_PREFIX / "bin"
-            else None
-        )
-        resolved = trusted_executable_candidate(
-            candidate, writable_prefix=writable_prefix
-        )
+        resolved = trusted_executable_candidate(candidate)
         if resolved is not None:
             return resolved
     raise SampleError(f"trusted {vendor} executable is unavailable")
 
 
 def vendor_command(vendor: str, executable: Path) -> list[str]:
-    if vendor == "claude":
-        return [
-            str(executable),
-            "--print",
-            "--no-session-persistence",
-            "--safe-mode",
-            "--permission-mode",
-            "plan",
-            "--tools",
-            "",
-            "--output-format",
-            "json",
-            "--model",
-            "claude-sonnet-5",
-            "--effort",
-            "high",
-        ]
+    if vendor != "claude":
+        raise SampleError("Codex live collection requires a supported no-tools mode")
     return [
         str(executable),
-        "exec",
-        "--ephemeral",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "--json",
+        "--print",
+        "--no-session-persistence",
+        "--safe-mode",
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "",
+        "--output-format",
+        "json",
         "--model",
-        "gpt-5.6-luna",
-        "-c",
-        'model_reasoning_effort="high"',
-        "-",
+        "claude-sonnet-5",
+        "--effort",
+        "high",
     ]
 
 
+def provider_environment() -> dict[str, str]:
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+    return {
+        "HOME": str(account_home),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+    }
+
+
 def run_provider(vendor: str, prompt: str, timeout: int) -> dict[str, Any]:
+    if vendor != "claude":
+        raise SampleError("Codex live collection requires a supported no-tools mode")
     executable = trusted_executable(vendor)
     command = vendor_command(vendor, executable)
     with tempfile.TemporaryDirectory(prefix="contextguard-advisory-live-") as temp_dir:
@@ -435,6 +413,7 @@ def run_provider(vendor: str, prompt: str, timeout: int) -> dict[str, Any]:
             completed = subprocess.run(
                 command,
                 cwd=temp_dir,
+                env=provider_environment(),
                 input=prompt,
                 text=True,
                 capture_output=True,
@@ -446,7 +425,7 @@ def run_provider(vendor: str, prompt: str, timeout: int) -> dict[str, Any]:
         wall_time = time.perf_counter() - started
     if completed.returncode != 0:
         raise SampleError(f"{vendor} provider process failed")
-    parsed = parse_claude_result(completed.stdout) if vendor == "claude" else parse_codex_result(completed.stdout)
+    parsed = parse_claude_result(completed.stdout)
     parsed["wall_time_seconds"] = wall_time
     parsed["quality_passed"] = quality_passed(parsed["response"])
     parsed.pop("response", None)
@@ -556,7 +535,7 @@ def dry_run_plan(
         "schema_version": "contextguard.advisory-live-plan.v1",
         "vendors": vendors,
         "repetitions": repetitions,
-        "maximum_provider_calls": len(vendors) * repetitions * 2,
+        "maximum_cli_invocations": len(vendors) * repetitions * 2,
         "provider_calls_performed": False,
         "task_or_repository_content_read": False,
         "control_prompt_bytes": len(control.encode("utf-8")),
@@ -595,9 +574,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     vendors = ["claude", "codex"] if args.vendor == "all" else [args.vendor]
-    maximum_calls = len(vendors) * args.repetitions * 2
-    if maximum_calls > MAX_PROVIDER_CALLS:
-        raise SampleError("provider call cap exceeded")
+    maximum_cli_invocations = len(vendors) * args.repetitions * 2
+    if maximum_cli_invocations > MAX_CLI_INVOCATIONS:
+        raise SampleError("provider CLI invocation cap exceeded")
+    if not args.dry_run:
+        if not args.confirm_provider_egress:
+            print("--confirm-provider-egress is required", file=sys.stderr)
+            return 2
+        if "codex" in vendors:
+            raise SampleError(
+                "Codex live collection requires a provider-supported no-tools mode"
+            )
     raw_log = synthetic_log()
     decisions = {
         vendor: advisory_plan(raw_log, vendor, MAX_LOCAL_PREPROCESSING_MS)
@@ -617,7 +604,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     control_prompt = prompt_for(raw_log)
     if args.dry_run:
-        preview_compressed, preview_preprocessing_ms = compress_log(raw_log)
+        preview_compressed, preview_preprocessing_ms = compress_log(
+            raw_log, selected_inline_log_bytes
+        )
         if math.ceil(preview_preprocessing_ms) > MAX_LOCAL_PREPROCESSING_MS:
             raise SampleError("local compression exceeded the overhead budget")
         if len(preview_compressed.encode("utf-8")) > selected_inline_log_bytes:
@@ -638,16 +627,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    if not args.confirm_provider_egress:
-        print("--confirm-provider-egress is required", file=sys.stderr)
-        return 2
     rows: list[dict[str, Any]] = []
     for vendor in vendors:
         for repetition in range(1, args.repetitions + 1):
             order = arm_order(repetition)
             for position, arm in enumerate(order, start=1):
                 if arm == "advisory":
-                    run_compressed, run_preprocessing_ms = compress_log(raw_log)
+                    run_compressed, run_preprocessing_ms = compress_log(
+                        raw_log, selected_inline_log_bytes
+                    )
                     run_decision = advisory_plan(
                         raw_log, vendor, math.ceil(run_preprocessing_ms)
                     )
@@ -667,15 +655,15 @@ def main(argv: list[str] | None = None) -> int:
                     prompt = control_prompt
                 result = run_provider(vendor, prompt, args.timeout_seconds)
                 row = {
-                        "vendor": vendor,
-                        "arm": arm,
-                        "repetition": repetition,
-                        "sequence_position": position,
-                        "arm_order": ",".join(order),
-                        "prompt_bytes": len(prompt.encode("utf-8")),
-                        "local_preprocessing_ms": round(run_preprocessing_ms, 6),
-                        **result,
-                    }
+                    "vendor": vendor,
+                    "arm": arm,
+                    "repetition": repetition,
+                    "sequence_position": position,
+                    "arm_order": ",".join(order),
+                    "prompt_bytes": len(prompt.encode("utf-8")),
+                    "local_preprocessing_ms": round(run_preprocessing_ms, 6),
+                    **result,
+                }
                 rows.append(row)
                 emit_run_record(row)
     print(json.dumps({"type": "summary", "report": aggregate(rows)}, sort_keys=True))

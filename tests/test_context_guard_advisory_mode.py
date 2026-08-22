@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import io
 import json
-import os
 import runpy
 import subprocess
 import sys
@@ -19,6 +18,7 @@ BENCHMARK = ROOT / "scripts" / "benchmark_advisory_mode.py"
 LIVE_COLLECTOR = ROOT / "scripts" / "collect_advisory_live_samples.py"
 LIVE_EVIDENCE = ROOT / "research" / "weightclass-advisory-live-sample-2026-08-22.json"
 ADVISORY_DOC = ROOT / "docs" / "weightclass-advisory-mode.md"
+EXPECTED_RESPONSE = "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry"
 
 
 def workload() -> dict:
@@ -325,6 +325,30 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                 self.assertEqual(completed.stdout, "")
                 self.assertIn("duplicate JSON key", completed.stderr)
 
+    def test_cli_rejects_non_string_vendor_without_traceback(self) -> None:
+        candidate = workload()
+        candidate["vendor"] = []
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(COST_GUARD),
+                "advisory",
+                "--workload",
+                "-",
+                "--json",
+            ],
+            cwd=ROOT,
+            input=json.dumps(candidate),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("vendor must be claude or codex", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
     def test_provider_free_sample_matrix_is_closed_and_factor_specific(self) -> None:
         completed = subprocess.run(
             [
@@ -378,7 +402,8 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout)
         self.assertFalse(plan["provider_calls_performed"])
-        self.assertEqual(plan["maximum_provider_calls"], 16)
+        self.assertEqual(plan["maximum_cli_invocations"], 16)
+        self.assertNotIn("maximum_provider_calls", plan)
         self.assertLess(plan["treatment_prompt_bytes"], plan["control_prompt_bytes"])
         self.assertFalse(plan["task_or_repository_content_read"])
         self.assertEqual(
@@ -478,10 +503,77 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                     ]
                 )
             )
+        for invalid_events in (
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "WRONG"},
+                },
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": EXPECTED_RESPONSE},
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": EXPECTED_RESPONSE},
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "file_read"},
+                },
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": EXPECTED_RESPONSE},
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {
+                    "type": "item.started",
+                    "item": {"type": "command_execution"},
+                },
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": EXPECTED_RESPONSE},
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+        ):
+            with self.subTest(events=invalid_events), self.assertRaisesRegex(
+                Exception, "Codex"
+            ):
+                module["parse_codex_result"](
+                    "\n".join(json.dumps(event) for event in invalid_events)
+                )
 
     def test_live_quality_gate_requires_one_exact_result_line(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_quality_test")
         expected = "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry"
+        prompt = module["prompt_for"](module["synthetic_log"]())
+        self.assertNotIn(expected, prompt)
+        self.assertIn("command=<command>", prompt)
         self.assertTrue(module["quality_passed"](expected))
         self.assertTrue(module["quality_passed"](expected + "\n"))
         self.assertFalse(module["quality_passed"](expected + "\nextra"))
@@ -504,7 +596,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         blocked = module["advisory_plan"](raw, "codex", 251)
         self.assertEqual(blocked["reason"], "local_overhead_budget_exceeded")
 
-    def test_live_collector_trusts_only_safe_homebrew_symlink_layout(self) -> None:
+    def test_live_collector_rejects_group_writable_executable_ancestors(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_path_test")
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory) / "homebrew"
@@ -518,36 +610,82 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
             candidate = bin_dir / "codex"
             candidate.symlink_to(target)
 
+            self.assertIsNone(module["trusted_executable_candidate"](candidate))
+
+            bin_dir.chmod(0o755)
             self.assertEqual(
-                module["trusted_executable_candidate"](
-                    candidate, writable_prefix=prefix
-                ),
-                target.resolve(),
+                module["trusted_executable_candidate"](candidate), target.resolve()
             )
 
-            bin_dir.chmod(0o777)
-            self.assertIsNone(
-                module["trusted_executable_candidate"](
-                    candidate, writable_prefix=prefix
-                )
+    def test_live_codex_collection_refuses_before_any_local_or_provider_action(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_codex_gate_test")
+        calls = []
+        with mock.patch.dict(
+            module["main"].__globals__,
+            {
+                "compress_log": lambda *_args: calls.append("compress"),
+                "run_provider": lambda *_args: calls.append("provider"),
+            },
+        ), self.assertRaisesRegex(Exception, "no-tools"):
+            module["main"](
+                [
+                    "--vendor",
+                    "codex",
+                    "--repetitions",
+                    "2",
+                    "--confirm-provider-egress",
+                ]
             )
-            bin_dir.chmod(0o775)
-            with mock.patch.object(
-                module["os"], "getuid", return_value=os.getuid() + 1
-            ):
-                self.assertIsNone(
-                    module["trusted_executable_candidate"](
-                        candidate, writable_prefix=prefix
-                    )
-                )
+        self.assertEqual(calls, [])
+
+    def test_live_provider_process_uses_minimal_non_redirectable_environment(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_env_test")
+        observed = {}
+
+        def fake_run(_command, **kwargs):
+            observed.update(kwargs["env"])
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "result": EXPECTED_RESPONSE,
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                        "total_cost_usd": 0.0,
+                    }
+                ),
+                stderr="",
+            )
+
+        with mock.patch.dict(
+            module["run_provider"].__globals__,
+            {
+                "trusted_executable": lambda _vendor: Path("/trusted/claude"),
+            },
+        ), mock.patch.object(module["subprocess"], "run", side_effect=fake_run):
+            result = module["run_provider"]("claude", "synthetic", 30)
+        self.assertTrue(result["quality_passed"])
+        self.assertEqual(set(observed), {"HOME", "LANG", "LC_ALL", "PATH"})
+        self.assertTrue(Path(observed["HOME"]).is_absolute())
+        for prohibited in (
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "ANTHROPIC_BASE_URL",
+            "OPENAI_BASE_URL",
+            "HTTPS_PROXY",
+            "SSL_CERT_FILE",
+        ):
+            self.assertNotIn(prohibited, observed)
 
     def test_live_compression_is_charged_once_per_advisory_run(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_accounting_test")
         observed_ms = iter((11.0, 29.0))
         calls = []
 
-        def fake_compress(_raw_log: str) -> tuple[str, float]:
-            calls.append("compress")
+        def fake_compress(
+            _raw_log: str, max_output_bytes: int
+        ) -> tuple[str, float]:
+            calls.append(max_output_bytes)
             return (
                 "command sample_suite\nFAIL sample_test_alpha actual retry\n",
                 next(observed_ms),
@@ -574,7 +712,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                 module["main"](
                     [
                         "--vendor",
-                        "codex",
+                        "claude",
                         "--repetitions",
                         "2",
                         "--confirm-provider-egress",
@@ -582,7 +720,7 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
                 ),
                 0,
             )
-        self.assertEqual(calls, ["compress", "compress"])
+        self.assertEqual(calls, [4096, 4096])
         report = json.loads(output.getvalue())["report"]
         advisory_rows = [row for row in report["runs"] if row["arm"] == "advisory"]
         self.assertEqual(
@@ -593,6 +731,8 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         documentation = ADVISORY_DOC.read_text(encoding="utf-8")
         self.assertIn("--dry-run --vendor all --repetitions 4", documentation)
         self.assertIn("caps repetitions at four", documentation)
+        self.assertIn("CLI invocations at sixteen", documentation)
+        self.assertIn("transport retries are unobserved", documentation)
         self.assertNotIn("--dry-run --vendor all --repetitions 3", documentation)
 
     def test_live_collector_refuses_network_without_confirmation(self) -> None:

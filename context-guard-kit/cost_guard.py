@@ -2736,7 +2736,7 @@ def advisory_decision(raw: Any) -> dict[str, Any]:
     if workload["schema_version"] != ADVISORY_WORKLOAD_SCHEMA_VERSION:
         fail("advisory workload schema version is unsupported")
     vendor = workload["vendor"]
-    if vendor not in {"claude", "codex"}:
+    if type(vendor) is not str or vendor not in {"claude", "codex"}:
         fail("advisory vendor must be claude or codex")
     invocation = advisory_plain_object(
         workload["invocation"], "advisory invocation", ADVISORY_INVOCATION_KEYS

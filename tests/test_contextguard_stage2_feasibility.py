@@ -335,8 +335,8 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
     }
 )
 PROVIDER_FREE_PINNED_SUPPORT_SHA256 = {
-    "context-guard-kit/cost_guard.py": "7e9d875fdbe6c131cd8dc43c27794939a7d10181ec591ad2aab2d5ab329f6725",
-    "plugins/context-guard/bin/context-guard-cost": "7e9d875fdbe6c131cd8dc43c27794939a7d10181ec591ad2aab2d5ab329f6725",
+    "context-guard-kit/cost_guard.py": "209c8d3bfd33d98dfec272c6f7f9956c8440b665707cc1e3fedf5715b77162d6",
+    "plugins/context-guard/bin/context-guard-cost": "209c8d3bfd33d98dfec272c6f7f9956c8440b665707cc1e3fedf5715b77162d6",
 }
 EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 127
 RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/LICENSE', 'sha256': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'},
