@@ -4,6 +4,23 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-22
+
+- Added a zero-provider-context advisory mode for WeightClass-style routing.
+  Small tasks bypass without standing instructions, while larger tasks select
+  only locally profitable log trimming, symbol slicing, adaptive packing, or
+  cached graph expansion. The bounded sample harness now counterbalances arm
+  order, charges preprocessing per advisory run, rejects ambiguous usage and
+  cache accounting, and keeps invalid historical measurements excluded.
+- Kept live Claude collection behind safe mode, an empty tool surface, trusted
+  executable ancestry, a minimal non-redirectable environment, exact quality
+  checks, and explicit provider-egress confirmation. Live Codex collection
+  fails closed before local or provider action until the subscription CLI has
+  a preventive no-tools mode; provider-free Codex planning remains available.
+- Hardened Homebrew formula verification through an isolated temporary tap,
+  preserved pre-existing installation state, rendered release-safe formula
+  syntax, and registered the formula template as an explicit support surface.
+
 ## [0.6.0] - 2026-08-21
 
 - Added a provider-free `context-guard-receipt evaluate phase` surface with
