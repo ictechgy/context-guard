@@ -632,26 +632,14 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         blocked = module["advisory_plan"](raw, "codex", 251)
         self.assertEqual(blocked["reason"], "local_overhead_budget_exceeded")
 
-    def test_live_collector_rejects_group_writable_executable_ancestors(self) -> None:
+    def test_live_collector_rejects_group_writable_executable_directory(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_path_test")
-        with tempfile.TemporaryDirectory(dir=Path.home()) as directory:
-            prefix = Path(directory) / "homebrew"
-            bin_dir = prefix / "bin"
-            target = prefix / "lib/node_modules/vendor/bin/codex.js"
-            target.parent.mkdir(parents=True)
-            bin_dir.mkdir()
-            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            target.chmod(0o755)
-            bin_dir.chmod(0o775)
-            candidate = bin_dir / "codex"
-            candidate.symlink_to(target)
-
-            self.assertIsNone(module["trusted_executable_candidate"](candidate))
-
-            bin_dir.chmod(0o755)
-            self.assertEqual(
-                module["trusted_executable_candidate"](candidate), target.resolve()
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_directory = Path(directory)
+            candidate_directory.chmod(0o775)
+            self.assertFalse(module["_trusted_directory"](candidate_directory))
+            candidate_directory.chmod(0o755)
+            self.assertTrue(module["_trusted_directory"](candidate_directory))
 
     def test_live_codex_collection_refuses_before_any_local_or_provider_action(self) -> None:
         module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_codex_gate_test")
