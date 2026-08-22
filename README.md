@@ -459,9 +459,12 @@ The packer uses deterministic standard-library heuristics only: no network, mode
 ```bash
 ./plugins/context-guard/bin/context-guard route-advisor --workload workload.json --json
 ./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
+./plugins/context-guard/bin/context-guard cost advisory --workload advisory-workload.json --json
 ```
 
 `context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only. Hosted token or cost savings claims require matched successful tasks, non-inferior quality, and shifted-cost evidence.
+
+`context-guard cost advisory` is the zero-persistent-context WeightClass/router gate. It accepts only closed numeric and boolean capability signals, returns an empty provider context on every path, bypasses small or non-profitable work, and permits graph only for cached positive replacement evidence. See [WeightClass advisory mode](https://github.com/ictechgy/context-guard/blob/main/docs/weightclass-advisory-mode.md).
 
 ### Compress selected local text conservatively
 

@@ -85,6 +85,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "context-guard-kit/context_pack_rendering.py",
         "context-guard-kit/context_pack_scanning.py",
         "context-guard-kit/context_pack_selection.py",
+        "context-guard-kit/cost_guard.py",
         "context-guard-kit/failed_attempt_nudge.py",
         "context-guard-kit/guard_large_read.py",
         "context-guard-kit/README.md",
@@ -98,6 +99,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "context-guard-kit/trim_command_output.py",
         "docs/distribution.md",
         "docs/release-runbook.md",
+        "docs/weightclass-advisory-mode.md",
         "package.json",
         "packaging/homebrew/context-guard.rb.template",
         "packages/context-guard-receipt/python/context_guard_receipt/external_approval_v2.py",
@@ -109,6 +111,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/bin/bash_reference_policy.py",
         "plugins/context-guard/bin/context-guard-bench",
         "plugins/context-guard/bin/context-guard-artifact",
+        "plugins/context-guard/bin/context-guard-cost",
         "plugins/context-guard/bin/context-guard-failed-nudge",
         "plugins/context-guard/bin/context-guard-guard-read",
         "plugins/context-guard/bin/context-guard-pack",
@@ -268,8 +271,11 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/provider-free-roadmap/g6/v1/verify.py",
         "research/provider-free-roadmap/p1-v8-evidence-manifest.json",
         "research/token-savings-roadmap.md",
+        "research/weightclass-advisory-live-sample-2026-08-22.json",
+        "scripts/benchmark_advisory_mode.py",
         "scripts/build_npm_candidates.py",
         "scripts/ci_test_gate.py",
+        "scripts/collect_advisory_live_samples.py",
         "scripts/prepublish_check.py",
         "scripts/rehearse_measurement_study.py",
         "scripts/longitudinal_study.py",
@@ -322,11 +328,16 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_provider_live_ci_discovery.py",
         "tests/test_context_guard_shell_contract.py",
         "tests/test_context_guard_usage_reducer_v2.py",
+        "tests/test_context_guard_advisory_mode.py",
         "tests/test_release_candidate_smoke.py",
         "tests/test_release_assets.py",
         "tests/test_workflows.py",
     }
 )
+PROVIDER_FREE_PINNED_SUPPORT_SHA256 = {
+    "context-guard-kit/cost_guard.py": "209c8d3bfd33d98dfec272c6f7f9956c8440b665707cc1e3fedf5715b77162d6",
+    "plugins/context-guard/bin/context-guard-cost": "209c8d3bfd33d98dfec272c6f7f9956c8440b665707cc1e3fedf5715b77162d6",
+}
 EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 127
 RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/LICENSE', 'sha256': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/NOTICE', 'sha256': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779'},
@@ -712,6 +723,12 @@ def validate_stage2_historical_baseline_identity(
 ) -> None:
     if revision != EXPECTED_STAGE2_BASELINE_COMMIT:
         raise AssertionError("Stage 2 historical baseline revision drifted")
+    current_inventory = production_surface_inventory()
+    current_by_path = {entry["path"]: entry for entry in current_inventory}
+    for path, expected_sha256 in PROVIDER_FREE_PINNED_SUPPORT_SHA256.items():
+        entry = current_by_path.get(path)
+        if entry is None or entry.get("sha256") != expected_sha256:
+            raise AssertionError("pinned provider-free support identity drifted")
     historical_inventory = (
         historical_production_surface_inventory(revision) if inventory is None else inventory
     )
@@ -721,7 +738,7 @@ def validate_stage2_historical_baseline_identity(
         if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
     ]
     current_unchanged = [
-        entry for entry in production_surface_inventory()
+        entry for entry in current_inventory
         if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
     ]
     if historical_unchanged != current_unchanged:
@@ -839,6 +856,34 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
             "packaging/homebrew/context-guard.rb.template",
             PROVIDER_FREE_SUPPORT_PATHS,
         )
+
+    def test_weightclass_advisory_files_are_declared_support_paths(self) -> None:
+        self.assertTrue(
+            {
+                "context-guard-kit/cost_guard.py",
+                "docs/weightclass-advisory-mode.md",
+                "plugins/context-guard/bin/context-guard-cost",
+                "research/weightclass-advisory-live-sample-2026-08-22.json",
+                "scripts/benchmark_advisory_mode.py",
+                "scripts/collect_advisory_live_samples.py",
+                "tests/test_context_guard_advisory_mode.py",
+            }.issubset(PROVIDER_FREE_SUPPORT_PATHS)
+        )
+
+    def test_advisory_production_support_paths_are_exact_hash_pinned(self) -> None:
+        self.assertIn("PROVIDER_FREE_PINNED_SUPPORT_SHA256", globals())
+        pinned = globals()["PROVIDER_FREE_PINNED_SUPPORT_SHA256"]
+        expected_paths = {
+            "context-guard-kit/cost_guard.py",
+            "plugins/context-guard/bin/context-guard-cost",
+        }
+        self.assertEqual(set(pinned), expected_paths)
+        for relative_path, expected_sha256 in pinned.items():
+            with self.subTest(path=relative_path):
+                self.assertEqual(
+                    hashlib.sha256((REPO_ROOT / relative_path).read_bytes()).hexdigest(),
+                    expected_sha256,
+                )
 
     def test_historical_baseline_is_reconstructed_from_the_frozen_commit(self) -> None:
         historical_inventory = historical_production_surface_inventory()
