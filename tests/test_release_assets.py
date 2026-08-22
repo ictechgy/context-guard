@@ -27,6 +27,7 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
         )
         root_version = root_package["version"]
         receipt_version = receipt_package["version"]
+        self.assertEqual(receipt_version, "0.2.1")
         self.assertEqual(
             root_package["dependencies"]["@ictechgy/context-guard-receipt"],
             receipt_version,
@@ -41,33 +42,40 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
             (ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
         )
         self.assertEqual(plugin["version"], root_version)
-        self.assertEqual(marketplace["plugins"][0]["version"], root_version)
+        marketplace_entries = [
+            entry
+            for entry in marketplace["plugins"]
+            if entry.get("name") == plugin["name"]
+        ]
+        self.assertEqual(len(marketplace_entries), 1)
+        self.assertEqual(marketplace_entries[0]["version"], root_version)
 
-        documents = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            ROOT / "docs/distribution.md",
-            ROOT / "plugins/context-guard/README.md",
-            ROOT / "plugins/context-guard/README.ko.md",
-        )
+        documents = {
+            ROOT / "README.md": f"@ictechgy/context-guard-receipt@{receipt_version}",
+            ROOT / "README.ko.md": f"@ictechgy/context-guard-receipt@{receipt_version}",
+            ROOT / "docs/distribution.md": (
+                f"@ictechgy/context-guard-receipt: {receipt_version}"
+            ),
+            ROOT / "plugins/context-guard/README.md": (
+                f"@ictechgy/context-guard-receipt@{receipt_version}"
+            ),
+            ROOT / "plugins/context-guard/README.ko.md": (
+                f"@ictechgy/context-guard-receipt@{receipt_version}"
+            ),
+        }
         root_pattern = re.compile(r"@ictechgy/context-guard@(\d+\.\d+\.\d+)")
-        receipt_pattern = re.compile(
-            r"@ictechgy/context-guard-receipt@(\d+\.\d+\.\d+)"
-        )
-        observed_root_versions = set()
-        observed_receipt_versions = set()
-        for document in documents:
+        for document, receipt_reference in documents.items():
             content = document.read_text(encoding="utf-8")
-            observed_root_versions.update(root_pattern.findall(content))
-            observed_receipt_versions.update(receipt_pattern.findall(content))
-        self.assertEqual(observed_root_versions, {root_version})
-        self.assertEqual(observed_receipt_versions, {receipt_version})
+            self.assertEqual(set(root_pattern.findall(content)), {root_version})
+            self.assertIn(receipt_reference, content)
 
-        published_inventory = json.loads(
-            (
-                ROOT / "packages/context-guard-receipt/package-files.json"
-            ).read_text(encoding="utf-8")
+        inventory_path = ROOT / "packages/context-guard-receipt/package-files.json"
+        inventory_bytes = inventory_path.read_bytes()
+        self.assertEqual(
+            hashlib.sha256(inventory_bytes).hexdigest(),
+            "8d7b5cd94b34c89f37547eaf069be21a117b30a519bf499df2c52bd6459fe946",
         )
+        published_inventory = json.loads(inventory_bytes)
         published_paths = {entry["path"] for entry in published_inventory["files"]}
         self.assertFalse(any(path.startswith("scripts/") for path in published_paths))
         self.assertFalse(any(path.startswith("tests/") for path in published_paths))
