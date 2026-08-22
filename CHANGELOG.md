@@ -4,7 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-08-22
+## [0.7.0] - 2026-08-22
 
 - Added a zero-provider-context advisory mode for WeightClass-style routing.
   Small tasks bypass without standing instructions, while larger tasks select
