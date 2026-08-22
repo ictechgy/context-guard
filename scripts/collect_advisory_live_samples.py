@@ -22,9 +22,11 @@ COST_GUARD = ROOT / "context-guard-kit" / "cost_guard.py"
 COMPRESSOR = ROOT / "context-guard-kit" / "context_compress.py"
 QUALITY_MARKERS = ("sample_suite", "sample_test_alpha", "retry")
 EXPECTED_RESPONSE = "CG_RESULT command=sample_suite check=sample_test_alpha actual=retry"
-MAX_REPETITIONS = 5
-MAX_PROVIDER_CALLS = 20
+MAX_REPETITIONS = 4
+MAX_PROVIDER_CALLS = 16
 MAX_PROMPT_BYTES = 100_000
+MAX_LOCAL_PREPROCESSING_MS = 250
+HOMEBREW_PREFIX = Path("/opt/homebrew")
 
 
 class SampleError(RuntimeError):
@@ -36,8 +38,10 @@ def bounded_positive_int(value: str) -> int:
         number = int(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be an integer") from exc
-    if number not in {2, 4}:
-        raise argparse.ArgumentTypeError("must be even and equal to 2 or 4")
+    if number not in {2, MAX_REPETITIONS}:
+        raise argparse.ArgumentTypeError(
+            f"must be even and equal to 2 or {MAX_REPETITIONS}"
+        )
     return number
 
 
@@ -281,6 +285,84 @@ def quality_passed(response: str) -> bool:
     return normalized == EXPECTED_RESPONSE
 
 
+def _trusted_directory(path: Path, *, allow_user_group_write: bool) -> bool:
+    try:
+        metadata = path.stat()
+    except OSError:
+        return False
+    trusted_owners = {0, os.getuid()}
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid not in trusted_owners
+        or metadata.st_mode & 0o002
+    ):
+        return False
+    if metadata.st_mode & 0o020:
+        return allow_user_group_write and metadata.st_uid == os.getuid()
+    return True
+
+
+def _trusted_ancestor_chain(
+    root: Path, descendant: Path, *, allow_user_group_write: bool
+) -> bool:
+    try:
+        root = root.resolve(strict=True)
+        descendant = descendant.resolve(strict=True)
+        relative = descendant.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    current = root
+    if not _trusted_directory(current, allow_user_group_write=allow_user_group_write):
+        return False
+    for part in relative.parts:
+        current /= part
+        if not _trusted_directory(
+            current, allow_user_group_write=allow_user_group_write
+        ):
+            return False
+    return True
+
+
+def trusted_executable_candidate(
+    candidate: Path, *, writable_prefix: Path | None = None
+) -> Path | None:
+    try:
+        candidate_metadata = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError:
+        return None
+    trusted_owners = {0, os.getuid()}
+    if candidate_metadata.st_uid not in trusted_owners:
+        return None
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid not in trusted_owners
+        or metadata.st_mode & 0o022
+    ):
+        return None
+    if writable_prefix is not None:
+        try:
+            prefix = writable_prefix.resolve(strict=True)
+            candidate.parent.resolve(strict=True).relative_to(prefix)
+            resolved.relative_to(prefix)
+        except (OSError, ValueError):
+            return None
+        if not _trusted_ancestor_chain(
+            prefix, candidate.parent, allow_user_group_write=True
+        ) or not _trusted_ancestor_chain(
+            prefix, resolved.parent, allow_user_group_write=True
+        ):
+            return None
+    elif not _trusted_directory(
+        candidate.parent.resolve(strict=True), allow_user_group_write=False
+    ) or not _trusted_directory(
+        resolved.parent.resolve(strict=True), allow_user_group_write=False
+    ):
+        return None
+    return resolved
+
+
 def trusted_executable(vendor: str) -> Path:
     candidates = {
         "claude": (
@@ -295,25 +377,15 @@ def trusted_executable(vendor: str) -> Path:
         ),
     }[vendor]
     for candidate in candidates:
-        try:
-            resolved = candidate.resolve(strict=True)
-            metadata = resolved.stat()
-            candidate_parent = candidate.parent.resolve(strict=True).stat()
-            resolved_parent = resolved.parent.stat()
-        except OSError:
-            continue
-        trusted_owners = {0, os.getuid()}
-        if (
-            stat.S_ISREG(metadata.st_mode)
-            and metadata.st_uid in trusted_owners
-            and not metadata.st_mode & 0o022
-            and stat.S_ISDIR(candidate_parent.st_mode)
-            and candidate_parent.st_uid in trusted_owners
-            and not candidate_parent.st_mode & 0o022
-            and stat.S_ISDIR(resolved_parent.st_mode)
-            and resolved_parent.st_uid in trusted_owners
-            and not resolved_parent.st_mode & 0o022
-        ):
+        writable_prefix = (
+            HOMEBREW_PREFIX
+            if candidate.parent == HOMEBREW_PREFIX / "bin"
+            else None
+        )
+        resolved = trusted_executable_candidate(
+            candidate, writable_prefix=writable_prefix
+        )
+        if resolved is not None:
             return resolved
     raise SampleError(f"trusted {vendor} executable is unavailable")
 
@@ -478,6 +550,7 @@ def dry_run_plan(
     control: str,
     treatment: str,
     decisions: dict[str, dict[str, Any]],
+    preview_preprocessing_ms: float,
 ) -> dict[str, Any]:
     return {
         "schema_version": "contextguard.advisory-live-plan.v1",
@@ -502,6 +575,10 @@ def dry_run_plan(
             int(decisions[vendor]["actions"][0]["max_inline_bytes"])
             for vendor in vendors
         ),
+        "local_preview_compression": {
+            "accounting": "excluded_dry_run_only",
+            "wall_time_ms": round(preview_preprocessing_ms, 6),
+        },
     }
 
 
@@ -522,10 +599,8 @@ def main(argv: list[str] | None = None) -> int:
     if maximum_calls > MAX_PROVIDER_CALLS:
         raise SampleError("provider call cap exceeded")
     raw_log = synthetic_log()
-    compressed, preprocessing_ms = compress_log(raw_log)
-    measured_overhead_ms = math.ceil(preprocessing_ms)
     decisions = {
-        vendor: advisory_plan(raw_log, vendor, measured_overhead_ms)
+        vendor: advisory_plan(raw_log, vendor, MAX_LOCAL_PREPROCESSING_MS)
         for vendor in vendors
     }
     for decision in decisions.values():
@@ -540,15 +615,23 @@ def main(argv: list[str] | None = None) -> int:
         int(decision["actions"][0]["max_inline_bytes"])
         for decision in decisions.values()
     )
-    if len(compressed.encode("utf-8")) > selected_inline_log_bytes:
-        raise SampleError("compressed log exceeded the selected inline byte limit")
     control_prompt = prompt_for(raw_log)
-    treatment_prompt = prompt_for(compressed)
     if args.dry_run:
+        preview_compressed, preview_preprocessing_ms = compress_log(raw_log)
+        if math.ceil(preview_preprocessing_ms) > MAX_LOCAL_PREPROCESSING_MS:
+            raise SampleError("local compression exceeded the overhead budget")
+        if len(preview_compressed.encode("utf-8")) > selected_inline_log_bytes:
+            raise SampleError("compressed log exceeded the selected inline byte limit")
+        treatment_prompt = prompt_for(preview_compressed)
         print(
             json.dumps(
                 dry_run_plan(
-                    vendors, args.repetitions, control_prompt, treatment_prompt, decisions
+                    vendors,
+                    args.repetitions,
+                    control_prompt,
+                    treatment_prompt,
+                    decisions,
+                    preview_preprocessing_ms,
                 ),
                 sort_keys=True,
                 indent=2,
@@ -565,6 +648,17 @@ def main(argv: list[str] | None = None) -> int:
             for position, arm in enumerate(order, start=1):
                 if arm == "advisory":
                     run_compressed, run_preprocessing_ms = compress_log(raw_log)
+                    run_decision = advisory_plan(
+                        raw_log, vendor, math.ceil(run_preprocessing_ms)
+                    )
+                    if (
+                        run_decision["decision"] != "trim_output"
+                        or run_decision["activation_status"] != "active"
+                        or not run_decision["measurement_eligible"]
+                    ):
+                        raise SampleError(
+                            "local compression exceeded the overhead budget"
+                        )
                     if len(run_compressed.encode("utf-8")) > selected_inline_log_bytes:
                         raise SampleError("compressed log exceeded the selected inline byte limit")
                     prompt = prompt_for(run_compressed)

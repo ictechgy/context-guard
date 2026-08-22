@@ -3,11 +3,14 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import runpy
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +18,7 @@ COST_GUARD = ROOT / "context-guard-kit" / "cost_guard.py"
 BENCHMARK = ROOT / "scripts" / "benchmark_advisory_mode.py"
 LIVE_COLLECTOR = ROOT / "scripts" / "collect_advisory_live_samples.py"
 LIVE_EVIDENCE = ROOT / "research" / "weightclass-advisory-live-sample-2026-08-22.json"
+ADVISORY_DOC = ROOT / "docs" / "weightclass-advisory-mode.md"
 
 
 def workload() -> dict:
@@ -499,6 +503,97 @@ class ContextGuardAdvisoryModeTests(unittest.TestCase):
         self.assertEqual(codex["decision"], "trim_output")
         blocked = module["advisory_plan"](raw, "codex", 251)
         self.assertEqual(blocked["reason"], "local_overhead_budget_exceeded")
+
+    def test_live_collector_trusts_only_safe_homebrew_symlink_layout(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_path_test")
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "homebrew"
+            bin_dir = prefix / "bin"
+            target = prefix / "lib/node_modules/vendor/bin/codex.js"
+            target.parent.mkdir(parents=True)
+            bin_dir.mkdir()
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o755)
+            bin_dir.chmod(0o775)
+            candidate = bin_dir / "codex"
+            candidate.symlink_to(target)
+
+            self.assertEqual(
+                module["trusted_executable_candidate"](
+                    candidate, writable_prefix=prefix
+                ),
+                target.resolve(),
+            )
+
+            bin_dir.chmod(0o777)
+            self.assertIsNone(
+                module["trusted_executable_candidate"](
+                    candidate, writable_prefix=prefix
+                )
+            )
+            bin_dir.chmod(0o775)
+            with mock.patch.object(
+                module["os"], "getuid", return_value=os.getuid() + 1
+            ):
+                self.assertIsNone(
+                    module["trusted_executable_candidate"](
+                        candidate, writable_prefix=prefix
+                    )
+                )
+
+    def test_live_compression_is_charged_once_per_advisory_run(self) -> None:
+        module = runpy.run_path(str(LIVE_COLLECTOR), run_name="advisory_accounting_test")
+        observed_ms = iter((11.0, 29.0))
+        calls = []
+
+        def fake_compress(_raw_log: str) -> tuple[str, float]:
+            calls.append("compress")
+            return (
+                "command sample_suite\nFAIL sample_test_alpha actual retry\n",
+                next(observed_ms),
+            )
+
+        def fake_provider(_vendor: str, _prompt: str, _timeout: int) -> dict:
+            return {
+                "total_tokens": 10,
+                "wall_time_seconds": 0.1,
+                "cost_usd": None,
+                "quality_passed": True,
+            }
+
+        output = io.StringIO()
+        with mock.patch.dict(
+            module["main"].__globals__,
+            {
+                "compress_log": fake_compress,
+                "run_provider": fake_provider,
+                "emit_run_record": lambda _row: None,
+            },
+        ), mock.patch("sys.stdout", output):
+            self.assertEqual(
+                module["main"](
+                    [
+                        "--vendor",
+                        "codex",
+                        "--repetitions",
+                        "2",
+                        "--confirm-provider-egress",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(calls, ["compress", "compress"])
+        report = json.loads(output.getvalue())["report"]
+        advisory_rows = [row for row in report["runs"] if row["arm"] == "advisory"]
+        self.assertEqual(
+            [row["local_preprocessing_ms"] for row in advisory_rows], [11.0, 29.0]
+        )
+
+    def test_live_collection_documentation_matches_counterbalance_contract(self) -> None:
+        documentation = ADVISORY_DOC.read_text(encoding="utf-8")
+        self.assertIn("--dry-run --vendor all --repetitions 4", documentation)
+        self.assertIn("caps repetitions at four", documentation)
+        self.assertNotIn("--dry-run --vendor all --repetitions 3", documentation)
 
     def test_live_collector_refuses_network_without_confirmation(self) -> None:
         self.assertTrue(LIVE_COLLECTOR.exists())

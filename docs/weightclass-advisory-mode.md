@@ -105,11 +105,11 @@ Review the exact egress plan without a provider call:
 
 ```bash
 python3 -B scripts/collect_advisory_live_samples.py \
-  --dry-run --vendor all --repetitions 3
+  --dry-run --vendor all --repetitions 4
 ```
 
-The live path requires `--confirm-provider-egress`, caps repetitions at five and
-calls at twenty, uses only a generated sanitized log, reads no repository task
+The live path requires `--confirm-provider-egress`, caps repetitions at four and
+calls at sixteen, uses only a generated sanitized log, reads no repository task
 content, and reports aggregate usage/quality rows without prompt or model output.
 Claude runs in safe mode with tools disabled; Codex runs ephemeral, read-only,
 and with user config and exec-policy rules ignored. Each CLI owns its existing
@@ -128,3 +128,6 @@ The corrected harness now alternates AB/BA order, records paired deltas, require
 one exact result line, builds a separate capability plan for each vendor, and
 feeds measured local compression time into the overhead gate. A new provider
 sample must be collected and reviewed before any live numeric table is added.
+The dry-run preview compression is explicitly reported as excluded dry-run-only
+calibration. Live collection does no unassigned preflight compression: every
+compression execution is measured, gated, and charged to its advisory row.
