@@ -48,8 +48,8 @@ npx @ictechgy/context-guard --version
 
 The compact `bash_reference_v1` Bash-output route is intentionally not
 available from this marketplace-plugin/source layout. It requires an exact
-project-local npm installation of `@ictechgy/context-guard@0.5.0` and its
-`@ictechgy/context-guard-receipt@0.2.0` dependency, then explicit
+project-local npm installation of `@ictechgy/context-guard@0.6.1` and its
+`@ictechgy/context-guard-receipt@0.2.1` dependency, then explicit
 `setup --agent claude --scope project --bash-reference-v1`. Plugin setup keeps
 legacy trimming and warns instead of installing a no-op reference flag. See the
 repository distribution guide for activation, disablement, seven-day handle,

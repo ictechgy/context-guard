@@ -8,10 +8,12 @@ All notable changes for the ContextGuard plugin are documented here.
 
 - Added a zero-provider-context advisory mode for WeightClass-style routing.
   Small tasks bypass without standing instructions, while larger tasks select
-  only locally profitable log trimming, symbol slicing, adaptive packing, or
-  cached graph expansion. The bounded sample harness now counterbalances arm
-  order, charges preprocessing per advisory run, rejects ambiguous usage and
-  cache accounting, and keeps invalid historical measurements excluded.
+  only locally eligible log trimming, symbol slicing, adaptive packing, or
+  cached graph expansion candidates that pass the configured gross-byte floor
+  and local-overhead budget. Those gates do not guarantee provider token or
+  cost savings. The bounded sample harness now counterbalances arm order,
+  charges preprocessing per advisory run, rejects ambiguous usage and cache
+  accounting, and keeps invalid historical measurements excluded.
 - Kept live Claude collection behind safe mode, an empty tool surface, trusted
   executable ancestry, a minimal non-redirectable environment, exact quality
   checks, and explicit provider-egress confirmation. Live Codex collection
