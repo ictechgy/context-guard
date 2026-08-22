@@ -553,7 +553,7 @@ def dry_run_plan(
     preview_preprocessing_ms: float,
 ) -> dict[str, Any]:
     return {
-        "schema_version": "contextguard.advisory-live-plan.v1",
+        "schema_version": "contextguard.advisory-live-plan.v2",
         "vendors": vendors,
         "repetitions": repetitions,
         "maximum_cli_invocations": len(vendors) * repetitions * 2,
