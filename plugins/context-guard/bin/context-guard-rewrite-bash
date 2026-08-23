@@ -2395,6 +2395,45 @@ def _is_explicit_noop_command(argv: tuple[str, ...]) -> bool:
     )
 
 
+def _wclass_advisory_is_safe(argv: tuple[str, ...]) -> bool:
+    # 토큰 형태(known flag/value pairing)만 검증한다 — `--repo`/`--task-file`
+    # 필수 여부나 `--vendor`의 허용값 같은 CLI 자체의 필수 옵션·enum 검증은
+    # 의도적으로 위임한다(다운스트림 argparse가 이미 거부함). 이 predicate가
+    # 막는 건 "인식 못 하는 트레일링 토큰이 조용히 통과하는 것"이지 CLI
+    # 문법 전체가 아니다.
+    if len(argv) < 2:
+        return False
+    if argv[1] == "review":
+        return len(argv) == 2
+    if argv[1] != "run":
+        return False
+
+    value_flags = {"--repo", "--task-file", "--vendor", "--workflow"}
+    confirm_seen = False
+    index = 2
+    while index < len(argv):
+        token = argv[index]
+        if token == "--confirm-task-egress":
+            confirm_seen = True
+            index += 1
+            continue
+        if token not in value_flags or index + 1 >= len(argv):
+            return False
+        value = argv[index + 1]
+        if value.startswith("-"):
+            return False
+        index += 2
+    return confirm_seen
+
+
+# 심사된 정확 이름 확장 레지스트리 — 글롭/접두사 금지(R-12의 TERM*→TERMINFO
+# 실패 재현 방지). 각 값은 서브커맨드 토큰 하나만이 아니라 argv 전체 모양을
+# 검증하는 predicate여야 한다.
+CGW_EXACT_NAME_EXTENSIONS = {
+    "wclass-advisory": _wclass_advisory_is_safe,
+}
+
+
 def command_search_diff(
     argv: tuple[str, ...],
     *,
@@ -2530,6 +2569,8 @@ def command_search_diff(
             route = "trim"
         else:
             route = "noop"
+    elif first in CGW_EXACT_NAME_EXTENSIONS:
+        route = "noop" if CGW_EXACT_NAME_EXTENSIONS[first](argv) else "deny"
     elif first in {"pytest", "tox", "jest", "vitest"}:
         route = "trim"
     elif first in {"find", "tree", "fd"}:

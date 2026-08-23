@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Prospective acceptance oracle: exact-name extension registry for the
+context-guard-kit Bash allowlist (see tests/test_wclass_advisory_extension_predicate.py
+for the fixed task-specific criteria this enforces).
+
+Contract (advisory skill, implementation workflow):
+- exit 42: the focused acceptance is not yet satisfied, but nothing else broke
+  (this is also what an unmodified baseline checkout must return)
+- exit 0: the focused acceptance passes AND the unrelated regression modules
+  stay healthy
+- any other code: infrastructure/unrelated failure
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path.cwd()
+FOCUSED_MODULE = "tests.test_wclass_advisory_extension_predicate"
+REGRESSION_MODULES = [
+    "tests.test_route_historical_baseline_proof",
+    "tests.test_context_guard_shell_contract",
+    "tests.test_cgw1_wrapper_shape_agreement",
+]
+EXIT_BASELINE = 42
+EXIT_INFRA = 3
+MODULE_TIMEOUT_SECONDS = 300
+
+
+def run_module(module: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, "-m", "unittest", module],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        timeout=MODULE_TIMEOUT_SECONDS,
+    )
+
+
+def main() -> int:
+    try:
+        regression_failures = []
+        for module in REGRESSION_MODULES:
+            result = run_module(module)
+            if result.returncode != 0:
+                regression_failures.append(module)
+                sys.stderr.buffer.write(result.stdout)
+                sys.stderr.buffer.write(result.stderr)
+        if regression_failures:
+            print(
+                f"verify: FAIL unrelated regression broke: {regression_failures}",
+                file=sys.stderr,
+            )
+            return EXIT_INFRA
+
+        focused = run_module(FOCUSED_MODULE)
+        if focused.returncode == 0:
+            print("verify: PASS", file=sys.stderr)
+            return 0
+
+        sys.stderr.buffer.write(focused.stdout)
+        sys.stderr.buffer.write(focused.stderr)
+        print("verify: focused acceptance not yet satisfied", file=sys.stderr)
+        return EXIT_BASELINE
+    except subprocess.TimeoutExpired as exc:
+        print(f"verify: INFRA timeout running {exc.cmd}", file=sys.stderr)
+        return EXIT_INFRA
+    except OSError as exc:
+        print(f"verify: INFRA {exc}", file=sys.stderr)
+        return EXIT_INFRA
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
