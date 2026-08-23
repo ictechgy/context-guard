@@ -59,7 +59,7 @@ class Snapshotter:
         self.snapshots = list(snapshots or (captured_snapshot(), captured_snapshot()))
         self.calls = []
 
-    def __call__(self, root):
+    def __call__(self, root, *, root_fd=None):
         self.calls.append(root)
         return self.snapshots.pop(0)
 
@@ -131,6 +131,26 @@ def _wait_for_process_exit(pid: int, timeout: float = 3.0) -> bool:
             return True
         time.sleep(0.01)
     return not _process_is_alive(pid)
+
+
+def _wait_for_process_group_quiescence(module, pgid: int, timeout: float = 3.0) -> bool:
+    """Return once a process group has no live, non-zombie members."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            records = module._read_process_table(deadline=deadline, clock=time.monotonic)
+        except module._RunnerAbort as error:
+            if error.code is module.RunnerErrorCode.TIMEOUT:
+                return False
+            raise
+        if not any(
+            record.pgid == pgid and not record.state.startswith(b"Z")
+            for record in records.values()
+        ):
+            return True
+        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+    return False
 
 
 def _kill_test_process_group(pid: int) -> None:
@@ -342,6 +362,154 @@ class G008RunnerContractTests(unittest.TestCase):
             stdout = b"".join(frame.payload for frame in frames if frame.channel == 1)
             self.assertEqual(stdout, b"ORIGINAL")
             self.assertNotIn(b"ALTERNATE", stdout)
+
+    def test_ancestor_symlink_swap_cannot_split_snapshot_from_pinned_cwd(self) -> None:
+        """Break caught: snapshots bind B while the command executes in pinned A."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            sandbox = Path(harness.root)
+            original_parent = sandbox / "original-parent"
+            alternate_parent = sandbox / "alternate-parent"
+            original_root = original_parent / "repo"
+            alternate_root = alternate_parent / "repo"
+            original_root.mkdir(parents=True)
+            alternate_root.mkdir(parents=True)
+            (original_root / "marker.bin").write_bytes(b"ORIGINAL")
+            (alternate_root / "marker.bin").write_bytes(b"ALTERNATE")
+
+            route = sandbox / "route"
+            route.symlink_to(original_parent, target_is_directory=True)
+            routed_root = str(route / "repo")
+            original_key = (os.stat(original_root).st_dev, os.stat(original_root).st_ino)
+            alternate_key = (
+                os.stat(alternate_root).st_dev,
+                os.stat(alternate_root).st_ino,
+            )
+            original_identity = "a" * 64
+            alternate_identity = "c" * 64
+            identities = {
+                original_key: original_identity,
+                alternate_key: alternate_identity,
+            }
+            observations = []
+
+            def retarget(target: Path) -> None:
+                replacement = sandbox / "route-next"
+                replacement.symlink_to(target, target_is_directory=True)
+                os.replace(replacement, route)
+
+            def adversarial_snapshotter(root, *, root_fd=None):
+                retarget(alternate_parent)
+                try:
+                    if root_fd is None:
+                        status = os.stat(root, follow_symlinks=False)
+                        source = "path"
+                    else:
+                        status = os.fstat(root_fd)
+                        source = "fd"
+                    observed_key = (status.st_dev, status.st_ino)
+                    observations.append((source, observed_key))
+                    return captured_snapshot(identity=identities[observed_key])
+                finally:
+                    retarget(original_parent)
+
+            result = module.run_command(
+                (
+                    str(Path(sys.executable).resolve()),
+                    "-c",
+                    "import os; os.write(1,open('marker.bin','rb').read())",
+                ),
+                routed_root,
+                store_factory=harness.factory,
+                snapshotter=adversarial_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(
+                observations,
+                [("fd", original_key), ("fd", original_key)],
+            )
+            request = harness.store.calls[0][0]
+            self.assertEqual(request.root_identity_sha256, original_identity)
+            frames = module.validate_framed_capture(request.payload)
+            stdout = b"".join(frame.payload for frame in frames if frame.channel == 1)
+            self.assertEqual(stdout, b"ORIGINAL")
+            self.assertEqual(
+                (os.stat(routed_root).st_dev, os.stat(routed_root).st_ino),
+                original_key,
+            )
+
+    def test_legacy_one_argument_snapshotter_remains_supported(self) -> None:
+        """Break caught: the FD-aware seam silently rejects existing callbacks."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            calls = []
+            snapshots = [captured_snapshot(), captured_snapshot()]
+
+            def legacy_snapshotter(root):
+                calls.append(root)
+                return snapshots.pop(0)
+
+            result = module.run_command(
+                (str(Path(sys.executable).resolve()), "-c", "pass"),
+                harness.root,
+                store_factory=harness.factory,
+                snapshotter=legacy_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(calls, [harness.root, harness.root])
+
+    def test_kwargs_only_snapshotter_stays_on_legacy_contract(self) -> None:
+        """Break caught: generic kwargs falsely advertise FD-aware provenance."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            calls = []
+            snapshots = [captured_snapshot(), captured_snapshot()]
+
+            def kwargs_snapshotter(root, **kwargs):
+                calls.append((root, kwargs))
+                return snapshots.pop(0)
+
+            result = module.run_command(
+                (str(Path(sys.executable).resolve()), "-c", "pass"),
+                harness.root,
+                store_factory=harness.factory,
+                snapshotter=kwargs_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(
+                calls,
+                [(harness.root, {}), (harness.root, {})],
+            )
+
+    def test_root_fd_named_legacy_snapshotter_stays_on_one_argument_contract(
+        self,
+    ) -> None:
+        """Break caught: a legacy argument name masquerades as FD capability."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            calls = []
+            snapshots = [captured_snapshot(), captured_snapshot()]
+
+            def legacy_snapshotter(root_fd):
+                calls.append(root_fd)
+                return snapshots.pop(0)
+
+            result = module.run_command(
+                (str(Path(sys.executable).resolve()), "-c", "pass"),
+                harness.root,
+                store_factory=harness.factory,
+                snapshotter=legacy_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(calls, [harness.root, harness.root])
 
     def test_unrestored_root_replacement_refuses_before_store(self) -> None:
         """Break caught: a pinned run publishes after the pathname stays replaced."""
@@ -870,7 +1038,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 "from context_guard_receipt.runner import run_command\n"
                 f"snapshot={captured_snapshot()!r}\n"
                 "run_command((sys.argv[2],'-c',sys.argv[3],sys.argv[4]),sys.argv[5],"
-                "store_factory=lambda:None,snapshotter=lambda _root:snapshot)\n"
+                "store_factory=lambda:None,snapshotter=lambda _root,root_fd=None:snapshot)\n"
             )
             wrapper = subprocess.Popen(
                 (
@@ -1113,8 +1281,9 @@ class G008RunnerContractTests(unittest.TestCase):
             self.assertEqual(harness.factory_calls, 0)
             self.assertEqual(len(spawned), 1)
             self.assertIsNotNone(spawned[0].poll())
-            with self.assertRaises((ProcessLookupError, PermissionError)):
-                os.killpg(spawned[0].pid, 0)
+            self.assertTrue(
+                _wait_for_process_group_quiescence(module, spawned[0].pid)
+            )
 
     def test_descendant_that_closes_pipes_must_quiesce_before_deadline(self) -> None:
         module = runner_module()
@@ -1130,9 +1299,9 @@ class G008RunnerContractTests(unittest.TestCase):
 
         with Harness(self) as harness:
             result = harness.run(
-                parent_code(0.05), limits=module.RunnerLimits(timeout_seconds=1.0)
+                parent_code(0.05), limits=module.RunnerLimits()
             )
-            self.assertTrue(result.succeeded)
+            self.assertTrue(result.succeeded, result.to_receipt())
             self.assertEqual(harness.factory_calls, 1)
 
         spawned = []
@@ -1153,6 +1322,27 @@ class G008RunnerContractTests(unittest.TestCase):
             self.assertEqual(len(spawned), 1)
             with self.assertRaises(ProcessLookupError):
                 os.killpg(spawned[0].pid, 0)
+
+    def test_process_table_helper_that_closes_stdout_at_deadline_is_timeout(self) -> None:
+        """Break caught: a deadline-bound ps wait is mislabeled internal."""
+
+        module = runner_module()
+        real_popen = subprocess.Popen
+
+        def stalled_after_output(*_args, **kwargs):
+            code = (
+                "import os,time; "
+                "os.write(1,b'1 0 1 0 S\\n'); os.close(1); time.sleep(1)"
+            )
+            return real_popen((sys.executable, "-I", "-c", code), **kwargs)
+
+        deadline = time.monotonic() + 0.05
+        with mock.patch.object(
+            module.subprocess, "Popen", side_effect=stalled_after_output
+        ):
+            with self.assertRaises(module._RunnerAbort) as caught:
+                module._read_process_table(deadline=deadline, clock=time.monotonic)
+        self.assertEqual(caught.exception.code, module.RunnerErrorCode.TIMEOUT)
 
     def test_setsid_descendant_that_closes_stdio_blocks_normal_publication(self) -> None:
         """Break caught: a detached new group outlives its normally exited leader."""
@@ -1224,7 +1414,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 "from context_guard_receipt.runner import run_command\n"
                 f"snapshot={captured_snapshot()!r}\n"
                 "run_command((sys.argv[2],'-c',sys.argv[3],sys.argv[4]),sys.argv[5],"
-                "store_factory=lambda:None,snapshotter=lambda _root:snapshot)\n"
+                "store_factory=lambda:None,snapshotter=lambda _root,root_fd=None:snapshot)\n"
             )
             wrapper = subprocess.Popen(
                 (

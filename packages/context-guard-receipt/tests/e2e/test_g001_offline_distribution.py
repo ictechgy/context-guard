@@ -759,9 +759,12 @@ class G001OfflineDistributionTests(unittest.TestCase):
                 [tool["name"] for tool in mcp_responses[1]["result"]["tools"]],
                 [
                     "receipt_assemble",
+                    "receipt_context",
+                    "receipt_diagnose",
                     "receipt_expand",
                     "receipt_inspect",
                     "receipt_tool_select",
+                    "receipt_twin",
                 ],
             )
             self.assertEqual(

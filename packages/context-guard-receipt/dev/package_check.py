@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import selectors
 import shutil
 import signal
@@ -43,8 +44,12 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/execution_twin.py",
     "python/context_guard_receipt/evidence_pack.py",
     "python/context_guard_receipt/expansion.py",
+    "python/context_guard_receipt/external_approval.py",
+    "python/context_guard_receipt/external_approval_v2.py",
     "python/context_guard_receipt/identity.py",
     "python/context_guard_receipt/mcp.py",
+    "python/context_guard_receipt/merged_capture.py",
+    "python/context_guard_receipt/phase_evaluation.py",
     "python/context_guard_receipt/protection.py",
     "python/context_guard_receipt/reference_expiry.py",
     "python/context_guard_receipt/receipts.py",
@@ -66,8 +71,16 @@ EXPECTED_PACKAGE_PATHS = {
     "schemas/evidence-descriptor.schema.json",
     "schemas/evidence-pack.schema.json",
     "schemas/evidence-reference.schema.json",
+    "schemas/external-approval.schema.json",
+    "schemas/external-approval-v2.schema.json",
     "schemas/expansion-envelope.schema.json",
     "schemas/expansion-refusal.schema.json",
+    "schemas/phase-evaluation-p2.schema.json",
+    "schemas/phase-evaluation-p3.schema.json",
+    "schemas/phase-evaluation-p4.schema.json",
+    "schemas/phase-evaluation-p5.schema.json",
+    "schemas/phase-evaluation-p6.schema.json",
+    "schemas/phase-evaluation-result.schema.json",
     "schemas/protection-decision.schema.json",
     "schemas/reference-expiry-inspection.schema.json",
     "schemas/reference-expiry-metadata.schema.json",
@@ -427,6 +440,33 @@ def load_manifest(raw_manifest: bytes) -> dict[str, object]:
     return manifest
 
 
+def launcher_payload_digests(launcher_bytes: bytes) -> dict[str, str]:
+    """Parse the launcher's closed embedded payload trust table."""
+
+    try:
+        source = launcher_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PackageCheckError("launcher source is not UTF-8") from exc
+    marker = "const TRUSTED_PAYLOAD_DIGESTS = {\n"
+    if source.count(marker) != 1:
+        raise PackageCheckError("launcher trusted payload table is unavailable")
+    start = source.index(marker) + len(marker)
+    end = source.find("};\n", start)
+    if end < 0:
+        raise PackageCheckError("launcher trusted payload table is malformed")
+    block = source[start:end]
+    pattern = re.compile(r"  '([^'\n]+)': '([0-9a-f]{64})',\n")
+    matches = pattern.findall(block)
+    if block != "".join(
+        f"  '{path}': '{digest}',\n" for path, digest in matches
+    ):
+        raise PackageCheckError("launcher trusted payload table is malformed")
+    result = dict(matches)
+    if len(result) != len(matches):
+        raise PackageCheckError("launcher trusted payload table has duplicate paths")
+    return result
+
+
 def validate_source(*, package_root: Path = PACKAGE_ROOT) -> dict[str, bytes]:
     manifest_bytes = bounded_regular_content(
         package_root / "package-files.json",
@@ -464,6 +504,16 @@ def validate_source(*, package_root: Path = PACKAGE_ROOT) -> dict[str, bytes]:
         paths.append(path_text)
     if paths != sorted(paths) or set(paths) != expected_manifest_paths:
         raise PackageCheckError("package-files list is not the closed runtime set")
+    trusted_payload_paths = EXPECTED_PACKAGE_PATHS - {
+        "bin/launcher.cjs",
+        "package-files.json",
+    }
+    expected_launcher_digests = {
+        path: hashlib.sha256(snapshot[path]).hexdigest()
+        for path in trusted_payload_paths
+    }
+    if launcher_payload_digests(snapshot["bin/launcher.cjs"]) != expected_launcher_digests:
+        raise PackageCheckError("launcher trusted payload digest drifted")
     if any(marker in manifest_bytes for marker in FORBIDDEN_CONTENT_MARKERS):
         raise PackageCheckError("secret-like content detected in package source manifest")
     if sum(len(content) for content in snapshot.values()) > MAX_TOTAL_CONTENT_SCAN_BYTES:

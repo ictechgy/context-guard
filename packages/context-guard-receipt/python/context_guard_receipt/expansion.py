@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, cast
@@ -33,8 +34,6 @@ _CAPABILITY_ALPHABET = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
 _COMMAND_CAPTURE_SUBJECT_DOMAIN = "contextguard-receipt/command-capture-subject/v1"
-
-
 class ExpansionDisposition(str, Enum):
     EXACT = "exact"
     STALE = "stale"
@@ -341,7 +340,9 @@ def _revalidate(
     return whole_subject == metadata["subject_identity_sha256"]
 
 
-def _validated_command_capture(stored: object, current_root_identity: str) -> bytes:
+def _validated_command_capture(
+    stored: object, current_root_identity: str
+) -> tuple[bytes, bool]:
     payload = stored.payload  # type: ignore[attr-defined]
     subject_identity = stored.subject_identity_sha256  # type: ignore[attr-defined]
     if (
@@ -353,12 +354,24 @@ def _validated_command_capture(stored: object, current_root_identity: str) -> by
         or type(subject_identity) is not str
     ):
         raise _EnvelopeError
+    try:
+        from .merged_capture import merged_capture_subject_sha256
+
+        merged_subject = merged_capture_subject_sha256(payload)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        raise _EnvelopeError from None
+    if hmac.compare_digest(merged_subject, subject_identity):
+        try:
+            from .merged_capture import valid_merged_artifact
+        except (ImportError, ModuleNotFoundError):
+            raise _EnvelopeError from None
+        if not valid_merged_artifact(stored):
+            raise _EnvelopeError
+        return payload, True
     validate_framed_capture(payload)
     if framed_sha256_hex(_COMMAND_CAPTURE_SUBJECT_DOMAIN, payload) != subject_identity:
         raise _EnvelopeError
-    return payload
-
-
+    return payload, False
 def expand_capability(
     handle: str,
     *,
@@ -392,7 +405,17 @@ def expand_capability(
 
     try:
         if stored.artifact_type is ArtifactType.COMMAND_CAPTURE_BYTES:
-            payload = _validated_command_capture(stored, current_root_identity)
+            payload, merged = _validated_command_capture(
+                stored, current_root_identity
+            )
+            if merged:
+                try:
+                    active_check = getattr(backend, "is_reference_active")
+                    active = bool(active_check(handle)) if callable(active_check) else False
+                except Exception:
+                    active = False
+                if not active:
+                    return _refused("capability_rejected")
             try:
                 final_snapshot = snapshot_repository(
                     root, git_executable=git_executable

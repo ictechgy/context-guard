@@ -11,14 +11,15 @@ import unittest
 from pathlib import Path
 
 from tests.test_contextguard_stage2_feasibility import (
+    PROVIDER_FREE_SUPPORT_PATHS,
     RECEIPT_COMPANION_INVENTORY,
     REPO_ROOT,
+    historical_production_surface_inventory,
     provider_free_changed_paths,
-    production_surface_inventory,
     receipt_companion_surface_inventory,
-    validate_production_surface_inventory,
     validate_receipt_companion_surface_inventory,
     validate_provider_free_changed_paths,
+    validate_stage2_historical_baseline_identity,
 )
 
 
@@ -38,8 +39,8 @@ def load_guard_module():
 
 class ContextGuardReceiptBoundaryTests(unittest.TestCase):
     def test_receipt_companion_is_partitioned_from_historical_inventory(self) -> None:
-        historical_inventory = production_surface_inventory()
-        validate_production_surface_inventory(historical_inventory)
+        historical_inventory = historical_production_surface_inventory()
+        validate_stage2_historical_baseline_identity(historical_inventory)
         self.assertTrue(
             all(
                 not entry["path"].startswith("packages/context-guard-receipt/")
@@ -57,7 +58,10 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
             validate_receipt_companion_surface_inventory(changed_hash)
 
     def test_changed_paths_allow_only_the_exact_receipt_companion_paths(self) -> None:
-        allowed = {entry["path"] for entry in RECEIPT_COMPANION_INVENTORY}
+        allowed = {
+            *(entry["path"] for entry in RECEIPT_COMPANION_INVENTORY),
+            *PROVIDER_FREE_SUPPORT_PATHS,
+        }
         validate_provider_free_changed_paths(allowed)
 
         rejected_paths = {
@@ -65,7 +69,6 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
             "packages/context-guard-receipt-copy/scripts/verify_protected_surfaces.py",
             "packages/context-guard-receipt/../context-guard-receipt/unknown.py",
             "/packages/context-guard-receipt/scripts/verify_protected_surfaces.py",
-            "package.json",
             "plugins/context-guard/bin/context-guard-stage2",
             ".claude/settings.json",
             ".claude/hooks/contextguard-observer",
@@ -292,6 +295,29 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("protected surfaces verified", result.stdout)
+
+    def test_post_stage2_hash_exemptions_are_exact_and_bounded(self) -> None:
+        guard = load_guard_module()
+        self.assertEqual(
+            guard.POST_STAGE2_PROTECTED_SHA256,
+            {
+                ".claude-plugin/marketplace.json": "91fe003ad2aae3532bf6a2b994a9d97da35eaa663d375caa2aa380b191d18174",
+                "context-guard-kit/benchmark_runner.py": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
+                "context-guard-kit/context_pack.py": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
+                "context-guard-kit/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
+                "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
+                "context-guard-kit/setup_wizard.py": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
+                "package.json": "97bb281f155eba745ef2ae4409b533e47e566d51afcf3fd72becd86bbec71d2e",
+                "plugins/context-guard/.claude-plugin/plugin.json": "ba9bceb7ac12bb87c32b04b8b2884b12e9f7d477f4e4c72a34cf098deabe45fa",
+                "plugins/context-guard/bin/context-guard-bench": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
+                "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
+                "plugins/context-guard/bin/context-guard-pack": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f",
+                "plugins/context-guard/bin/context-guard-setup": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
+                "plugins/context-guard/lib/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
+                "scripts/prepublish_check.py": "99d7414816a6880ad13f9d4b6265cb5e33eb8c43ccf83de1d0500df43acc9382",
+                "scripts/release_smoke.py": "5c1862a4861e6999547e076b852a38f93e68f4ac7a6bc2c38776121f5b141deb",
+            },
+        )
 
     def test_guard_rejects_empty_or_rewritten_manifest_shapes(self) -> None:
         guard = load_guard_module()

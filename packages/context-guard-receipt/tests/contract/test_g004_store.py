@@ -121,6 +121,246 @@ class G004CapabilityStoreTests(unittest.TestCase):
             operation()
         self.assertEqual(caught.exception.code.value, code)
 
+    def test_explicit_default_limit_upgrade_preserves_state_and_refreshes_open_handle(
+        self,
+    ) -> None:
+        """Break caught: merged capture strands or corrupts an existing default store."""
+
+        module = store_module()
+        target_limits = module.StoreLimits(max_single_artifact_bytes=10_000_000)
+        payload = b"x" * (1024 * 1024 + 1)
+        with StoreFixture(self) as fixture:
+            store_path = fixture.state_dir / "store-v1"
+            key_before = (store_path / "integrity-key").read_bytes()
+            metadata_before = (store_path / "metadata.json").read_bytes()
+            namespace_before = fixture.store.namespace_id
+
+            upgraded = module.CapabilityStore.open(
+                state_dir=str(fixture.state_dir),
+                repository_root=str(fixture.root),
+                git_executable=fixture.git,
+                limits=target_limits,
+                allow_default_limit_upgrade=True,
+            )
+            try:
+                issued = upgraded.issue(
+                    payload=payload,
+                    root_identity_sha256=fixture.root_identity,
+                    subject_identity_sha256="f" * 64,
+                    artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+                )
+                self.assertEqual(upgraded.namespace_id, namespace_before)
+            finally:
+                upgraded.close()
+
+            stored = fixture.store.resolve(
+                issued.handle,
+                expected_root_identity_sha256=fixture.root_identity,
+            )
+            self.assertEqual(stored.payload, payload)
+            self.assertEqual(fixture.store.limits, target_limits)
+            self.assertEqual((store_path / "integrity-key").read_bytes(), key_before)
+            metadata_after = (store_path / "metadata.json").read_bytes()
+            self.assertNotEqual(metadata_after, metadata_before)
+            verified = module._verify_document_mac(
+                key_before,
+                b"contextguard-receipt/store-metadata-mac/v1",
+                module._parse_document(metadata_after),
+                expected_keys=frozenset(
+                    {
+                        "evidence_boundary",
+                        "integrity_hmac_sha256",
+                        "limits",
+                        "namespace_id",
+                        "schema_version",
+                    }
+                ),
+            )
+            self.assertEqual(verified["namespace_id"], namespace_before)
+            self.assertEqual(
+                module._limits_from_object(verified["limits"]), target_limits
+            )
+
+    def test_default_limit_upgrade_rejects_every_other_transition_without_mutation(
+        self,
+    ) -> None:
+        """Break caught: an opt-in rewrites custom limits, downgrades, or runs implicitly."""
+
+        module = store_module()
+        default_limits = module.StoreLimits()
+        custom_limits = module.StoreLimits(
+            max_single_artifact_bytes=2 * 1024 * 1024
+        )
+        target_limits = module.StoreLimits(max_single_artifact_bytes=10_000_000)
+        cases = (
+            (custom_limits, target_limits, True),
+            (default_limits, custom_limits, True),
+            (target_limits, default_limits, True),
+            (default_limits, target_limits, False),
+        )
+        for persisted, requested, allow_upgrade in cases:
+            with self.subTest(
+                persisted=persisted,
+                requested=requested,
+                allow_upgrade=allow_upgrade,
+            ), StoreFixture(self, limits=persisted) as fixture:
+                metadata_path = fixture.state_dir / "store-v1/metadata.json"
+                temp_path = fixture.state_dir / "store-v1/tmp"
+                metadata_before = metadata_path.read_bytes()
+                temp_before = sorted(path.name for path in temp_path.iterdir())
+
+                self.assert_store_error(
+                    "invalid_argument",
+                    lambda: module.CapabilityStore.open(
+                        state_dir=str(fixture.state_dir),
+                        repository_root=str(fixture.root),
+                        git_executable=fixture.git,
+                        limits=requested,
+                        allow_default_limit_upgrade=allow_upgrade,
+                    ),
+                )
+                self.assertEqual(metadata_path.read_bytes(), metadata_before)
+                self.assertEqual(
+                    sorted(path.name for path in temp_path.iterdir()), temp_before
+                )
+
+    def test_default_limit_upgrade_fails_closed_across_rename_and_fsync_faults(
+        self,
+    ) -> None:
+        """Break caught: a metadata upgrade reports success after an uncertain commit."""
+
+        module = store_module()
+        target_limits = module.StoreLimits(max_single_artifact_bytes=10_000_000)
+
+        with StoreFixture(self) as fixture:
+            metadata_path = fixture.state_dir / "store-v1/metadata.json"
+            temp_path = fixture.state_dir / "store-v1/tmp"
+            metadata_before = metadata_path.read_bytes()
+            original_rename = module.os.rename
+
+            def reject_metadata_rename(source, destination, **kwargs):
+                if str(source).startswith(".metadata.tmp-"):
+                    raise OSError("injected metadata rename failure")
+                return original_rename(source, destination, **kwargs)
+
+            with mock.patch.object(module.os, "rename", reject_metadata_rename):
+                with fixture.store._locked(exclusive=True):
+                    self.assert_store_error(
+                        "commit_uncertain",
+                        lambda: fixture.store._upgrade_default_limits(
+                            target_limits
+                        ),
+                    )
+            self.assertEqual(metadata_path.read_bytes(), metadata_before)
+            residue = list(temp_path.iterdir())
+            self.assertEqual(len(residue), 1)
+            self.assertRegex(residue[0].name, r"\.metadata\.tmp-[0-9a-f]{32}\Z")
+            status = residue[0].lstat()
+            self.assertTrue(stat.S_ISREG(status.st_mode))
+            self.assertEqual(stat.S_IMODE(status.st_mode), 0o600)
+            self.assertEqual(status.st_nlink, 1)
+            self.assertTrue(fixture.store.inspect_counts().recovery_required)
+            self.assert_store_error(
+                "recovery_required",
+                lambda: module.CapabilityStore.open(
+                    state_dir=str(fixture.state_dir),
+                    repository_root=str(fixture.root),
+                    git_executable=fixture.git,
+                    limits=target_limits,
+                    allow_default_limit_upgrade=True,
+                ),
+            )
+
+        with StoreFixture(self) as fixture:
+            metadata_path = fixture.state_dir / "store-v1/metadata.json"
+            original_rename = module.os.rename
+            original_fsync = module.os.fsync
+            metadata_renamed = False
+            post_rename_fsyncs = []
+
+            def track_metadata_rename(source, destination, **kwargs):
+                nonlocal metadata_renamed
+                result = original_rename(source, destination, **kwargs)
+                if str(source).startswith(".metadata.tmp-"):
+                    metadata_renamed = True
+                return result
+
+            def reject_post_rename_fsync(descriptor):
+                if metadata_renamed:
+                    post_rename_fsyncs.append(descriptor)
+                    raise OSError("injected post-rename fsync failure")
+                return original_fsync(descriptor)
+
+            with mock.patch.object(
+                module.os, "rename", track_metadata_rename
+            ), mock.patch.object(module.os, "fsync", reject_post_rename_fsync):
+                with fixture.store._locked(exclusive=True):
+                    self.assert_store_error(
+                        "commit_uncertain",
+                        lambda: fixture.store._upgrade_default_limits(
+                            target_limits
+                        ),
+                    )
+            self.assertEqual(post_rename_fsyncs, [fixture.store._store_fd])
+            reopened = module.CapabilityStore.open(
+                state_dir=str(fixture.state_dir),
+                repository_root=str(fixture.root),
+                git_executable=fixture.git,
+                limits=target_limits,
+            )
+            try:
+                self.assertEqual(reopened.limits, target_limits)
+                self.assertFalse(reopened.inspect_counts().recovery_required)
+                self.assertTrue(metadata_path.read_bytes())
+            finally:
+                reopened.close()
+
+    def test_default_limit_upgrade_does_not_launder_oversized_legacy_state(self) -> None:
+        """Break caught: widening metadata blesses an artifact invalid under old limits."""
+
+        module = store_module()
+        default_limits = module.StoreLimits()
+        target_limits = module.StoreLimits(max_single_artifact_bytes=10_000_000)
+        payload = b"x" * (1024 * 1024 + 1)
+        with StoreFixture(self, limits=target_limits) as fixture:
+            fixture.store.issue(
+                payload=payload,
+                root_identity_sha256=fixture.root_identity,
+                subject_identity_sha256="e" * 64,
+                artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+            )
+            fixture.store.close()
+            store_path = fixture.state_dir / "store-v1"
+            key = (store_path / "integrity-key").read_bytes()
+            metadata_path = store_path / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["limits"] = module._limits_object(default_limits)
+            downgraded = module._mac_document(
+                key,
+                b"contextguard-receipt/store-metadata-mac/v1",
+                metadata,
+            )
+            metadata_path.write_bytes(downgraded)
+            metadata_path.chmod(0o600)
+
+            self.assert_store_error(
+                "store_corrupt",
+                lambda: module.CapabilityStore.open(
+                    state_dir=str(fixture.state_dir),
+                    repository_root=str(fixture.root),
+                    git_executable=fixture.git,
+                    limits=target_limits,
+                    allow_default_limit_upgrade=True,
+                ),
+            )
+            self.assertEqual(metadata_path.read_bytes(), downgraded)
+            self.assertEqual(list((store_path / "tmp").iterdir()), [])
+            fixture.store = module.CapabilityStore.open(
+                state_dir=str(fixture.state_dir),
+                repository_root=str(fixture.root),
+                git_executable=fixture.git,
+            )
+
     def test_issue_survives_restart_and_retrieves_only_with_exact_bindings(self) -> None:
         """Break caught: issued authority is not durable or retrieval skips a binding."""
 
