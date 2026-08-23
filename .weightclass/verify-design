@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle for the context-guard-kit gating design question.
+"""Prospective acceptance oracle for the follow-up design question:
+what else in context-guard-kit needs fixing, and where does it conflict
+operationally with the wclass-advisory tool itself?
 
-Task (fixed before any candidate is observed): is context-guard-kit's
-deny-by-default Bash allowlist gating (rewrite_bash_for_token_budget.py,
-MiniShell-v1 route table) the right design, and if not, what should change?
+Task (fixed before any candidate is observed): PR #315 replaced the ad-hoc
+wclass-advisory Bash-route branch with a reviewed exact-name extension
+registry. Now: (a) is there anything else in context-guard-kit worth
+fixing, and (b) are there operational conflict points between
+context-guard-kit's PreToolUse Bash hook and using wclass-advisory itself
+in this repo?
 
-This is a judgment question, so this verifier cannot grade "good taste" (per
-the advisory skill's own contract, aesthetic/preference quality stays outside
-a mechanical verifier). What it CAN and DOES check mechanically: whether the
-candidate's design result actually engages with the concrete, cited evidence
-from this repository rather than answering in the abstract, and whether it
-produces the structurally required deliverable (>=2 real options, a concrete
-recommendation, measurable acceptance criteria) instead of a vague essay.
+This is a judgment question, so this verifier cannot grade "good taste".
+What it CAN and DOES check mechanically: whether the candidate's answer
+actually engages with the concrete operational friction this session hit
+firsthand, rather than answering in the abstract, and whether it produces
+the structurally required deliverable (>=2 real options, a concrete
+recommendation, measurable acceptance criteria).
 """
 from __future__ import annotations
 
@@ -37,19 +41,22 @@ REQUIRED_TOP_KEYS = {
     "limitations",
 }
 
-# Evidence the task file hands the candidate. A design result that never
-# engages with any of these is answering a generic question, not this one.
+# Concrete friction this session actually hit while using wclass-advisory
+# against this repo. A design result that never engages with any of these
+# is answering a generic question, not this one.
 EVIDENCE_MARKERS = [
     "PROVIDER_FREE_SUPPORT_PATHS",
-    "route_policy_denied",
-    "wclass-advisory",
+    "validate_provider_free_changed_paths",
+    "is_legacy_production_path",
+    ".weightclass",
 ]
-SECURITY_INVARIANT_MARKERS = [
-    "R-1",
-    "R-5",
-    "R-12",
-    "argv[1]",
-    "subcommand",
+OPERATIONAL_CONFLICT_MARKERS = [
+    "git checkout",
+    "git commit",
+    "_git_is_safe",
+    "sample",
+    "ordinal",
+    "vendor",
 ]
 
 
@@ -77,8 +84,6 @@ def main() -> int:
     if not isinstance(result, dict):
         return infra("top-level result is not a JSON object")
 
-    # The task-free baseline probe (see wclass_advisory.py baseline_probe())
-    # must be rejected with exactly 42, before any real candidate runs.
     if (
         result.get("recommendation") == "Reject this task-free probe with exit code 42."
         and "baseline_probe" in (result.get("limitations") or [])
@@ -112,21 +117,21 @@ def main() -> int:
     matched_evidence = [marker for marker in EVIDENCE_MARKERS if marker in blob]
     if not matched_evidence:
         return fail(
-            "result never cites any of the task's concrete evidence markers "
+            "result never cites any of the task's concrete friction markers "
             f"{EVIDENCE_MARKERS} - looks like a generic answer, not this task"
         )
 
-    matched_invariants = [marker for marker in SECURITY_INVARIANT_MARKERS if marker in blob]
-    if not matched_invariants:
+    matched_conflicts = [marker for marker in OPERATIONAL_CONFLICT_MARKERS if marker in blob]
+    if not matched_conflicts:
         return fail(
-            "result never engages with the cited security invariants "
-            f"{SECURITY_INVARIANT_MARKERS} - a recommendation to loosen gating "
-            "must show it accounted for why the gating exists"
+            "result never engages with the operational-conflict-with-wclass-advisory "
+            f"angle {OPERATIONAL_CONFLICT_MARKERS} - the task asked for both a "
+            "further-fixes assessment AND an operational-conflict assessment"
         )
 
     print(
         "verify-design: PASS "
-        f"(evidence={matched_evidence}, invariants={matched_invariants}, "
+        f"(evidence={matched_evidence}, conflicts={matched_conflicts}, "
         f"options={len(options)})",
         file=sys.stderr,
     )
