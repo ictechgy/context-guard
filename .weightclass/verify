@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path.cwd()
 FOCUSED_MODULE = "tests.test_wclass_advisory_extension_predicate"
 REGRESSION_MODULES = [
     "tests.test_route_historical_baseline_proof",
