@@ -7,6 +7,29 @@ runs) when it is used against this repository. It is unrelated to
 `context-guard cost advisory` router feature - the name overlap is
 coincidental.
 
+## Canonical dispatch command and preflight checklist
+
+Run the advisory with an explicit workflow, repository, task file, vendor,
+and task-egress confirmation:
+
+```sh
+wclass-advisory run \
+  --workflow design \
+  --repo /path/to/clean/repository \
+  --task-file /path/to/task-file.md \
+  --vendor both \
+  --confirm-task-egress
+```
+
+Before dispatch, confirm:
+
+- The repository is a clean git checkout: `git status --porcelain` prints no
+  output.
+- The task file is an owner-only regular file, for example after
+  `chmod 600 /path/to/task-file.md`.
+- Once advisory work for the session is done, restore the `hooks` block in
+  `.claude/settings.json` to re-enable the hook.
+
 ## The hook stays on
 
 `context-guard-kit/rewrite_bash_for_token_budget.py`'s PreToolUse Bash hook
