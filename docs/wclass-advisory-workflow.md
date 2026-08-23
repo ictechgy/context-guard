@@ -21,6 +21,13 @@ wclass-advisory run \
   --confirm-task-egress
 ```
 
+The `--repo`, `--task-file`, `--vendor`, and `--workflow` flags accept both
+the separated form shown above and argparse's `--flag=value` spelling
+(e.g. `--workflow=design`); the hook predicate recognizes both.
+`--confirm-task-egress` acknowledges that the task file's contents leave
+this machine for the selected vendor(s) - do not put secrets in the task
+file.
+
 Before dispatch, confirm:
 
 - The repository is a clean git checkout: `git status --porcelain` prints no
@@ -29,8 +36,11 @@ Before dispatch, confirm:
   `chmod 600 /path/to/task-file.md`, and lives outside the repository
   (a scratch/tmp directory) - never inside the Git workspace, even if
   gitignored. Delete it once the run has started; the tool reads it once.
-- Once advisory work for the session is done, restore the `hooks` block in
-  `.claude/settings.json` to re-enable the hook.
+
+After the session's advisory work is done:
+
+- Restore the `hooks` block in `.claude/settings.json` to re-enable the
+  hook.
 
 ## The hook stays on
 
