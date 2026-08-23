@@ -2396,6 +2396,11 @@ def _is_explicit_noop_command(argv: tuple[str, ...]) -> bool:
 
 
 def _wclass_advisory_is_safe(argv: tuple[str, ...]) -> bool:
+    # 토큰 형태(known flag/value pairing)만 검증한다 — `--repo`/`--task-file`
+    # 필수 여부나 `--vendor`의 허용값 같은 CLI 자체의 필수 옵션·enum 검증은
+    # 의도적으로 위임한다(다운스트림 argparse가 이미 거부함). 이 predicate가
+    # 막는 건 "인식 못 하는 트레일링 토큰이 조용히 통과하는 것"이지 CLI
+    # 문법 전체가 아니다.
     if len(argv) < 2:
         return False
     if argv[1] == "review":

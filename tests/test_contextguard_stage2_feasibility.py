@@ -330,6 +330,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_wclass_advisory_extension_predicate.py",
         ".weightclass/verify",
         ".weightclass/verify-design",
+        ".weightclass/verify-review",
         "tests/test_context_guard_usage_reducer_v2.py",
         "tests/test_context_guard_advisory_mode.py",
         "tests/test_release_candidate_smoke.py",

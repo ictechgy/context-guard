@@ -2,8 +2,8 @@
 """Prospective acceptance oracle for the PR #315 code review.
 
 Task (fixed before any candidate is observed): review the diff between
-origin/main and this branch (six files: the two Bash-hook mirrors, the two
-.weightclass advisory scaffolding files, and two tests files) for
+origin/main and this branch (seven files: the two Bash-hook mirrors, the
+three .weightclass advisory scaffolding files, and two tests files) for
 correctness and security issues, with particular attention to whether
 `_wclass_advisory_is_safe` / `CGW_EXACT_NAME_EXTENSIONS` in
 context-guard-kit/rewrite_bash_for_token_budget.py actually closes the gap
@@ -33,6 +33,7 @@ REQUIRED_TOP_KEYS = {"schema_version", "mode", "summary", "findings", "limitatio
 CHANGED_FILES = {
     ".weightclass/verify",
     ".weightclass/verify-design",
+    ".weightclass/verify-review",
     "context-guard-kit/rewrite_bash_for_token_budget.py",
     "plugins/context-guard/bin/context-guard-rewrite-bash",
     "tests/test_contextguard_stage2_feasibility.py",
