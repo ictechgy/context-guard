@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -174,7 +175,27 @@ def _runtime_shell_argv() -> tuple[str, ...]:
     )
 
 
+class UnsafeAdjacentWrapperError(RuntimeError):
+    """Adjacent wrapper is not a regular file opened without symlink following."""
+
+
 def _isolated_wrapper_prefix(wrapper: str) -> list[str]:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise UnsafeAdjacentWrapperError("O_NOFOLLOW is required for adjacent wrappers")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        fd = os.open(wrapper, flags)
+    except OSError as exc:
+        raise UnsafeAdjacentWrapperError(
+            f"wrapper could not be opened without following symlinks: {exc}"
+        ) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafeAdjacentWrapperError("wrapper is not a regular file")
+    finally:
+        os.close(fd)
     return [_approved_python_runtime(), "-I", os.path.realpath(wrapper)]
 
 # kubectl/docker/podman/oc 글로벌 옵션 중 다음 토큰을 value로 소비하는 형태.
@@ -2881,7 +2902,7 @@ def _clear_git_command_scope_config(environment: dict[str, str]) -> None:
             environment.pop(name, None)
 
 
-def _discover_git_filter_config_keys() -> tuple[str, ...]:
+def _discover_git_filter_config_keys(git_executable: str) -> tuple[str, ...]:
     discovery_env = os.environ.copy()
     _clear_git_command_scope_config(discovery_env)
     discovery_env.update(
@@ -2893,7 +2914,7 @@ def _discover_git_filter_config_keys() -> tuple[str, ...]:
     )
     result = subprocess.run(
         [
-            "git",
+            git_executable,
             "config",
             "--null",
             "--name-only",
@@ -2950,13 +2971,14 @@ def run_guarded_git(argv: tuple[str, ...]) -> int:
         print("ContextGuard denied an invalid guarded Git invocation.", file=sys.stderr)
         return 126
     try:
-        filter_keys = _discover_git_filter_config_keys()
+        git_executable = _approved_runtime_executable("git")
+        filter_keys = _discover_git_filter_config_keys(git_executable)
         environment = _guarded_git_environment(filter_keys)
-        os.execvpe(guarded_argv[0], list(guarded_argv), environment)
+        os.execve(git_executable, list(guarded_argv), environment)
     except (OSError, RuntimeError, subprocess.SubprocessError):
         print("ContextGuard could not neutralize Git execution configuration.", file=sys.stderr)
         return 126
-    raise AssertionError("os.execvpe returned unexpectedly")
+    raise AssertionError("os.execve returned unexpectedly")
 
 
 def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str:

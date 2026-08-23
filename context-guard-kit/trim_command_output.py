@@ -109,12 +109,21 @@ FALLBACK_INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bAIza[0-9A-Za-z_\-]{20,}\b"), "[REDACTED]"),
     (re.compile(r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b"), "[REDACTED]"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "[REDACTED]"),
-    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
+    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+(?::[^/\s@]+)?@", re.IGNORECASE), r"\1[REDACTED]@"),
     (re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
     (re.compile(rf"(?i)(\b(?:{SECRET_KEY})\s*[:=]\s*)[^\s]+"), r"\1[REDACTED]"),
 )
 FALLBACK_AUTH_HEADER_RE = re.compile(
     r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Proxy-)?Authorization\s*:\s*).+$"
+)
+PRIVATE_KEY_BEGIN_RE = re.compile(
+    r"-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY|OPENSSH PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
+)
+PRIVATE_KEY_END_RE = re.compile(
+    r"-----END (?:[A-Z0-9 ]*PRIVATE KEY|OPENSSH PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
+)
+COOKIE_HEADER_RE = re.compile(
+    r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Set-)?Cookie\s*:\s*).+$"
 )
 ERROR_RE = re.compile(
     r"(FAIL|FAILED|ERROR|Error:|Exception|Traceback|AssertionError|panic:|fatal:|"
@@ -171,6 +180,7 @@ class FallbackLineSanitizer:
         self.diagnostic = diagnostic
         self.diagnostic_emitted = False
         self.redactions = 0
+        self.in_private_key_block = False
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
         if self.diagnostic and not self.diagnostic_emitted:
@@ -178,12 +188,22 @@ class FallbackLineSanitizer:
             self.diagnostic_emitted = True
         line = strip_ansi(raw_line)
         original = line
-        auth_match = FALLBACK_AUTH_HEADER_RE.match(line)
-        if auth_match:
-            line = auth_match.group("prefix") + "[REDACTED]\n"
+        if self.in_private_key_block or PRIVATE_KEY_BEGIN_RE.search(line) or PRIVATE_KEY_END_RE.search(line):
+            line = "[REDACTED PRIVATE KEY BLOCK]\n"
+            if PRIVATE_KEY_END_RE.search(original):
+                self.in_private_key_block = False
+            elif PRIVATE_KEY_BEGIN_RE.search(original):
+                self.in_private_key_block = True
         else:
-            for pattern, repl in FALLBACK_INLINE_PATTERNS:
-                line = pattern.sub(repl, line)
+            auth_match = FALLBACK_AUTH_HEADER_RE.match(line)
+            cookie_match = COOKIE_HEADER_RE.match(line)
+            if auth_match:
+                line = auth_match.group("prefix") + "[REDACTED]\n"
+            elif cookie_match:
+                line = cookie_match.group("prefix") + "[REDACTED]\n"
+            else:
+                for pattern, repl in FALLBACK_INLINE_PATTERNS:
+                    line = pattern.sub(repl, line)
         redacted = line != original
         if redacted:
             self.redactions += 1
