@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Prospective acceptance oracle for the context-guard-kit gating design question.
+
+Task (fixed before any candidate is observed): is context-guard-kit's
+deny-by-default Bash allowlist gating (rewrite_bash_for_token_budget.py,
+MiniShell-v1 route table) the right design, and if not, what should change?
+
+This is a judgment question, so this verifier cannot grade "good taste" (per
+the advisory skill's own contract, aesthetic/preference quality stays outside
+a mechanical verifier). What it CAN and DOES check mechanically: whether the
+candidate's design result actually engages with the concrete, cited evidence
+from this repository rather than answering in the abstract, and whether it
+produces the structurally required deliverable (>=2 real options, a concrete
+recommendation, measurable acceptance criteria) instead of a vague essay.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+EXIT_BASELINE = 42
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_INFRA = 3
+
+REQUIRED_TOP_KEYS = {
+    "schema_version",
+    "mode",
+    "problem",
+    "summary",
+    "principles",
+    "options",
+    "recommendation",
+    "acceptance_criteria",
+    "validation",
+    "limitations",
+}
+
+# Evidence the task file hands the candidate. A design result that never
+# engages with any of these is answering a generic question, not this one.
+EVIDENCE_MARKERS = [
+    "PROVIDER_FREE_SUPPORT_PATHS",
+    "route_policy_denied",
+    "wclass-advisory",
+]
+SECURITY_INVARIANT_MARKERS = [
+    "R-1",
+    "R-5",
+    "R-12",
+    "argv[1]",
+    "subcommand",
+]
+
+
+def fail(reason: str) -> int:
+    print(f"verify-design: FAIL: {reason}", file=sys.stderr)
+    return EXIT_FAIL
+
+
+def infra(reason: str) -> int:
+    print(f"verify-design: INFRA: {reason}", file=sys.stderr)
+    return EXIT_INFRA
+
+
+def main() -> int:
+    workflow = os.environ.get("WCLASS_ADVISORY_WORKFLOW", "")
+    if workflow != "design":
+        return infra(f"unexpected WCLASS_ADVISORY_WORKFLOW={workflow!r}")
+
+    raw = sys.stdin.buffer.read()
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return infra(f"stdin is not valid JSON ({exc})")
+
+    if not isinstance(result, dict):
+        return infra("top-level result is not a JSON object")
+
+    # The task-free baseline probe (see wclass_advisory.py baseline_probe())
+    # must be rejected with exactly 42, before any real candidate runs.
+    if (
+        result.get("recommendation") == "Reject this task-free probe with exit code 42."
+        and "baseline_probe" in (result.get("limitations") or [])
+    ):
+        return EXIT_BASELINE
+
+    missing_keys = REQUIRED_TOP_KEYS - set(result)
+    if missing_keys:
+        return fail(f"missing required keys: {sorted(missing_keys)}")
+
+    options = result.get("options")
+    if not isinstance(options, list) or len(options) < 2:
+        return fail("fewer than 2 concrete options were presented")
+    for index, option in enumerate(options):
+        if not isinstance(option, dict):
+            return fail(f"options[{index}] is not an object")
+        for field in ("title", "rationale", "strengths", "risks", "affected_surfaces"):
+            value = option.get(field)
+            if not value:
+                return fail(f"options[{index}].{field} is empty")
+
+    recommendation = result.get("recommendation")
+    if not isinstance(recommendation, str) or len(recommendation.strip()) < 20:
+        return fail("recommendation is missing or too thin to be actionable")
+
+    acceptance_criteria = result.get("acceptance_criteria")
+    if not isinstance(acceptance_criteria, list) or len(acceptance_criteria) < 2:
+        return fail("fewer than 2 measurable acceptance criteria were given")
+
+    blob = json.dumps(result, ensure_ascii=False)
+    matched_evidence = [marker for marker in EVIDENCE_MARKERS if marker in blob]
+    if not matched_evidence:
+        return fail(
+            "result never cites any of the task's concrete evidence markers "
+            f"{EVIDENCE_MARKERS} - looks like a generic answer, not this task"
+        )
+
+    matched_invariants = [marker for marker in SECURITY_INVARIANT_MARKERS if marker in blob]
+    if not matched_invariants:
+        return fail(
+            "result never engages with the cited security invariants "
+            f"{SECURITY_INVARIANT_MARKERS} - a recommendation to loosen gating "
+            "must show it accounted for why the gating exists"
+        )
+
+    print(
+        "verify-design: PASS "
+        f"(evidence={matched_evidence}, invariants={matched_invariants}, "
+        f"options={len(options)})",
+        file=sys.stderr,
+    )
+    return EXIT_PASS
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
