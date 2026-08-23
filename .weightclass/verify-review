@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle for the PR #315 code review.
+"""Prospective acceptance oracle for the review of the two optional
+follow-ups on context-guard-kit: argparse "--flag=value" support in
+`_wclass_advisory_is_safe`, and a canonical command + preflight checklist
+in `docs/wclass-advisory-workflow.md`.
 
 Task (fixed before any candidate is observed): review the diff between
-origin/main and this branch (seven files: the two Bash-hook mirrors, the
-three .weightclass advisory scaffolding files, and two tests files) for
-correctness and security issues, with particular attention to whether
-`_wclass_advisory_is_safe` / `CGW_EXACT_NAME_EXTENSIONS` in
-context-guard-kit/rewrite_bash_for_token_budget.py actually closes the gap
-it claims to close (the prior ad-hoc branch only checked argv[1]).
+`main` and this branch (four files: the two Bash-hook mirrors,
+`docs/wclass-advisory-workflow.md`, and
+`tests/test_wclass_advisory_extension_predicate.py`) for correctness and
+security, with particular attention to whether the equals-syntax predicate
+actually stays as strict as the separated form, not just as permissive.
 
 This is a judgment task, so this verifier cannot grade review quality
 directly. What it CAN and DOES check mechanically: that findings are
 grounded in the real changed file set (not hallucinated paths), that the
-review explicitly engages with the specific predicate this PR's whole
-point is about, and that it produces a real verdict (an explicit "no
-blocking issues" or concrete, evidenced findings) rather than a vague
-non-answer.
+review explicitly engages with the changed predicate function
+(`_wclass_advisory_is_safe`), and that it produces a real verdict rather
+than a vague non-answer.
 """
 from __future__ import annotations
 
@@ -31,18 +32,14 @@ EXIT_INFRA = 3
 REQUIRED_TOP_KEYS = {"schema_version", "mode", "summary", "findings", "limitations"}
 
 CHANGED_FILES = {
-    ".weightclass/verify",
-    ".weightclass/verify-design",
-    ".weightclass/verify-review",
     "context-guard-kit/rewrite_bash_for_token_budget.py",
     "plugins/context-guard/bin/context-guard-rewrite-bash",
-    "tests/test_contextguard_stage2_feasibility.py",
+    "docs/wclass-advisory-workflow.md",
     "tests/test_wclass_advisory_extension_predicate.py",
 }
 
 CORE_LOGIC_MARKERS = [
     "_wclass_advisory_is_safe",
-    "CGW_EXACT_NAME_EXTENSIONS",
 ]
 
 
@@ -100,14 +97,11 @@ def main() -> int:
     engaged_core_logic = any(marker in blob for marker in CORE_LOGIC_MARKERS)
     if not engaged_core_logic:
         return fail(
-            "review never mentions the changed predicate/registry "
+            "review never mentions the changed predicate "
             f"{CORE_LOGIC_MARKERS} - looks like a generic review, not this diff"
         )
 
     if not findings:
-        # A clean bill of health is a legitimate outcome, but it must be an
-        # explicit verdict, not silence - "no findings" alone could just mean
-        # the candidate gave up.
         no_issues_language = any(
             token in summary.lower()
             for token in ("no blocking", "no issue", "no finding", "clean", "sound", "correct")

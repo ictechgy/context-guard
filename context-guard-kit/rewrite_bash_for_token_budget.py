@@ -2417,10 +2417,16 @@ def _wclass_advisory_is_safe(argv: tuple[str, ...]) -> bool:
             confirm_seen = True
             index += 1
             continue
+        if "=" in token:
+            flag, value = token.split("=", 1)
+            if flag not in value_flags or not value or value.startswith("-"):
+                return False
+            index += 1
+            continue
         if token not in value_flags or index + 1 >= len(argv):
             return False
         value = argv[index + 1]
-        if value.startswith("-"):
+        if not value or value.startswith("-"):
             return False
         index += 2
     return confirm_seen
