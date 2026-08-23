@@ -327,6 +327,9 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_context_guard_task_memory.py",
         "tests/test_provider_live_ci_discovery.py",
         "tests/test_context_guard_shell_contract.py",
+        "tests/test_wclass_advisory_extension_predicate.py",
+        ".weightclass/verify",
+        ".weightclass/verify-design",
         "tests/test_context_guard_usage_reducer_v2.py",
         "tests/test_context_guard_advisory_mode.py",
         "tests/test_release_candidate_smoke.py",
@@ -623,7 +626,7 @@ def is_legacy_production_path(path_text: str) -> bool:
     path = PurePosixPath(path_text)
     return not (
         path_text.startswith(RECEIPT_PACKAGE_PREFIX)
-        or path_text.startswith(("docs/", "tests/"))
+        or path_text.startswith(("docs/", "tests/", ".weightclass/"))
         or path_text in NON_PRODUCTION_TOP_LEVEL_DOCS
         or path_text in BROKER_RESEARCH_PATHS
         or path_text in EXPECTED_STAGE2_ARTIFACT_PATHS
