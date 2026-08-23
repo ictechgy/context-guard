@@ -2395,6 +2395,40 @@ def _is_explicit_noop_command(argv: tuple[str, ...]) -> bool:
     )
 
 
+def _wclass_advisory_is_safe(argv: tuple[str, ...]) -> bool:
+    if len(argv) < 2:
+        return False
+    if argv[1] == "review":
+        return len(argv) == 2
+    if argv[1] != "run":
+        return False
+
+    value_flags = {"--repo", "--task-file", "--vendor", "--workflow"}
+    confirm_seen = False
+    index = 2
+    while index < len(argv):
+        token = argv[index]
+        if token == "--confirm-task-egress":
+            confirm_seen = True
+            index += 1
+            continue
+        if token not in value_flags or index + 1 >= len(argv):
+            return False
+        value = argv[index + 1]
+        if value.startswith("-"):
+            return False
+        index += 2
+    return confirm_seen
+
+
+# 심사된 정확 이름 확장 레지스트리 — 글롭/접두사 금지(R-12의 TERM*→TERMINFO
+# 실패 재현 방지). 각 값은 서브커맨드 토큰 하나만이 아니라 argv 전체 모양을
+# 검증하는 predicate여야 한다.
+CGW_EXACT_NAME_EXTENSIONS = {
+    "wclass-advisory": _wclass_advisory_is_safe,
+}
+
+
 def command_search_diff(
     argv: tuple[str, ...],
     *,
@@ -2530,12 +2564,8 @@ def command_search_diff(
             route = "trim"
         else:
             route = "noop"
-    elif first == "wclass-advisory":
-        # Trusted local dispatcher CLI (advisory skill). Only the two
-        # documented subcommands are recognized — everything else (bare
-        # invocation, unknown subcommands) stays denied so this entry cannot
-        # silently widen into a general unregistered-command allowlist.
-        route = "noop" if len(argv) > 1 and argv[1] in {"run", "review"} else "deny"
+    elif first in CGW_EXACT_NAME_EXTENSIONS:
+        route = "noop" if CGW_EXACT_NAME_EXTENSIONS[first](argv) else "deny"
     elif first in {"pytest", "tox", "jest", "vitest"}:
         route = "trim"
     elif first in {"find", "tree", "fd"}:
