@@ -155,5 +155,110 @@ class WclassAdvisoryFilterAndFirstRoleTests(unittest.TestCase):
         )
 
 
+class WclassAdvisoryEqualsSyntaxPredicateTests(unittest.TestCase):
+    """`--flag=value` (argparse's equals spelling) must be accepted for the
+    four value-flags, with the same shape discipline as the separated form -
+    this is a documented optional follow-up from an advisory design review,
+    not a security fix: the installed wclass-advisory CLI accepts both
+    spellings, but the gate predicate only recognized the separated one."""
+
+    def test_documented_run_form_with_equals_syntax_passes(self) -> None:
+        self.assertEqual(
+            route(
+                "wclass-advisory",
+                "run",
+                "--workflow=design",
+                "--repo=/tmp/repo",
+                "--task-file=/tmp/task.txt",
+                "--vendor=both",
+                "--confirm-task-egress",
+            ),
+            "noop",
+        )
+
+    def test_mixed_equals_and_separated_syntax_passes(self) -> None:
+        self.assertEqual(
+            route(
+                "wclass-advisory",
+                "run",
+                "--workflow=design",
+                "--repo",
+                "/tmp/repo",
+                "--confirm-task-egress",
+            ),
+            "noop",
+        )
+
+    def test_equals_flag_with_empty_value_denied(self) -> None:
+        self.assertEqual(
+            route("wclass-advisory", "run", "--repo=", "--confirm-task-egress"),
+            "deny",
+        )
+
+    def test_equals_value_that_looks_like_a_flag_denied(self) -> None:
+        self.assertEqual(
+            route(
+                "wclass-advisory",
+                "run",
+                "--repo=--confirm-task-egress",
+                "--confirm-task-egress",
+            ),
+            "deny",
+        )
+
+    def test_unknown_equals_flag_denied(self) -> None:
+        self.assertEqual(
+            route("wclass-advisory", "run", "--bogus=value", "--confirm-task-egress"),
+            "deny",
+        )
+
+    def test_confirm_flag_with_equals_form_denied(self) -> None:
+        # --confirm-task-egress is a bare/store_true flag; argparse itself
+        # does not accept "=value" for it, so the gate must not either.
+        self.assertEqual(
+            route(
+                "wclass-advisory",
+                "run",
+                "--repo",
+                "/tmp/repo",
+                "--task-file",
+                "/tmp/t.txt",
+                "--confirm-task-egress=true",
+            ),
+            "deny",
+        )
+
+
+class WclassAdvisoryWorkflowDocChecklistTests(unittest.TestCase):
+    """docs/wclass-advisory-workflow.md must give a copyable canonical
+    command and cover the runner's actual preflight requirements - another
+    optional follow-up from the same design review."""
+
+    def _doc_text(self) -> str:
+        return (REPO_ROOT / "docs" / "wclass-advisory-workflow.md").read_text()
+
+    def test_doc_includes_a_canonical_run_command_example(self) -> None:
+        doc = self._doc_text()
+        self.assertIn("wclass-advisory run", doc)
+        self.assertIn("--confirm-task-egress", doc)
+        self.assertIn("--workflow", doc)
+        self.assertIn("--repo", doc)
+        self.assertIn("--task-file", doc)
+
+    def test_doc_covers_runner_preflight_requirements(self) -> None:
+        doc_lower = self._doc_text().lower()
+        for required_topic in (
+            "clean",
+            "owner-only",
+            "restor",  # matches "restore"/"restoring"
+        ):
+            self.assertIn(
+                required_topic,
+                doc_lower,
+                f"doc should mention {required_topic!r} (runner preflight requirement "
+                "or the hook re-enable reminder)",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
