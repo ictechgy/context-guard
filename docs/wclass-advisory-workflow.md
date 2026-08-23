@@ -26,7 +26,9 @@ Before dispatch, confirm:
 - The repository is a clean git checkout: `git status --porcelain` prints no
   output.
 - The task file is an owner-only regular file, for example after
-  `chmod 600 /path/to/task-file.md`.
+  `chmod 600 /path/to/task-file.md`, and lives outside the repository
+  (a scratch/tmp directory) - never inside the Git workspace, even if
+  gitignored. Delete it once the run has started; the tool reads it once.
 - Once advisory work for the session is done, restore the `hooks` block in
   `.claude/settings.json` to re-enable the hook.
 
