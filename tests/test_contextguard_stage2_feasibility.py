@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import unittest
@@ -53,6 +54,28 @@ EXPECTED_STAGE2_BASELINE_PRODUCTION_INVENTORY_SHA256 = (
     "3146a2c380e206c9b609ed4150f125a0c8f41ad65364910334e0ce70dbb3dd25"
 )
 RECEIPT_PACKAGE_PREFIX = "packages/context-guard-receipt/"
+WEIGHTCLASS_SCAFFOLDING_PREFIX = ".weightclass/"
+WEIGHTCLASS_SCAFFOLDING_NAME_RE = re.compile(r"verify(-[a-z0-9]+)*")
+
+
+def is_weightclass_scaffolding_path(path_text: str) -> bool:
+    """Is `path_text` a direct, verifier-shaped file under `.weightclass/`?
+
+    Structural, not an exact-path allowlist: `.weightclass/` is per-task
+    advisory acceptance-oracle scaffolding (analogous to `tests/`), not
+    shipped production code, so both the legacy-production freeze
+    (`is_legacy_production_path`) and the provider-free changed-path gate
+    (`validate_provider_free_changed_paths`) exempt it the same way - by
+    directory, not by remembering to register every new verifier file. The
+    name pattern and one-level-deep requirement keep this from becoming a
+    blanket "anything under .weightclass/ is fine" bypass.
+    """
+    if not path_text.startswith(WEIGHTCLASS_SCAFFOLDING_PREFIX):
+        return False
+    relative = path_text[len(WEIGHTCLASS_SCAFFOLDING_PREFIX):]
+    return "/" not in relative and WEIGHTCLASS_SCAFFOLDING_NAME_RE.fullmatch(relative) is not None
+
+
 PROVIDER_FREE_BASE_REF = "origin/main"
 PROVIDER_FREE_HEAD_REF = "HEAD"
 PROVIDER_FREE_SUPPORT_PATHS = frozenset(
@@ -99,6 +122,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "context-guard-kit/trim_command_output.py",
         "docs/distribution.md",
         "docs/release-runbook.md",
+        "docs/wclass-advisory-workflow.md",
         "docs/weightclass-advisory-mode.md",
         "package.json",
         "packaging/homebrew/context-guard.rb.template",
@@ -328,9 +352,6 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_provider_live_ci_discovery.py",
         "tests/test_context_guard_shell_contract.py",
         "tests/test_wclass_advisory_extension_predicate.py",
-        ".weightclass/verify",
-        ".weightclass/verify-design",
-        ".weightclass/verify-review",
         "tests/test_context_guard_usage_reducer_v2.py",
         "tests/test_context_guard_advisory_mode.py",
         "tests/test_release_candidate_smoke.py",
@@ -561,10 +582,14 @@ def validate_provider_free_changed_paths(paths: set[str]) -> None:
             raise AssertionError("changed paths must be normalized repository-relative paths")
         if path_text in allowed_paths:
             continue
+        if is_weightclass_scaffolding_path(path_text):
+            continue
         if path_text.startswith("research/contextguard-broker/"):
             raise AssertionError(f"unexpected broker research surface changed: {path_text}")
         if path_text.startswith("research/contextguard-stage2/"):
             raise AssertionError(f"unexpected Stage 2 evidence surface changed: {path_text}")
+        if path_text.startswith(WEIGHTCLASS_SCAFFOLDING_PREFIX):
+            raise AssertionError(f"non-verifier-shaped .weightclass/ path changed: {path_text}")
         raise AssertionError(f"production or undeclared surface changed: {path_text}")
 
 
@@ -627,7 +652,8 @@ def is_legacy_production_path(path_text: str) -> bool:
     path = PurePosixPath(path_text)
     return not (
         path_text.startswith(RECEIPT_PACKAGE_PREFIX)
-        or path_text.startswith(("docs/", "tests/", ".weightclass/"))
+        or path_text.startswith(("docs/", "tests/"))
+        or is_weightclass_scaffolding_path(path_text)
         or path_text in NON_PRODUCTION_TOP_LEVEL_DOCS
         or path_text in BROKER_RESEARCH_PATHS
         or path_text in EXPECTED_STAGE2_ARTIFACT_PATHS
@@ -873,6 +899,41 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
                 "tests/test_context_guard_advisory_mode.py",
             }.issubset(PROVIDER_FREE_SUPPORT_PATHS)
         )
+
+    def test_weightclass_scaffolding_path_is_structural_and_shape_restricted(self) -> None:
+        """`.weightclass/` is exempted by directory, not by remembering to
+        register every new verifier - but only for direct, verifier-shaped
+        files, so it cannot become a blanket bypass."""
+        for accepted in (
+            ".weightclass/verify",
+            ".weightclass/verify-design",
+            ".weightclass/verify-review",
+            ".weightclass/verify-diagnosis",
+            ".weightclass/verify-some-future-workflow",
+        ):
+            with self.subTest(path=accepted):
+                self.assertTrue(is_weightclass_scaffolding_path(accepted))
+                self.assertFalse(is_legacy_production_path(accepted))
+                validate_provider_free_changed_paths({accepted})
+
+        for rejected in (
+            ".weightclass/README.md",
+            ".weightclass/secrets.json",
+            ".weightclass/nested/verify",
+            ".weightclass/verify/extra",
+            ".weightclass",
+            "not-.weightclass/verify",
+        ):
+            with self.subTest(path=rejected):
+                self.assertFalse(is_weightclass_scaffolding_path(rejected))
+                if rejected.startswith(WEIGHTCLASS_SCAFFOLDING_PREFIX):
+                    with self.assertRaises(AssertionError):
+                        validate_provider_free_changed_paths({rejected})
+
+        # Both frozen-surface mechanisms must agree, not just each in isolation.
+        self.assertFalse(is_legacy_production_path(".weightclass/verify"))
+        with self.assertRaises(AssertionError):
+            validate_provider_free_changed_paths({".weightclass/not-verifier-shaped.txt"})
 
     def test_advisory_production_support_paths_are_exact_hash_pinned(self) -> None:
         self.assertIn("PROVIDER_FREE_PINNED_SUPPORT_SHA256", globals())
