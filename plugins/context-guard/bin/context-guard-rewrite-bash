@@ -2530,6 +2530,12 @@ def command_search_diff(
             route = "trim"
         else:
             route = "noop"
+    elif first == "wclass-advisory":
+        # Trusted local dispatcher CLI (advisory skill). Only the two
+        # documented subcommands are recognized — everything else (bare
+        # invocation, unknown subcommands) stays denied so this entry cannot
+        # silently widen into a general unregistered-command allowlist.
+        route = "noop" if len(argv) > 1 and argv[1] in {"run", "review"} else "deny"
     elif first in {"pytest", "tox", "jest", "vitest"}:
         route = "trim"
     elif first in {"find", "tree", "fd"}:
