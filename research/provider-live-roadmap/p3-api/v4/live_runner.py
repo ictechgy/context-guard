@@ -32,7 +32,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 SCHEMA = "contextguard.p3-anthropic-api-live-contract/v4"
 EVIDENCE_SCHEMA = "contextguard.p3-anthropic-api-live-evidence/v4"
-EXPECTED_CONTRACT_SHA256 = "2b39f631e10f7f2f6fe3db9f543b209c24b6c7736b9826e5edc42cbfe8a9cbcf"
+EXPECTED_CONTRACT_SHA256 = "0172ef2e22294c5f8619bf0745cd554e8f2a8cddb0156a80da8234f92b06b45c"
 EXPECTED_SCORER_SHA256 = "179e4cb2bbab5ce1290f1c0c190881c1dd38fd3a7f5a881b223f4b81f0872db8"
 EXPECTED_ARTIFACTS = {
     "approval_core_v1": {
@@ -73,7 +73,7 @@ EXPECTED_ARTIFACTS = {
     },
     "canonical_sanitizer": {
         "path": "context-guard-kit/sanitize_output.py",
-        "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e",
+        "sha256": "d0ca48ccf99e86e17aebc47421a8208a630e95c4b9482b619d92fd3ad29684c9",
     },
     "corpus": {
         "path": "research/provider-live-roadmap/p3-api/v3/corpus-manifest.json",
@@ -117,7 +117,7 @@ EXPECTED_ARTIFACTS = {
     },
     "plugin_sanitizer": {
         "path": "plugins/context-guard/bin/context-guard-sanitize-output",
-        "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e",
+        "sha256": "d0ca48ccf99e86e17aebc47421a8208a630e95c4b9482b619d92fd3ad29684c9",
     },
     "prompt_template": {
         "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",
