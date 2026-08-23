@@ -22,6 +22,7 @@ from .canonical import (
     CanonicalJSONError,
     JSONLimits,
     canonical_json_bytes,
+    framed_sha256_hex,
     parse_canonical_json_bytes,
 )
 from .contracts import evidence_boundary
@@ -86,8 +87,7 @@ _CAPABILITY_PATTERN = re.compile(r"cgr1p_[A-Za-z0-9_-]{43}\Z")
 _HARD_MAX_ARTIFACTS: Final = 1024
 _HARD_MAX_TOTAL_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
 _HARD_MAX_CAPABILITIES: Final = 1024
-_HARD_MAX_SINGLE_ARTIFACT_BYTES: Final = 10_000_000
-_DEFAULT_MAX_SINGLE_ARTIFACT_BYTES: Final = 1024 * 1024
+_HARD_MAX_SINGLE_ARTIFACT_BYTES: Final = 1024 * 1024
 
 
 class StoreErrorCode(str, Enum):
@@ -136,7 +136,7 @@ class StoreLimits:
     max_artifacts: int = _HARD_MAX_ARTIFACTS
     max_total_artifact_bytes: int = _HARD_MAX_TOTAL_ARTIFACT_BYTES
     max_capabilities: int = _HARD_MAX_CAPABILITIES
-    max_single_artifact_bytes: int = _DEFAULT_MAX_SINGLE_ARTIFACT_BYTES
+    max_single_artifact_bytes: int = _HARD_MAX_SINGLE_ARTIFACT_BYTES
 
     def __post_init__(self) -> None:
         maximums = {
@@ -151,12 +151,6 @@ class StoreLimits:
                 raise StoreError(StoreErrorCode.INVALID_ARGUMENT)
         if self.max_single_artifact_bytes > self.max_total_artifact_bytes:
             raise StoreError(StoreErrorCode.INVALID_ARGUMENT)
-
-
-_DEFAULT_STORE_LIMITS: Final = StoreLimits()
-_MERGED_CAPTURE_STORE_LIMITS: Final = StoreLimits(
-    max_single_artifact_bytes=_HARD_MAX_SINGLE_ARTIFACT_BYTES
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,135 +648,6 @@ def _write_new_file(parent_fd: int, name: str, raw: bytes) -> None:
         os.close(descriptor)
 
 
-def _source_fingerprint(status: os.stat_result) -> tuple[int, ...]:
-    return (
-        status.st_dev,
-        status.st_ino,
-        status.st_mode,
-        status.st_nlink,
-        status.st_uid,
-        status.st_size,
-        status.st_mtime_ns,
-        status.st_ctime_ns,
-    )
-
-
-def _private_source_status(
-    source_fd: object, byte_length: object, maximum: int
-) -> os.stat_result:
-    if (
-        type(source_fd) is not int
-        or source_fd < 0
-        or type(byte_length) is not int
-        or byte_length < 0
-        or byte_length > maximum
-        or not hasattr(os, "pread")
-    ):
-        _raise(StoreErrorCode.INVALID_ARGUMENT)
-    status = _descriptor_status(source_fd, error_code=StoreErrorCode.INVALID_ARGUMENT)
-    if (
-        not stat.S_ISREG(status.st_mode)
-        or status.st_uid != os.geteuid()
-        or stat.S_IMODE(status.st_mode) != 0o600
-        or status.st_nlink not in {0, 1}
-        or status.st_size != byte_length
-    ):
-        _raise(StoreErrorCode.INVALID_ARGUMENT)
-    return status
-
-
-def _source_matches_payload(
-    source_fd: int,
-    byte_length: int,
-    before: os.stat_result,
-    payload: bytes,
-) -> bool:
-    if len(payload) != byte_length:
-        return False
-    offset = 0
-    while offset < byte_length:
-        try:
-            chunk = os.pread(source_fd, min(64 * 1024, byte_length - offset), offset)
-        except InterruptedError:
-            continue
-        except OSError:
-            _raise(StoreErrorCode.WRITE_FAILED)
-        if not chunk or not hmac.compare_digest(
-            chunk, payload[offset : offset + len(chunk)]
-        ):
-            return False
-        offset += len(chunk)
-    after = _descriptor_status(source_fd, error_code=StoreErrorCode.WRITE_FAILED)
-    return _source_fingerprint(before) == _source_fingerprint(after)
-
-
-def _payload_sha256(payload: bytes) -> str:
-    """Hash one already size-checked store payload with the frozen framing."""
-
-    digest = hashlib.sha256()
-    digest.update(b"contextguard-receipt/store-payload/v1\0")
-    digest.update(len(payload).to_bytes(8, "big"))
-    digest.update(payload)
-    return digest.hexdigest()
-
-
-def _write_new_stream_file(
-    parent_fd: int,
-    name: str,
-    *,
-    source_fd: int,
-    byte_length: int,
-    source_status: os.stat_result,
-    subject_identity_domain: str,
-) -> tuple[str, str]:
-    checked_parent = _require_directory_descriptor(parent_fd)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
-    try:
-        descriptor = os.open(name, flags, 0o600, dir_fd=checked_parent)
-    except OSError:
-        _raise(StoreErrorCode.WRITE_FAILED)
-    digest = hashlib.sha256()
-    digest.update(b"contextguard-receipt/store-payload/v1\0")
-    digest.update(byte_length.to_bytes(8, "big"))
-    subject_digest = hashlib.sha256()
-    subject_digest.update(subject_identity_domain.encode("ascii"))
-    subject_digest.update(b"\0")
-    subject_digest.update(byte_length.to_bytes(8, "big"))
-    offset = 0
-    try:
-        os.fchmod(descriptor, 0o600)
-        while offset < byte_length:
-            try:
-                chunk = os.pread(
-                    source_fd, min(64 * 1024, byte_length - offset), offset
-                )
-            except InterruptedError:
-                continue
-            if not chunk:
-                _raise(StoreErrorCode.WRITE_FAILED)
-            _write_all(descriptor, chunk)
-            digest.update(chunk)
-            subject_digest.update(chunk)
-            offset += len(chunk)
-        os.fsync(descriptor)
-        destination_status = os.fstat(descriptor)
-        final_source_status = os.fstat(source_fd)
-        if (
-            not _private_file(destination_status)
-            or destination_status.st_size != byte_length
-            or _source_fingerprint(source_status)
-            != _source_fingerprint(final_source_status)
-        ):
-            _raise(StoreErrorCode.WRITE_FAILED)
-    except StoreError:
-        raise
-    except OSError:
-        _raise(StoreErrorCode.WRITE_FAILED)
-    finally:
-        os.close(descriptor)
-    return digest.hexdigest(), subject_digest.hexdigest()
-
-
 def _hmac_hex(key: bytes, domain: bytes, raw: bytes) -> str:
     return hmac.new(key, domain + b"\0" + raw, hashlib.sha256).hexdigest()
 
@@ -905,22 +770,6 @@ def _limits_from_object(value: object) -> StoreLimits:
         _raise(StoreErrorCode.STORE_CORRUPT)
 
 
-def _store_metadata_bytes(
-    key: bytes, namespace_id: str, limits: StoreLimits
-) -> bytes:
-    return _mac_document(
-        key,
-        b"contextguard-receipt/store-metadata-mac/v1",
-        {
-            "evidence_boundary": evidence_boundary(),
-            "integrity_hmac_sha256": "",
-            "limits": _limits_object(limits),
-            "namespace_id": namespace_id,
-            "schema_version": _STORE_SCHEMA_VERSION,
-        },
-    )
-
-
 def _external_capability(raw: bytes) -> str:
     return _CAPABILITY_PREFIX + base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -951,19 +800,6 @@ def _lookup_id(key: bytes, namespace_id: str, capability: bytes) -> str:
     return _hmac_hex(key, b"contextguard-receipt/capability-lookup/v1", framed)
 
 
-def _idempotent_capability(
-    key: bytes, namespace_id: str, idempotency_key: str
-) -> bytes:
-    if type(idempotency_key) is not str or _HEX_256.fullmatch(idempotency_key) is None:
-        _raise(StoreErrorCode.INVALID_ARGUMENT)
-    framed = bytes.fromhex(namespace_id) + bytes.fromhex(idempotency_key)
-    return hmac.new(
-        key,
-        b"contextguard-receipt/idempotent-capability/v1\0" + framed,
-        hashlib.sha256,
-    ).digest()
-
-
 def _validate_hash(value: object) -> str:
     if type(value) is not str or _HEX_256.fullmatch(value) is None:
         _raise(StoreErrorCode.INVALID_ARGUMENT)
@@ -989,7 +825,6 @@ class CapabilityStore:
 
     def __init__(self) -> None:
         self._closed = True
-        self._descriptor_boundary_retained = False
         self._close_requested = False
         self._active_operations = 0
         self._exclusion_fds: tuple[int, ...] = ()
@@ -1005,19 +840,10 @@ class CapabilityStore:
         git_executable: object = None,
         create: bool = False,
         limits: StoreLimits | None = None,
-        allow_default_limit_upgrade: bool = False,
     ) -> "CapabilityStore":
         _require_filesystem_features()
         checked_path = _validate_state_path(state_dir)
-        if (
-            type(create) is not bool
-            or type(allow_default_limit_upgrade) is not bool
-            or (limits is not None and type(limits) is not StoreLimits)
-            or (
-                allow_default_limit_upgrade
-                and limits != _MERGED_CAPTURE_STORE_LIMITS
-            )
-        ):
+        if type(create) is not bool or (limits is not None and type(limits) is not StoreLimits):
             _raise(StoreErrorCode.INVALID_ARGUMENT)
         exclusion_descriptors = _check_disjoint(
             checked_path, repository_root, git_executable
@@ -1047,10 +873,7 @@ class CapabilityStore:
                 instance._ensure_initialized(create=create, limits=limits)
                 instance._open_store()
                 if limits is not None and limits != instance._limits:
-                    if allow_default_limit_upgrade:
-                        instance._upgrade_default_limits(limits)
-                    if limits != instance._limits:
-                        _raise(StoreErrorCode.INVALID_ARGUMENT)
+                    _raise(StoreErrorCode.INVALID_ARGUMENT)
             instance._closed = False
             return instance
         except Exception:
@@ -1163,7 +986,7 @@ class CapabilityStore:
             return
         if not create:
             _raise(StoreErrorCode.STORE_UNINITIALIZED)
-        effective_limits = _DEFAULT_STORE_LIMITS if limits is None else limits
+        effective_limits = StoreLimits() if limits is None else limits
         key = secrets.token_bytes(32)
         namespace_id = secrets.token_bytes(32).hex()
         temporary_name = ".store-v1.tmp-" + secrets.token_bytes(16).hex()
@@ -1173,10 +996,21 @@ class CapabilityStore:
             temporary_fd = os.open(temporary_name, _directory_flags(), dir_fd=self._state_fd)
             os.fchmod(temporary_fd, 0o700)
             _write_new_file(temporary_fd, _KEY_NAME, key)
+            metadata = {
+                "evidence_boundary": evidence_boundary(),
+                "integrity_hmac_sha256": "",
+                "limits": _limits_object(effective_limits),
+                "namespace_id": namespace_id,
+                "schema_version": _STORE_SCHEMA_VERSION,
+            }
             _write_new_file(
                 temporary_fd,
                 _METADATA_NAME,
-                _store_metadata_bytes(key, namespace_id, effective_limits),
+                _mac_document(
+                    key,
+                    b"contextguard-receipt/store-metadata-mac/v1",
+                    metadata,
+                ),
             )
             for child in (_COMMITS_NAME, _TEMP_NAME):
                 os.mkdir(child, 0o700, dir_fd=temporary_fd)
@@ -1217,29 +1051,9 @@ class CapabilityStore:
         if len(key) != 32:
             _raise(StoreErrorCode.STORE_CORRUPT)
         self._key = key
-        namespace_id, limits = self._read_authenticated_metadata()
-        self._namespace_id = namespace_id
-        self._limits = limits
-        self._commits_fd = _open_directory_at(self._store_fd, _COMMITS_NAME)
-        self._temp_fd = _open_directory_at(self._store_fd, _TEMP_NAME)
-        if set(_bounded_names(self._store_fd, 4)) != {
-            _KEY_NAME,
-            _METADATA_NAME,
-            _COMMITS_NAME,
-            _TEMP_NAME,
-        }:
-            _raise(StoreErrorCode.STORE_CORRUPT)
-        self._state_anchor = self._descriptor_identity(self._state_fd)
-        self._lock_anchor = self._descriptor_identity(self._lock_fd)
-        self._store_anchor = self._descriptor_identity(self._store_fd)
-        self._commits_anchor = self._descriptor_identity(self._commits_fd)
-        self._temp_anchor = self._descriptor_identity(self._temp_fd)
-        self._revalidate_anchors()
-
-    def _read_authenticated_metadata(self) -> tuple[str, StoreLimits]:
         metadata_raw = _read_named_file(self._store_fd, _METADATA_NAME, 64 * 1024)
         metadata = _verify_document_mac(
-            self._key,
+            key,
             b"contextguard-receipt/store-metadata-mac/v1",
             _parse_document(metadata_raw),
             expected_keys=frozenset(
@@ -1260,71 +1074,23 @@ class CapabilityStore:
         namespace_id = metadata.get("namespace_id")
         if type(namespace_id) is not str or _HEX_256.fullmatch(namespace_id) is None:
             _raise(StoreErrorCode.STORE_CORRUPT)
-        return namespace_id, _limits_from_object(metadata.get("limits"))
-
-    def _refresh_limits(self) -> None:
-        namespace_id, persisted_limits = self._read_authenticated_metadata()
-        if namespace_id != self._namespace_id:
+        self._namespace_id = namespace_id
+        self._limits = _limits_from_object(metadata.get("limits"))
+        self._commits_fd = _open_directory_at(self._store_fd, _COMMITS_NAME)
+        self._temp_fd = _open_directory_at(self._store_fd, _TEMP_NAME)
+        if set(_bounded_names(self._store_fd, 4)) != {
+            _KEY_NAME,
+            _METADATA_NAME,
+            _COMMITS_NAME,
+            _TEMP_NAME,
+        }:
             _raise(StoreErrorCode.STORE_CORRUPT)
-        if persisted_limits == self._limits:
-            return
-        if (
-            self._limits == _DEFAULT_STORE_LIMITS
-            and persisted_limits == _MERGED_CAPTURE_STORE_LIMITS
-        ):
-            self._limits = persisted_limits
-            return
-        _raise(StoreErrorCode.STORE_CORRUPT)
-
-    def _upgrade_default_limits(self, requested_limits: StoreLimits) -> None:
-        if (
-            self._limits != _DEFAULT_STORE_LIMITS
-            or requested_limits != _MERGED_CAPTURE_STORE_LIMITS
-        ):
-            _raise(StoreErrorCode.INVALID_ARGUMENT)
+        self._state_anchor = self._descriptor_identity(self._state_fd)
+        self._lock_anchor = self._descriptor_identity(self._lock_fd)
+        self._store_anchor = self._descriptor_identity(self._store_fd)
+        self._commits_anchor = self._descriptor_identity(self._commits_fd)
+        self._temp_anchor = self._descriptor_identity(self._temp_fd)
         self._revalidate_anchors()
-        temp_fd = _require_directory_descriptor(self._temp_fd)
-        if _bounded_names(
-            temp_fd, 1, overflow=StoreErrorCode.RECOVERY_REQUIRED
-        ):
-            _raise(StoreErrorCode.RECOVERY_REQUIRED)
-        self._scan()
-
-        temporary_name = ".metadata.tmp-" + secrets.token_bytes(16).hex()
-        metadata_raw = _store_metadata_bytes(
-            self._key, self._namespace_id, requested_limits
-        )
-        mutation_started = False
-        try:
-            mutation_started = True
-            _write_new_file(temp_fd, temporary_name, metadata_raw)
-            os.rename(
-                temporary_name,
-                _METADATA_NAME,
-                src_dir_fd=temp_fd,
-                dst_dir_fd=self._store_fd,
-            )
-            os.fsync(self._store_fd)
-            os.fsync(temp_fd)
-            namespace_id, persisted_limits = self._read_authenticated_metadata()
-            if (
-                namespace_id != self._namespace_id
-                or persisted_limits != requested_limits
-            ):
-                _raise(StoreErrorCode.COMMIT_UNCERTAIN)
-            self._limits = persisted_limits
-            self._scan()
-            self._revalidate_anchors()
-        except StoreError:
-            if mutation_started:
-                _raise(StoreErrorCode.COMMIT_UNCERTAIN)
-            raise
-        except OSError:
-            _raise(
-                StoreErrorCode.COMMIT_UNCERTAIN
-                if mutation_started
-                else StoreErrorCode.WRITE_FAILED
-            )
 
     @staticmethod
     def _descriptor_identity(descriptor: int) -> tuple[int, int]:
@@ -1333,20 +1099,6 @@ class CapabilityStore:
 
     def _revalidate_anchors(self) -> None:
         self._revalidate_state_disjoint()
-        if self._descriptor_boundary_retained:
-            retained = (
-                (self._state_fd, self._state_anchor),
-                (self._lock_fd, self._lock_anchor),
-                (self._store_fd, self._store_anchor),
-                (self._commits_fd, self._commits_anchor),
-                (self._temp_fd, self._temp_anchor),
-            )
-            if any(
-                self._descriptor_identity(descriptor) != anchor
-                for descriptor, anchor in retained
-            ):
-                _raise(StoreErrorCode.UNSAFE_STATE)
-            return
         opened: list[int] = []
         try:
             state_fd = _open_absolute_state_directory(self._state_path, create=False)
@@ -1386,15 +1138,6 @@ class CapabilityStore:
             for descriptor in reversed(opened):
                 os.close(descriptor)
 
-    def _retain_descriptor_boundary(self) -> None:
-        """Stop reopening the state pathname after one final full validation."""
-
-        with self._thread_lock:
-            if self._closed or self._close_requested:
-                _raise(StoreErrorCode.INVALID_ARGUMENT)
-            self._revalidate_anchors()
-            self._descriptor_boundary_retained = True
-
     @property
     def namespace_id(self) -> str:
         with self._operation():
@@ -1403,10 +1146,6 @@ class CapabilityStore:
     @property
     def limits(self) -> StoreLimits:
         with self._operation():
-            with self._locked(exclusive=False):
-                self._revalidate_anchors()
-                self._refresh_limits()
-                self._revalidate_anchors()
             return self._limits
 
     @contextmanager
@@ -1458,289 +1197,23 @@ class CapabilityStore:
         with self._operation():
             return self._issue_batch(requests)
 
-    def ensure_issued(
-        self,
-        *,
-        payload: bytes,
-        root_identity_sha256: str,
-        subject_identity_sha256: str,
-        artifact_type: ArtifactType,
-        idempotency_key: str,
-    ) -> IssuedCapability:
-        """Issue once for one opaque idempotency key, or validate the exact prior issue."""
-
-        request = ArtifactRequest(
-            payload=payload,
-            root_identity_sha256=root_identity_sha256,
-            subject_identity_sha256=subject_identity_sha256,
-            artifact_type=artifact_type,
-        )
-        with self._operation():
-            capability_raw = _idempotent_capability(
-                self._key, self._namespace_id, idempotency_key
-            )
-            return self._issue_batch(
-                (request,), deterministic_capability_raw=capability_raw
-            )[0]
-
-    def ensure_issued_file(
-        self,
-        *,
-        source_fd: int,
-        byte_length: int,
-        root_identity_sha256: str,
-        subject_identity_sha256: str,
-        subject_identity_domain: str,
-        artifact_type: ArtifactType,
-        idempotency_key: str,
-    ) -> IssuedCapability:
-        """Stream one private regular file into deterministic durable authority."""
-
-        with self._operation():
-            _validate_hash(root_identity_sha256)
-            _validate_hash(subject_identity_sha256)
-            try:
-                encoded_domain = subject_identity_domain.encode("ascii")
-            except (AttributeError, UnicodeEncodeError):
-                _raise(StoreErrorCode.INVALID_ARGUMENT)
-            if (
-                type(subject_identity_domain) is not str
-                or not subject_identity_domain
-                or "\0" in subject_identity_domain
-                or len(encoded_domain) > 128
-                or type(artifact_type) is not ArtifactType
-            ):
-                _raise(StoreErrorCode.INVALID_ARGUMENT)
-            capability_raw = _idempotent_capability(
-                self._key, self._namespace_id, idempotency_key
-            )
-            lookup_id = _lookup_id(
-                self._key, self._namespace_id, capability_raw
-            )
-            with self._locked(exclusive=True):
-                self._revalidate_anchors()
-                self._refresh_limits()
-                source_status = _private_source_status(
-                    source_fd,
-                    byte_length,
-                    self._limits.max_single_artifact_bytes,
-                )
-                temp_fd = _require_directory_descriptor(self._temp_fd)
-                commits_fd = _require_directory_descriptor(self._commits_fd)
-                if _bounded_names(
-                    temp_fd, 1, overflow=StoreErrorCode.RECOVERY_REQUIRED
-                ):
-                    _raise(StoreErrorCode.RECOVERY_REQUIRED)
-                usage = self._scan(return_payload_for=lookup_id)
-                if usage.selected is not None:
-                    stored = usage.selected
-                    if not (
-                        stored.artifact_type is artifact_type
-                        and stored.byte_length == byte_length
-                        and stored.root_identity_sha256
-                        == root_identity_sha256
-                        and stored.subject_identity_sha256
-                        == subject_identity_sha256
-                        and _source_matches_payload(
-                            source_fd,
-                            byte_length,
-                            source_status,
-                            stored.payload,
-                        )
-                    ):
-                        _raise(StoreErrorCode.CAPABILITY_REJECTED)
-                    return IssuedCapability(
-                        handle=_external_capability(capability_raw),
-                        namespace_id=self._namespace_id,
-                    )
-                if usage.artifacts + 1 > self._limits.max_artifacts:
-                    _raise(StoreErrorCode.ARTIFACT_COUNT_QUOTA_EXCEEDED)
-                if usage.capabilities + 1 > self._limits.max_capabilities:
-                    _raise(StoreErrorCode.CAPABILITY_COUNT_QUOTA_EXCEEDED)
-                if (
-                    usage.payload_bytes + byte_length
-                    > self._limits.max_total_artifact_bytes
-                ):
-                    _raise(StoreErrorCode.ARTIFACT_BYTES_QUOTA_EXCEEDED)
-
-                commit_id = secrets.token_bytes(32).hex()
-                temporary_id = secrets.token_bytes(16).hex()
-                batch_fd: int | None = None
-                entry_fd: int | None = None
-                published = False
-                try:
-                    os.mkdir(temporary_id, 0o700, dir_fd=temp_fd)
-                    batch_fd = os.open(
-                        temporary_id, _directory_flags(), dir_fd=temp_fd
-                    )
-                    os.fchmod(batch_fd, 0o700)
-                    os.mkdir(lookup_id, 0o700, dir_fd=batch_fd)
-                    entry_fd = os.open(
-                        lookup_id, _directory_flags(), dir_fd=batch_fd
-                    )
-                    os.fchmod(entry_fd, 0o700)
-                    payload_sha256, streamed_subject = _write_new_stream_file(
-                        entry_fd,
-                        _PAYLOAD_NAME,
-                        source_fd=source_fd,
-                        byte_length=byte_length,
-                        source_status=source_status,
-                        subject_identity_domain=subject_identity_domain,
-                    )
-                    if not hmac.compare_digest(
-                        streamed_subject, subject_identity_sha256
-                    ):
-                        _raise(StoreErrorCode.CAPABILITY_REJECTED)
-                    record = {
-                        "artifact_type": artifact_type.value,
-                        "byte_length": byte_length,
-                        "capability_lookup_sha256": lookup_id,
-                        "evidence_boundary": evidence_boundary(),
-                        "integrity_hmac_sha256": "",
-                        "namespace_id": self._namespace_id,
-                        "payload_sha256": payload_sha256,
-                        "root_identity_sha256": root_identity_sha256,
-                        "schema_version": _RECORD_SCHEMA_VERSION,
-                        "subject_identity_sha256": subject_identity_sha256,
-                    }
-                    _write_new_file(
-                        entry_fd,
-                        _RECORD_NAME,
-                        _mac_document(
-                            self._key,
-                            b"contextguard-receipt/capability-record-mac/v1",
-                            record,
-                        ),
-                    )
-                    os.fsync(entry_fd)
-                    os.close(entry_fd)
-                    entry_fd = None
-                    manifest = {
-                        "capability_lookup_sha256": [lookup_id],
-                        "evidence_boundary": evidence_boundary(),
-                        "integrity_hmac_sha256": "",
-                        "schema_version": _COMMIT_SCHEMA_VERSION,
-                    }
-                    _write_new_file(
-                        batch_fd,
-                        _COMMIT_MANIFEST_NAME,
-                        _mac_document(
-                            self._key,
-                            b"contextguard-receipt/store-commit-mac/v1",
-                            manifest,
-                            limits=_COMMIT_JSON_LIMITS,
-                        ),
-                    )
-                    os.fsync(batch_fd)
-                    os.close(batch_fd)
-                    batch_fd = None
-                    os.rename(
-                        temporary_id,
-                        commit_id,
-                        src_dir_fd=temp_fd,
-                        dst_dir_fd=commits_fd,
-                    )
-                    published = True
-                    parent_sync_failed = False
-                    for parent_fd in (temp_fd, commits_fd):
-                        try:
-                            os.fsync(parent_fd)
-                        except OSError:
-                            parent_sync_failed = True
-                    if parent_sync_failed:
-                        _raise(StoreErrorCode.COMMIT_UNCERTAIN)
-                    final_usage = self._scan()
-                    if lookup_id not in final_usage.lookup_ids:
-                        _raise(StoreErrorCode.COMMIT_UNCERTAIN)
-                    self._revalidate_anchors()
-                except StoreError:
-                    if published:
-                        _raise(StoreErrorCode.COMMIT_UNCERTAIN)
-                    raise
-                except OSError:
-                    if published:
-                        _raise(StoreErrorCode.COMMIT_UNCERTAIN)
-                    _raise(StoreErrorCode.WRITE_FAILED)
-                finally:
-                    for descriptor in (entry_fd, batch_fd):
-                        if descriptor is not None:
-                            try:
-                                os.close(descriptor)
-                            except OSError:
-                                pass
-                return IssuedCapability(
-                    handle=_external_capability(capability_raw),
-                    namespace_id=self._namespace_id,
-                )
-
-    def idempotent_handle(self, idempotency_key: str) -> str:
-        """Re-derive authority for explicit transaction-scoped recovery."""
-
-        with self._operation():
-            return _external_capability(
-                _idempotent_capability(
-                    self._key, self._namespace_id, idempotency_key
-                )
-            )
-
-    def _issue_batch(
-        self,
-        requests: tuple[ArtifactRequest, ...],
-        *,
-        deterministic_capability_raw: bytes | None = None,
-    ) -> tuple[IssuedCapability, ...]:
+    def _issue_batch(self, requests: tuple[ArtifactRequest, ...]) -> tuple[IssuedCapability, ...]:
         if type(requests) is not tuple or not requests:
             _raise(StoreErrorCode.INVALID_ARGUMENT)
-        if deterministic_capability_raw is not None and (
-            len(requests) != 1
-            or type(deterministic_capability_raw) is not bytes
-            or len(deterministic_capability_raw) != _CAPABILITY_RAW_BYTES
-        ):
-            _raise(StoreErrorCode.INVALID_ARGUMENT)
+        if len(requests) > self._limits.max_capabilities:
+            _raise(StoreErrorCode.CAPABILITY_COUNT_QUOTA_EXCEEDED)
+        if len(requests) > self._limits.max_artifacts:
+            _raise(StoreErrorCode.ARTIFACT_COUNT_QUOTA_EXCEEDED)
+        checked = tuple(_validate_request(request, self._limits) for request in requests)
         with self._locked(exclusive=True):
             self._revalidate_anchors()
-            self._refresh_limits()
-            if len(requests) > self._limits.max_capabilities:
-                _raise(StoreErrorCode.CAPABILITY_COUNT_QUOTA_EXCEEDED)
-            if len(requests) > self._limits.max_artifacts:
-                _raise(StoreErrorCode.ARTIFACT_COUNT_QUOTA_EXCEEDED)
-            checked = tuple(
-                _validate_request(request, self._limits) for request in requests
-            )
             temp_fd = _require_directory_descriptor(self._temp_fd)
             commits_fd = _require_directory_descriptor(self._commits_fd)
             if _bounded_names(
                 temp_fd, 1, overflow=StoreErrorCode.RECOVERY_REQUIRED
             ):
                 _raise(StoreErrorCode.RECOVERY_REQUIRED)
-            deterministic_lookup = (
-                _lookup_id(
-                    self._key,
-                    self._namespace_id,
-                    deterministic_capability_raw,
-                )
-                if deterministic_capability_raw is not None
-                else None
-            )
-            usage = self._scan(return_payload_for=deterministic_lookup)
-            if deterministic_capability_raw is not None and usage.selected is not None:
-                request = checked[0]
-                stored = usage.selected
-                if not (
-                    stored.artifact_type is request.artifact_type
-                    and stored.byte_length == len(request.payload)
-                    and stored.root_identity_sha256 == request.root_identity_sha256
-                    and stored.subject_identity_sha256
-                    == request.subject_identity_sha256
-                    and hmac.compare_digest(stored.payload, request.payload)
-                ):
-                    _raise(StoreErrorCode.CAPABILITY_REJECTED)
-                return (
-                    IssuedCapability(
-                        handle=_external_capability(deterministic_capability_raw),
-                        namespace_id=self._namespace_id,
-                    ),
-                )
+            usage = self._scan()
             next_count = usage.artifacts + len(checked)
             next_capabilities = usage.capabilities + len(checked)
             next_bytes = usage.payload_bytes + sum(len(item.payload) for item in checked)
@@ -1754,27 +1227,19 @@ class CapabilityStore:
             issued: list[IssuedCapability] = []
             records: list[tuple[str, ArtifactRequest, dict[str, object], bytes]] = []
             reserved = set(usage.lookup_ids)
-            for index, request in enumerate(checked):
-                if deterministic_capability_raw is not None and index == 0:
-                    capability_raw = deterministic_capability_raw
-                    lookup_id = _lookup_id(
-                        self._key, self._namespace_id, capability_raw
-                    )
-                    if lookup_id in reserved:
-                        _raise(StoreErrorCode.CAPABILITY_REJECTED)
+            for request in checked:
+                for _attempt in range(8):
+                    capability_raw = secrets.token_bytes(_CAPABILITY_RAW_BYTES)
+                    lookup_id = _lookup_id(self._key, self._namespace_id, capability_raw)
+                    if lookup_id not in reserved:
+                        break
                 else:
-                    for _attempt in range(8):
-                        capability_raw = secrets.token_bytes(_CAPABILITY_RAW_BYTES)
-                        lookup_id = _lookup_id(
-                            self._key, self._namespace_id, capability_raw
-                        )
-                        if lookup_id not in reserved:
-                            break
-                    else:
-                        _raise(StoreErrorCode.WRITE_FAILED)
+                    _raise(StoreErrorCode.WRITE_FAILED)
                 reserved.add(lookup_id)
                 handle = _external_capability(capability_raw)
-                payload_sha256 = _payload_sha256(request.payload)
+                payload_sha256 = framed_sha256_hex(
+                    "contextguard-receipt/store-payload/v1", request.payload
+                )
                 record = {
                     "artifact_type": request.artifact_type.value,
                     "byte_length": len(request.payload),
@@ -1962,7 +1427,6 @@ class CapabilityStore:
         return artifact
 
     def _scan(self, *, return_payload_for: str | None = None) -> _Usage:
-        self._refresh_limits()
         commit_names = sorted(
             _bounded_names(self._commits_fd, self._limits.max_artifacts)
         )
@@ -2073,7 +1537,9 @@ class CapabilityStore:
                         or _HEX_256.fullmatch(record["subject_identity_sha256"]) is None
                     ):
                         _raise(StoreErrorCode.STORE_CORRUPT)
-                    observed_digest = _payload_sha256(payload)
+                    observed_digest = framed_sha256_hex(
+                        "contextguard-receipt/store-payload/v1", payload
+                    )
                     if not hmac.compare_digest(payload_sha256, observed_digest):
                         _raise(StoreErrorCode.STORE_TAMPERED)
                     artifacts += 1

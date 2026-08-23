@@ -9,7 +9,6 @@ diagnostics:
 
 ```text
 context-guard-receipt inspect boundary
-context-guard-receipt evaluate phase --input <file|->
 context-guard-receipt assemble --kind evidence|blueprint|tool-schemas --descriptor <file|-> --root <absolute>
 context-guard-receipt run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
 context-guard-receipt inspect diagnostics --input <file|->
@@ -20,9 +19,6 @@ context-guard-receipt inspect twin --experimental-twin --input <file|-> --root <
 context-guard-receipt inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <1..256>]
 context-guard-receipt inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>
 context-guard-receipt inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <1..256>]
-context-guard-receipt import merged-capture --spool <absolute> --transaction-id <64-lowercase-hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]
-context-guard-receipt recover merged-capture --transaction-id <64-lowercase-hex> --root <absolute> --state-dir <absolute>
-context-guard-receipt inspect merged-capture-import --root <absolute> --state-dir <absolute>
 ```
 
 Package and entry-point discovery are explicit and local. For a separate local
@@ -31,61 +27,15 @@ project, then invoke the two installed binaries directly:
 
 ```text
 npm pack --ignore-scripts
-npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.1.tgz
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.1.0.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
-./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root --state-dir /absolute/private-state
 ```
-
-Any downgrade to an earlier release is an external package-manager/release gate
-requiring an independently retained immutable published artifact. This package
-does not simulate or reconstruct an older release from the `0.2.1` runtime tree.
 
 The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or
 changes a host request. A caller chooses when to launch either binary.
-
-The packaged Python module `context_guard_receipt.external_approval` is a
-programmatic, non-CLI approval boundary for a separately implemented external
-runner. It does not contain a provider runner or obtain credentials, open a
-network connection, create an output root, publish a package, or activate a
-runtime. An issuer can HMAC-authenticate one closed approval whose scope binds
-the exact candidate commit, manifest, checksums and artifact IDs; provider and
-model; observer, operation version and receipt schema; runtime version,
-executable, argv and environment identities; credential consumer and allowed scopes;
-HTTPS destinations; call, spend, currency and timeout caps; owner-private
-output root; and retention. Redirects and proxies are fixed off. Approvals use
-an internally observed Unix clock, expire after at most one year, are
-revocable, and carry one nonce.
-
-`authorize_and_consume` requires independent approval-verification and state
-authentication keys. It serializes threads and processes, validates an exact
-requested scope, checks expiry and revocation, and durably records the hashed
-nonce before invoking the trusted materializer with a copied scope. Replay,
-scope expansion, malformed data, unsafe state metadata, or uncertain state
-durability refuses before that callback. The state directory must already
-exist as an owner-private `0700` directory. It
-stores only sorted SHA-256 selectors and an authenticated registry; it stores
-no approval, provider/model name, destination, output path, nonce, revocation
-handle, or key. The state directory is part of the operator trust boundary: an
-actor able to restore an older valid filesystem snapshot can roll back any
-purely local registry, so deployments needing rollback-resistant one-use
-semantics must place it on a separately protected monotonic store. The caller
-must also implement the bound network/runtime/output controls; this module is
-an authorization gate, not an OS sandbox or an execution engine. An approval
-does not grant npm publication or evidence-claim authority.
-
-`context_guard_receipt.external_approval_v2` is a parallel, versioned adapter
-for callers whose evidence lifecycle is honestly manual. It leaves the v1
-module, schema, HMAC domain, and existing consumers byte-compatible, while its
-closed scope binds retention exactly as
-`{"mode":"manual_owner_cleanup","maximum_seconds":null}` and authenticates
-the envelope under `contextguard/external-approval/v2`. V1 and v2 share the
-same authenticated one-use/revocation registry, so changing envelope versions
-cannot make a consumed nonce reusable. V2 does not claim finite retention or
-automatic deletion; systems requiring a deletion deadline need a separate
-durable lifecycle authority and receipt before approval.
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
 evidence and cannot close the provider join. It does not observe a host, read
@@ -103,50 +53,14 @@ reserved `inspect` targets, including `lease`, stay unavailable.
 
 The MCP binary is a bounded local stdio server for one explicit absolute
 `--root`. After normal MCP initialization it exposes only `receipt_assemble`,
-`receipt_context`, `receipt_diagnose`, `receipt_expand`, `receipt_inspect`,
-`receipt_tool_select`, and `receipt_twin`; it does not expose command capture,
-reference-expiry administration, configuration, registration, provider, or
-network tools. Its `cgr1m_` capabilities are random, process-local, limited to
-300 seconds, and invalid after process exit or restart. Without `--state-dir`,
-MCP creates no durable state and `receipt_twin` returns unavailable. An explicit
-absolute `--state-dir` enables only the existing authenticated advisory twin;
-the directory is fixed by the server process and cannot be supplied by a tool
-call. If the pinned root instance or its logical state drifts, the server stops
-accepting work and must be restarted.
-
-`receipt_context` is the explicit product bridge for repeated local files and
-logs. `action: "store"` requires the caller to affirm `caller_classification:
-"eligible"` with an empty `detector_signals` list, reads one bounded no-follow
-regular `relative_path` beneath the pinned root, and applies the existing
-conservative byte-benefit router. Small or uneconomic inputs are returned
-unchanged; beneficial inputs return a direct exact reference without requiring
-the caller to resend the file bytes. Repeated requests for the same unchanged
-file reuse the live process capability. An optional `task_scope` binds a
-capability to one caller-declared task without returning the scope text.
-`action: "read"` returns only the requested exact slice, capped at 65,536 bytes,
-with explicit start, end, total, and completion metadata. `action: "release"`
-immediately revokes that process-local capability and `action: "history"`
-returns a bounded content-free decision history containing only counts,
-decisions, and process-keyed HMACs—never paths, task labels, capabilities, or
-file bytes. Non-eligible classifications are refused without reading or
-reflecting file content. The tool is never invoked automatically, does not
-intercept a host prompt, and does not establish provider token or cost savings.
-
-`receipt_diagnose` reads one explicitly eligible path without requiring its
-bytes in the MCP request and projects the existing shadow firewall, conservative
-router, prefix-reuse comparison, and `scout`/`surgeon` advisory lane. A supplied
-`previous_capability` must belong to the same optional task scope. The report is
-content-free, applies no route, and has no provider-routing authority. Inputs
-above 700,000 bytes retain the normal `receipt_context` fallback but are refused
-by this duplicate-prefix diagnostic to keep its aggregate decoded-byte bound.
-
-`receipt_twin` appends or inspects the existing execution twin only when the MCP
-process was started with `--state-dir`. It revalidates declared local predicates
-and writes authenticated advisory evidence; it never executes the declared
-action. Together with `receipt_assemble` evidence packs and typed blueprints,
-the explicit flow is diagnose → store → bounded reads/assembly → twin evidence
-→ history/release. Failure cones and blueprints remain explicit caller-selected
-evidence, not automatic transcript rewriting.
+`receipt_expand`, `receipt_inspect`, and `receipt_tool_select`; it does not
+expose command capture, durable-state administration, twin, reference expiry,
+configuration, or registration tools. Its `cgr1m_` capabilities are random,
+process-local, limited to 300 seconds, and invalid after process exit or
+restart. MCP creates no durable state. If the pinned root instance or its
+logical state drifts, the server stops accepting work and must be restarted;
+durable CLI workflows likewise require a new explicit invocation when their
+root or chosen state directory changes.
 
 Process-scope diagnostics use a new random fingerprint key for every invocation
 and create no state. They report bounded byte accounting, a position-bound
@@ -168,8 +82,8 @@ cannot roll back the committed advisory row.
 
 There is no default durable location: every durable workflow names an absolute
 `--state-dir`. The local capability store is `store-v1` beneath that directory
-and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and ordinarily
-1 MiB per artifact. Diagnostics, the experimental twin, and the experimental
+and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and 1 MiB per
+artifact. Diagnostics, the experimental twin, and the experimental
 reference-expiry registry use separate `auxiliary-v1` compartments with their
 own quotas and never turn a local receipt into host, provider, or network
 evidence.
@@ -240,42 +154,6 @@ lookups persist a per-reference clock high-water; a backward clock observation
 terminally expires that reference, and multi-reference inspection publishes
 due transitions as one bounded batch.
 
-`import merged-capture` is the runner-free adapter for one already completed,
-owner-only (`0600`), no-follow regular spool of at most 10,000,000
-bytes. It verifies canonical sanitized UTF-8 without sanitizing again, streams the exact bytes into
-`COMMAND_CAPTURE_BYTES`, and assigns the sole subject domain
-`contextguard-receipt/command-capture-merged-sanitized/v1`. Merged-import store
-initialization opts into that protocol-specific single-artifact ceiling while
-ordinary store initialization retains its 1 MiB default. The first merged import
-atomically upgrades an exact default-limit store in place; custom limit profiles
-remain refused. The optional
-`--disclosure-days` consent marker accepts only `7`; the protocol records one
-absolute deadline exactly 604,800,000 milliseconds after issuance and never
-extends it on retry, recovery, disablement, rollback, or revocation.
-
-Import recovery is transaction-scoped. A lowercase 64-hex random transaction
-id deterministically re-derives the same store capability, while the
-authenticated `reference-expiry-v1/import-transactions-v1` journal stores no
-handle, spool path, payload, or command/content hash. Authority is emitted only
-after read-back validation and idempotent expiry registration. A prepared
-transaction with no artifact is abandoned; an uncertain committed artifact is
-recovered in place and never duplicated. Aggregate inspection exposes only
-counts and pending bytes. At most 32 transactions and 32 MiB of artifact bytes
-may remain pending; artifacts are never automatically deleted. Expansion of
-this merged subject requires a positive active registry record and returns the
-exact merged bytes. Legacy canonical CGRF command captures remain readable and
-do not acquire a registration requirement.
-
-The Bash integration does not use the public pathname import above. Its private
-broker accepts only an inherited anonymous regular descriptor (`0600`, current
-effective uid, link count zero), announces readiness only after repository and
-state preparation, and then accepts exactly one `COMMIT` or `ABORT`. `COMMIT`
-uses retained store, expiry, and journal descriptors; it performs no later Git,
-Node, Python, or package-path execution. Same-process recovery is attempted once
-for the selected transaction before one bounded canonical final result. Broker
-preparation may initialize these axes even when the eventual sanitized output
-is below the root wrapper's 8,192-byte disclosure threshold.
-
 Reference expiry is also experimental local administration, not deletion or
 provider enforcement. It changes only a compact registry record. The reserved
 `lease` inspection target remains unavailable and does not imply lease support.
@@ -304,14 +182,6 @@ the exact-signaling facility for itself and again for the gated trampoline
 before releasing the requested executable. A facility that later becomes
 unavailable still cannot be replaced with broader signaling; receipt authority
 is withheld, while the non-containment limitation above continues to apply.
-
-When the launcher itself receives `SIGINT` or `SIGTERM`, it forwards that signal
-and allows a 2.5-second graceful-cleanup window. Confirmed cleanup returns
-`128 + signal`. If child shutdown cannot be confirmed, including when cleanup
-requires `SIGKILL` or a repeated interrupt requests escalation, the buffered CLI
-child output is withheld and the launcher instead emits `cleanup_unconfirmed`
-with exit `69`. This refusal does not claim that detached or otherwise
-unobserved descendants were terminated.
 
 The CLI defaults to a 30-second timeout and 900,000 raw and sanitized bytes in
 total. Optional timeout values are positive decimal seconds up to 300. Optional
@@ -396,29 +266,9 @@ no-network statement. The package requires Node.js 18+ and a trusted CPython
 executable from 3.11 through 3.14. Set `CONTEXT_GUARD_RECEIPT_PYTHON` to an
 absolute path to the actual native CPython executable, or ensure an absolute
 `PATH` directory contains `python3`. Relative `PATH` entries and script-based
-interpreter shims are rejected. The absolute override is an explicit caller
-trust decision and may select a caller-trusted managed tool-cache executable
-with different ownership or writable mode bits. Both selection modes require
-the execute bit applicable to the effective UID, effective GID, and
-supplementary groups; effective UID 0 requires at least one execute bit.
-Discovery fails closed if those effective credentials are unavailable or
-invalid. Automatic `PATH` discovery resolves symlinks to their physical native
-target, then requires the target and every physical parent directory to be
-owned by root or the effective UID. Group- or world-writable targets are
-rejected; writable parent directories are rejected unless they carry the
-sticky bit. The launcher opens the target with no-follow semantics, snapshots
-its device, inode, mode, owner, group, link count, size, and nanosecond change
-times, and revalidates that identity, the credentials, and execute permission
-before and after the bounded five-second compatibility probe and immediately
-before launch. Probe timeout is `protocol_incompatible` and the stuck probe is
-killed with `SIGKILL`.
-
-Pure Node.js on the supported platforms cannot atomically execute the validated
-file descriptor as `fexecve` would, so path replacement remains possible in
-the final interval between revalidation and spawn. The selected executable is
-therefore part of the caller's trust boundary, and same-effective-UID, root,
-debug/tracing, and equivalent filesystem authority are trusted and out of
-scope. The compatibility probe is not interpreter authentication.
+interpreter shims are rejected. The selected executable remains part of the
+caller's trust boundary; the compatibility probe is not interpreter
+authentication.
 
 `run --escrow` also requires the root-owned `/bin/ps` process-table interface
 and an exact local process-identity and signaling backend. macOS brackets each
@@ -451,18 +301,3 @@ same-UID isolation boundary or an atomic defense against trusted actors.
 
 Use `context-guard-receipt --help` for the human-readable command summary and
 `context-guard-receipt-mcp --help` for the explicit bounded stdio MCP summary.
-
-## Closed phase evaluation
-
-`context-guard-receipt evaluate phase --input <file|->` evaluates one canonical
-P2, P3, P4, P5, or P6 local record. Input is capped at 2 MiB, parsed with the
-package's duplicate-key rejecting canonical JSON parser, and constrained by the
-phase schemas shipped under `schemas/phase-evaluation-*.schema.json`.
-
-The evaluator is provider-free and advisory. It reads no credentials, provider
-state, settings, hooks, or network resources; performs no provider or model
-call; mutates no request or runtime route; and grants neither activation nor
-claim authority. Invalid, incomplete, stale, or uneconomic evidence preserves
-the exact unchanged baseline or the phase's independently verified exact local
-fallback. Its numeric fields are caller-supplied evaluation measurements, not
-token, cost, percentage, or savings claims made by this package.

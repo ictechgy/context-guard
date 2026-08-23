@@ -158,7 +158,6 @@ def run_mcp(*arguments: str, cwd: Path = PACKAGE_ROOT) -> subprocess.CompletedPr
         ],
         cwd=cwd,
         env={"LANG": "C", "PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"},
-        input=b"",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,

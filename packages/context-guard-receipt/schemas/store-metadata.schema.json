@@ -42,7 +42,7 @@
       "properties": {
         "max_artifacts": {"maximum": 1024, "minimum": 1, "type": "integer"},
         "max_capabilities": {"maximum": 1024, "minimum": 1, "type": "integer"},
-        "max_single_artifact_bytes": {"maximum": 10000000, "minimum": 1, "type": "integer"},
+        "max_single_artifact_bytes": {"maximum": 1048576, "minimum": 1, "type": "integer"},
         "max_total_artifact_bytes": {"maximum": 67108864, "minimum": 1, "type": "integer"}
       },
       "required": [

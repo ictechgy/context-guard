@@ -24,20 +24,15 @@ def b64url(raw: bytes) -> str:
 
 
 class InstalledMCPProcess:
-    def __init__(
-        self, executable: Path, root: Path, cwd: Path, *, state_dir: Path | None = None
-    ) -> None:
+    def __init__(self, executable: Path, root: Path, cwd: Path) -> None:
         environment = {
             "CONTEXT_GUARD_RECEIPT_PYTHON": str(Path(sys.executable).resolve()),
             "LANG": "C",
             "PATH": os.defpath,
             "PYTHONDONTWRITEBYTECODE": "1",
         }
-        arguments = [str(Path(NODE).resolve()), str(executable), "--root", str(root)]
-        if state_dir is not None:
-            arguments.extend(("--state-dir", str(state_dir)))
         self.process = subprocess.Popen(
-            arguments,
+            [str(Path(NODE).resolve()), str(executable), "--root", str(root)],
             cwd=cwd,
             env=environment,
             stdin=subprocess.PIPE,
@@ -114,7 +109,6 @@ class G012InstalledMCPTests(unittest.TestCase):
             pack_directory = base / "pack"
             install_directory = base / "install"
             repository_root = base / "repository"
-            state_directory = base / "state"
             pack_directory.mkdir()
             install_directory.mkdir()
             repository_root.mkdir()
@@ -174,12 +168,7 @@ class G012InstalledMCPTests(unittest.TestCase):
                 },
             }
 
-            first = InstalledMCPProcess(
-                executable,
-                repository_root,
-                install_directory,
-                state_dir=state_directory,
-            )
+            first = InstalledMCPProcess(executable, repository_root, install_directory)
             first.initialize()
             listed = first.request(
                 {"id": 2, "jsonrpc": "2.0", "method": "tools/list", "params": {}}
@@ -188,12 +177,9 @@ class G012InstalledMCPTests(unittest.TestCase):
                 [tool["name"] for tool in listed["result"]["tools"]],
                 [
                     "receipt_assemble",
-                    "receipt_context",
-                    "receipt_diagnose",
                     "receipt_expand",
                     "receipt_inspect",
                     "receipt_tool_select",
-                    "receipt_twin",
                 ],
             )
             assembled = first.request(
@@ -230,111 +216,6 @@ class G012InstalledMCPTests(unittest.TestCase):
                 ),
                 payload,
             )
-            context_stored = first.request(
-                {
-                    "id": 5,
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "params": {
-                        "arguments": {
-                            "action": "store",
-                            "caller_classification": "eligible",
-                            "detector_signals": [],
-                            "relative_path": "evidence.bin",
-                            "task_scope": "installed-task",
-                        },
-                        "name": "receipt_context",
-                    },
-                }
-            )
-            context_reference = context_stored["result"]["structuredContent"][
-                "reference"
-            ]
-            context_slice = first.request(
-                {
-                    "id": 6,
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "params": {
-                        "arguments": {
-                            "action": "read",
-                            "capability": context_reference["capability"],
-                            "max_bytes": 31,
-                            "offset": 7,
-                            "task_scope": "installed-task",
-                        },
-                        "name": "receipt_context",
-                    },
-                }
-            )
-            self.assertEqual(
-                base64.urlsafe_b64decode(
-                    context_slice["result"]["structuredContent"]["output_b64u"]
-                    + "=" * 3
-                ),
-                payload[7:38],
-            )
-            diagnosed = first.request(
-                {
-                    "id": 7,
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "params": {
-                        "arguments": {
-                            "caller_classification": "eligible",
-                            "detector_signals": [],
-                            "previous_capability": context_reference["capability"],
-                            "relative_path": "evidence.bin",
-                            "task_scope": "installed-task",
-                        },
-                        "name": "receipt_diagnose",
-                    },
-                }
-            )
-            self.assertEqual(
-                diagnosed["result"]["structuredContent"]["advisory"]["lane"],
-                "surgeon",
-            )
-            twin_request = {
-                "declared_next_action_sha256": "a" * 64,
-                "expected_tail": None,
-                "predicates": [
-                    {"kind": "path_absent", "relative_path": "not-created.txt"}
-                ],
-                "schema_version": "contextguard-receipt-twin-request/v1",
-            }
-            appended = first.request(
-                {
-                    "id": 8,
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "params": {
-                        "arguments": {
-                            "action": "append",
-                            "observed_at_unix_ms": 1_800_000_000_000,
-                            "request": twin_request,
-                        },
-                        "name": "receipt_twin",
-                    },
-                }
-            )
-            self.assertTrue(appended["result"]["structuredContent"]["verified"])
-            released = first.request(
-                {
-                    "id": 9,
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "params": {
-                        "arguments": {
-                            "action": "release",
-                            "capability": context_reference["capability"],
-                            "task_scope": "installed-task",
-                        },
-                        "name": "receipt_context",
-                    },
-                }
-            )
-            self.assertTrue(released["result"]["structuredContent"]["released"])
             self.assertEqual(first.close(), "")
 
             restarted = InstalledMCPProcess(executable, repository_root, install_directory)

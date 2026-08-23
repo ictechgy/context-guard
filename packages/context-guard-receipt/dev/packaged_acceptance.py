@@ -98,34 +98,6 @@ def reference_expiry_request(capability: str, *, expires_at_unix_ms: int) -> byt
     ).encode("ascii")
 
 
-def phase_evaluation_request() -> bytes:
-    return canonical_json(
-        {
-            "activation_authorized": True,
-            "baseline_fallback_verified": True,
-            "dependency_gates_passed": True,
-            "minimum_recall_basis_points": 9_000,
-            "observed_at": 100,
-            "phase_id": "p2",
-            "records": [
-                {
-                    "candidate_omission": True,
-                    "construction_cost_microunits": 12,
-                    "fresh_until": 101,
-                    "protection": "eligible",
-                    "recalled": True,
-                    "record_id": "installed-p2",
-                    "rehydrated_digest": "sha256:" + "1" * 64,
-                    "relevant": True,
-                    "source_digest": "sha256:" + "1" * 64,
-                    "stratum": "installed",
-                }
-            ],
-            "schema_version": "contextguard.phase-evaluation.p2/v1",
-        }
-    ).encode("ascii")
-
-
 def tree_snapshot(root: Path) -> dict[str, tuple[str, int, str]]:
     result: dict[str, tuple[str, int, str]] = {}
     for path in sorted((root, *root.rglob("*"))):
@@ -183,34 +155,6 @@ def distribution() -> None:
         expected = {"evidence_boundary": EXPECTED_BOUNDARY, "operation": "inspect_boundary", "schema_version": "contextguard-receipt-cli-response/v1", "status": "ok"}
         if response.returncode != 0 or response.stdout != canonical_json(expected) or response.stderr or sentinel.exists():
             raise RuntimeError("installed receipt command failed its closed-boundary smoke test")
-        evaluated = run_binary(
-            [
-                str(Path(node).resolve()),
-                str(receipt_bin),
-                "evaluate",
-                "phase",
-                "--input",
-                "-",
-            ],
-            cwd=install_directory,
-            environment=environment,
-            input_bytes=phase_evaluation_request(),
-        )
-        try:
-            evaluation = json.loads(evaluated.stdout)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("installed evaluator output was not JSON") from exc
-        if (
-            evaluated.returncode != 0
-            or evaluated.stderr
-            or evaluation.get("phase_id") != "p2"
-            or evaluation.get("implementation_readiness") is not True
-            or evaluation.get("activation_authority") is not False
-            or evaluation.get("claim_authority") is not False
-            or evaluation.get("fallback") != "exact_unchanged_baseline"
-            or sentinel.exists()
-        ):
-            raise RuntimeError("installed receipt evaluator failed its closed local smoke test")
         missing_helper_environment = dict(environment)
         missing_helper_environment.pop(PYTHON_ENV)
         missing_helper_environment["PATH"] = str(root / "missing-runtime-helper")
@@ -929,12 +873,9 @@ def distribution() -> None:
             or mcp_tools
             != [
                 "receipt_assemble",
-                "receipt_context",
-                "receipt_diagnose",
                 "receipt_expand",
                 "receipt_inspect",
                 "receipt_tool_select",
-                "receipt_twin",
             ]
             or tuple(root.rglob("twin-v1")) != twin_directories_before_mcp
             or sentinel.exists()

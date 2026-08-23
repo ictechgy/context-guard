@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ctypes
 import errno
-import inspect
 import math
 import os
 import select
@@ -555,37 +554,12 @@ def _validated_invocation(argv: object, root: object, limits: object) -> tuple[t
     return argv, root_path, limits
 
 
-def _snapshotter_accepts_root_fd(snapshotter: Callable[..., object]) -> bool:
-    if snapshotter is snapshot_repository:
-        return True
-    try:
-        signature = inspect.signature(snapshotter)
-    except (TypeError, ValueError):
-        return False
-    parameter = signature.parameters.get("root_fd")
-    if parameter is None or parameter.kind not in (
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        inspect.Parameter.KEYWORD_ONLY,
-    ):
-        return False
-    try:
-        signature.bind(object(), root_fd=0)
-    except TypeError:
-        return False
-    return True
-
-
 def _freeze_snapshot(
-    snapshotter: Callable[..., dict[str, object]], pin: _PinnedRoot
+    snapshotter: Callable[[object], dict[str, object]], pin: _PinnedRoot
 ) -> tuple[bytes, str]:
-    snapshot_root_fd = -1
     try:
         pin.require_current()
-        if _snapshotter_accepts_root_fd(snapshotter):
-            snapshot_root_fd = os.dup(pin.descriptor)
-            snapshot = snapshotter(pin.path, root_fd=snapshot_root_fd)
-        else:
-            snapshot = snapshotter(pin.path)
+        snapshot = snapshotter(pin.path)
         pin.require_current()
         if type(snapshot) is not dict or snapshot.get("disposition") != "captured":
             raise _RunnerAbort(RunnerErrorCode.SNAPSHOT_UNRESOLVED)
@@ -606,12 +580,6 @@ def _freeze_snapshot(
         raise
     except Exception:
         raise _RunnerAbort(RunnerErrorCode.SNAPSHOT_UNRESOLVED) from None
-    finally:
-        if snapshot_root_fd >= 0:
-            try:
-                os.close(snapshot_root_fd)
-            except OSError:
-                pass
     return frozen, identity_sha256
 
 
@@ -1374,12 +1342,7 @@ def _read_process_table(
         try:
             returncode = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            code = (
-                RunnerErrorCode.TIMEOUT
-                if deadline <= clock()
-                else RunnerErrorCode.INTERNAL
-            )
-            raise _RunnerAbort(code) from None
+            raise _RunnerAbort(RunnerErrorCode.INTERNAL) from None
         if returncode != 0:
             raise _RunnerAbort(RunnerErrorCode.INTERNAL)
         return _parse_process_table(bytes(output))
@@ -2021,7 +1984,7 @@ def run_command(
     store_factory: Callable[[], object],
     limits: RunnerLimits | None = None,
     private_roots: tuple[str, ...] = (),
-    snapshotter: Callable[..., dict[str, object]] = snapshot_repository,
+    snapshotter: Callable[[object], dict[str, object]] = snapshot_repository,
     popen_factory: Callable[..., object] = subprocess.Popen,
     selector_factory: Callable[[], object] = selectors.DefaultSelector,
     clock: Callable[[], float] = time.monotonic,

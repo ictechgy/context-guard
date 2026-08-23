@@ -22,7 +22,7 @@
   },
   "additionalProperties": false,
   "properties": {
-    "entries": {"items": {"$ref": "diagnostic-ledger-entry-v1.json"}, "maxItems": 256, "type": "array"},
+    "entries": {"items": {"$ref": "diagnostic-ledger-entry.schema.json"}, "maxItems": 256, "type": "array"},
     "entry_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
     "evidence_boundary": {"$ref": "#/$defs/evidenceBoundary"},
     "recovery_required": {"type": "boolean"},
