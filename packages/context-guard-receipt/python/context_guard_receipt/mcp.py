@@ -815,7 +815,11 @@ def _tool_definitions() -> list[dict[str, object]]:
                         "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
                         "type": "string",
                     },
-                    "task_scope": {"type": "string"},
+                    "task_scope": {
+                        "maxLength": MAX_TASK_SCOPE_BYTES,
+                        "minLength": 1,
+                        "type": "string",
+                    },
                 },
                 "required": ["capability"],
             },
