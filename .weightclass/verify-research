@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Prospective acceptance oracle for researching four comparator tools
+(Headroom/CCR, SDL-MCP, rtk, and Code Context Engine) against
+ContextGuard's existing mechanism matrix
+(research/comparator-mechanism-acceptance-matrix.md), to find strengths
+ContextGuard has not yet absorbed.
+
+Task (fixed before any candidate is observed): using only the repository
+and the source material supplied in the task file (no live web access),
+determine for each of the four comparator tools whether it has a
+mechanism ContextGuard's current matrix does NOT yet list as absorbed,
+partially absorbed, or explicitly rejected. Ground every claim in a
+named source tool and, where applicable, an existing ContextGuard
+mechanism or file path.
+
+This is a judgment task, so this verifier cannot grade research quality
+directly. What it CAN and DOES check mechanically: that claims name at
+least one of the four supplied comparator tools, that claims engage with
+the actual repository (cite a real ContextGuard mechanism/path from the
+existing matrix or codebase, not a hallucinated one), that the required
+schema shape is present, and that a real verdict (not a vague
+non-answer) is produced.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+EXIT_BASELINE = 42
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_INFRA = 3
+
+REQUIRED_TOP_KEYS = {"schema_version", "mode", "question", "summary", "claims", "limitations"}
+
+SOURCE_TOOLS = {
+    "Headroom",
+    "CCR",
+    "SDL-MCP",
+    "Symbol Delta Ledger",
+    "rtk",
+    "Code Context Engine",
+    "cce",
+}
+
+CONTEXTGUARD_MARKERS = [
+    "receipt",
+    "graph rank",
+    "symbol memory",
+    "adaptive-k",
+    "adaptive_k",
+    "apply-symbol-memory",
+    "apply-adaptive-k",
+    "sanitize_output",
+    "trim_command_output",
+    "guard_large_read",
+    "comparator-mechanism-acceptance-matrix",
+    "context-guard-pack",
+    "context-guard-trim-output",
+    "MiniShell",
+    "bash_reference_v1",
+]
+
+
+def fail(reason: str) -> int:
+    print(f"verify-research: FAIL: {reason}", file=sys.stderr)
+    return EXIT_FAIL
+
+
+def infra(reason: str) -> int:
+    print(f"verify-research: INFRA: {reason}", file=sys.stderr)
+    return EXIT_INFRA
+
+
+def claim_text(claim: object) -> str:
+    if isinstance(claim, str):
+        return claim
+    if isinstance(claim, dict):
+        return " ".join(str(value) for value in claim.values())
+    return str(claim)
+
+
+def main() -> int:
+    workflow = os.environ.get("WCLASS_ADVISORY_WORKFLOW", "")
+    if workflow != "research":
+        return infra(f"unexpected WCLASS_ADVISORY_WORKFLOW={workflow!r}")
+
+    raw = sys.stdin.buffer.read()
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return infra(f"stdin is not valid JSON ({exc})")
+
+    if not isinstance(result, dict):
+        return infra("top-level result is not a JSON object")
+
+    if (
+        result.get("summary") == "No claim is established by this probe."
+        and "baseline_probe" in (result.get("limitations") or [])
+    ):
+        return EXIT_BASELINE
+
+    missing_keys = REQUIRED_TOP_KEYS - set(result)
+    if missing_keys:
+        return fail(f"missing required keys: {sorted(missing_keys)}")
+
+    claims = result.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return fail("claims must be a non-empty list")
+
+    summary = result.get("summary")
+    if not isinstance(summary, str) or len(summary.strip()) < 40:
+        return fail("summary is missing or too thin to be a real verdict")
+
+    blob = json.dumps(result, ensure_ascii=False)
+
+    named_tool = any(tool in blob for tool in SOURCE_TOOLS)
+    if not named_tool:
+        return fail(
+            "no claim names any of the four supplied comparator tools "
+            f"{sorted(SOURCE_TOOLS)} - looks disconnected from the supplied sources"
+        )
+
+    engaged_repo = any(marker in blob for marker in CONTEXTGUARD_MARKERS)
+    if not engaged_repo:
+        return fail(
+            "no claim engages with an actual ContextGuard mechanism/path "
+            f"{CONTEXTGUARD_MARKERS} - looks generic rather than grounded in this repo"
+        )
+
+    grounded = 0
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            print(f"verify-research: claim[{index}] is not an object", file=sys.stderr)
+            continue
+        text = claim_text(claim)
+        status = claim.get("status")
+        confidence = claim.get("confidence")
+        evidence = claim.get("evidence")
+        if status is None or confidence is None or not isinstance(evidence, list):
+            print(
+                f"verify-research: claim[{index}] missing status/confidence/evidence",
+                file=sys.stderr,
+            )
+            continue
+        if any(tool in text for tool in SOURCE_TOOLS):
+            grounded += 1
+        else:
+            print(
+                f"verify-research: claim[{index}] cites no supplied comparator tool",
+                file=sys.stderr,
+            )
+    if grounded == 0:
+        return fail("no well-formed claim cites a supplied comparator tool")
+
+    print(
+        f"verify-research: PASS ({len(claims)} claim(s), {grounded} grounded "
+        "in the supplied comparator tools)",
+        file=sys.stderr,
+    )
+    return EXIT_PASS
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
