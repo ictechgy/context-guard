@@ -151,8 +151,13 @@ PYTEST_SUMMARY_RE = re.compile(
     rf"^\d+\s+{PYTEST_COUNT_WORD}(?:,\s*\d+\s+{PYTEST_COUNT_WORD})*(?:\s+in\s+[\d.]+s)?$"
 )
 PYTEST_COUNT_PAIR_RE = re.compile(rf"(?P<count>\d+)\s+(?P<word>{PYTEST_COUNT_WORD})")
+PYTEST_BANNER_RE = re.compile(
+    rf"^=+\s+(?P<inner>\d+\s+{PYTEST_COUNT_WORD}"
+    rf"(?:,\s*\d+\s+{PYTEST_COUNT_WORD})*(?:\s+in\s+[\d.]+s)?)\s+=+$"
+)
 CARGO_RESULT_RE = re.compile(
-    r"^test result:\s+\S+\.\s+(?P<passed>\d+)\s+passed;\s+(?P<failed>\d+)\s+failed;"
+    r"^test result: (?:ok|FAILED)\. (?P<passed>\d+) passed; (?P<failed>\d+) failed; "
+    r"\d+ ignored; \d+ measured; \d+ filtered out; finished in [\d.]+s$"
 )
 
 
@@ -1016,14 +1021,19 @@ class RunnerResultSummary:
             return
 
         # Pytest pads its terminal summary line with "=" banner characters to
-        # fill the terminal width (e.g. "=== 260 passed in 4.20s ===");
-        # match against the banner-stripped text but keep the original line
-        # (with banner) as the exact raw_line.
-        unbannered = stripped.strip("= ")
-        match = PYTEST_SUMMARY_RE.match(unbannered)
-        if match:
+        # fill the terminal width (e.g. "=== 260 passed in 4.20s ==="). Only
+        # treat a line as banner-padded when it fully matches that explicit
+        # grammar (literal "=" runs framing a valid summary); otherwise match
+        # the line exactly as printed, so an unrelated line that happens to
+        # start or end with "=" or a space is never misclassified.
+        candidate = stripped if PYTEST_SUMMARY_RE.match(stripped) else None
+        if candidate is None:
+            banner_match = PYTEST_BANNER_RE.match(stripped)
+            if banner_match:
+                candidate = banner_match.group("inner")
+        if candidate is not None:
             counts: dict[str, int] = {}
-            for count_match in PYTEST_COUNT_PAIR_RE.finditer(unbannered):
+            for count_match in PYTEST_COUNT_PAIR_RE.finditer(candidate):
                 word = count_match.group("word")
                 key = "errors" if word in ("error", "errors") else word
                 counts[key] = int(count_match.group("count"))
@@ -2347,7 +2357,7 @@ def main() -> int:
             if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
                 error_lines.append(visible_line)
             runner_summary.feed(line)
-            runner_result_summary.feed(line)
+            runner_result_summary.feed(visible_source)
             if total <= args.max_lines:
                 all_lines.append(visible_line)
 
@@ -2382,7 +2392,7 @@ def main() -> int:
         if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
             error_lines.append(visible_line)
         runner_summary.feed(line)
-        runner_result_summary.feed(line)
+        runner_result_summary.feed(visible_source)
         if total <= args.max_lines:
             all_lines.append(visible_line)
 

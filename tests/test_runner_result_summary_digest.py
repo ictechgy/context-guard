@@ -151,6 +151,57 @@ class RunnerResultSummaryDigestTests(unittest.TestCase):
                 self.assertEqual(summary["passed"], 45)
                 self.assertEqual(summary["failed"], 0)
 
+    def test_secret_in_a_cargo_shaped_line_is_redacted_in_raw_line(self) -> None:
+        """Break caught: raw_line bypassed the existing output sanitizer,
+        leaking a credential that every other digest field already redacts."""
+
+        code = (
+            "print('test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out; finished in 0.01s "
+            "API_TOKEN=ghp_' + 'A' * 36)"
+        )
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(
+                    script, code, max_lines=18,
+                    extra_args=["--digest", "json", "--digest-always", "--max-chars", "4000"],
+                )
+                self.assertNotIn("ghp_A", proc.stdout)
+                if '"runner_result_summary"' in proc.stdout:
+                    data = json.loads(proc.stdout)
+                    summary = data["runner_result_summary"]
+                    self.assertNotIn("ghp_A", summary.get("raw_line", ""))
+
+    def test_cargo_regex_does_not_accept_arbitrary_trailing_text(self) -> None:
+        """Break caught: an unbounded cargo regex classified an unrelated line
+        (with attacker-controlled trailing text) as a real cargo test result."""
+
+        code = (
+            "print('test result: ok. 1 passed; 0 failed; not a real cargo summary')"
+        )
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(
+                    script, code, max_lines=18,
+                    extra_args=["--digest", "json", "--digest-always", "--max-chars", "4000"],
+                )
+                data = json.loads(proc.stdout)
+                self.assertNotIn("runner_result_summary", data)
+
+    def test_pytest_banner_detection_requires_the_literal_banner_grammar(self) -> None:
+        """Break caught: blanket '= ' character stripping misclassified a line
+        that merely starts/ends with '=' or a space as a padded banner."""
+
+        code = "print('=1 passed=')"
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(
+                    script, code, max_lines=18,
+                    extra_args=["--digest", "json", "--digest-always", "--max-chars", "4000"],
+                )
+                data = json.loads(proc.stdout)
+                self.assertNotIn("runner_result_summary", data)
+
     def test_unrecognized_output_omits_the_field_entirely(self) -> None:
         code = "[print(f'noise {i}') for i in range(50)]"
         for script in TRIM_SCRIPTS:
