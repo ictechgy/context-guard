@@ -362,6 +362,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_release_candidate_smoke.py",
         "tests/test_release_assets.py",
         "tests/test_workflows.py",
+        "tests/test_runner_result_summary_digest.py",
     }
 )
 PROVIDER_FREE_PINNED_SUPPORT_SHA256 = {
