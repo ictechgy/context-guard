@@ -180,6 +180,14 @@ class UnsafeAdjacentWrapperError(RuntimeError):
 
 
 def _isolated_wrapper_prefix(wrapper: str) -> list[str]:
+    # O_NOFOLLOW+fstat rejects a symlink planted before this call; it cannot
+    # close the gap between this check and the later, separate process that
+    # actually execs the returned path (the shell string this hook emits is
+    # run by the harness, not by a child of this process, so the validated
+    # fd cannot be carried across that boundary). A post-check swap of the
+    # wrapper still requires write/rename authority over the install
+    # directory itself - the same authority needed to replace the CLI - so
+    # this is accepted as a residual risk outside this hook's threat model.
     if not hasattr(os, "O_NOFOLLOW"):
         raise UnsafeAdjacentWrapperError("O_NOFOLLOW is required for adjacent wrappers")
     flags = os.O_RDONLY | os.O_NOFOLLOW
