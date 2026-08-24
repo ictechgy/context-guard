@@ -243,7 +243,7 @@ keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.7.0
+npm install --save-exact @ictechgy/context-guard@0.7.1
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```

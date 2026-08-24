@@ -48,7 +48,7 @@ npx @ictechgy/context-guard --version
 
 짧은 `bash_reference_v1` Bash 출력 경로는 이 marketplace plugin/소스 배치에서
 의도적으로 활성화되지 않습니다. 정확한 프로젝트 로컬
-`@ictechgy/context-guard@0.7.0` npm 설치와
+`@ictechgy/context-guard@0.7.1` npm 설치와
 `@ictechgy/context-guard-receipt@0.2.1` 의존성이 필요하며, 그 뒤
 `setup --agent claude --scope project --bash-reference-v1`로 명시적으로
 활성화해야 합니다. Plugin setup은 동작하지 않는 reference flag를 설치하지 않고

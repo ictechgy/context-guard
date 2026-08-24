@@ -230,7 +230,7 @@ plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 referenc
 사용할 수 없다고 알립니다.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.7.0
+npm install --save-exact @ictechgy/context-guard@0.7.1
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
