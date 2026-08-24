@@ -146,6 +146,14 @@ GO_LOCATION_RE = re.compile(r"^\s*(?P<file>[^:\s]+_test\.go):(?P<line>\d+):\s*(?
 RUST_THREAD_RE = re.compile(
     r"^thread '(?P<name>[^']+)' panicked at (?:.*,\s+)?(?P<file>[^,\n]+?\.rs):(?P<line>\d+):(?P<col>\d+):?"
 )
+PYTEST_COUNT_WORD = r"(?:passed|failed|skipped|errors?|xfailed|xpassed|warnings)"
+PYTEST_SUMMARY_RE = re.compile(
+    rf"^\d+\s+{PYTEST_COUNT_WORD}(?:,\s*\d+\s+{PYTEST_COUNT_WORD})*(?:\s+in\s+[\d.]+s)?$"
+)
+PYTEST_COUNT_PAIR_RE = re.compile(rf"(?P<count>\d+)\s+(?P<word>{PYTEST_COUNT_WORD})")
+CARGO_RESULT_RE = re.compile(
+    r"^test result:\s+\S+\.\s+(?P<passed>\d+)\s+passed;\s+(?P<failed>\d+)\s+failed;"
+)
 
 
 def strip_ansi(text: str) -> str:
@@ -989,6 +997,53 @@ class RunnerFailureSummary:
         return {runner: list(items) for runner, items in sorted(self.items.items()) if items}
 
 
+class RunnerResultSummary:
+    """Recognizes a runner's own final aggregate pass/fail line (pytest, cargo test).
+
+    Unlike RunnerFailureSummary, which collects many per-test failure lines and
+    only matters when a run fails, this looks for the single terminal summary
+    line a runner prints for itself and runs regardless of exit code.
+    """
+
+    def __init__(self) -> None:
+        self.result: dict[str, object] | None = None
+
+    def feed(self, line: str) -> None:
+        if self.result is not None:
+            return
+        stripped = strip_ansi(line.rstrip("\n")).strip()
+        if not stripped:
+            return
+
+        # Pytest pads its terminal summary line with "=" banner characters to
+        # fill the terminal width (e.g. "=== 260 passed in 4.20s ===");
+        # match against the banner-stripped text but keep the original line
+        # (with banner) as the exact raw_line.
+        unbannered = stripped.strip("= ")
+        match = PYTEST_SUMMARY_RE.match(unbannered)
+        if match:
+            counts: dict[str, int] = {}
+            for count_match in PYTEST_COUNT_PAIR_RE.finditer(unbannered):
+                word = count_match.group("word")
+                key = "errors" if word in ("error", "errors") else word
+                counts[key] = int(count_match.group("count"))
+            if counts:
+                self.result = {"runner": "pytest", "raw_line": stripped, **counts}
+            return
+
+        match = CARGO_RESULT_RE.match(stripped)
+        if match:
+            self.result = {
+                "runner": "cargo_test",
+                "raw_line": stripped,
+                "passed": int(match.group("passed")),
+                "failed": int(match.group("failed")),
+            }
+
+    def as_dict(self) -> dict[str, object] | None:
+        return self.result
+
+
 def digest_line_items(lines: Iterable[str], *, limit: int, max_line_chars: int) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -1153,6 +1208,7 @@ def build_digest_payload(
     runner_summary: RunnerFailureSummary,
     line_sanitizer: object,
     duplicate_line_groups: list[dict[str, object]] | None = None,
+    runner_result_summary: RunnerResultSummary | None = None,
 ) -> dict[str, object]:
     raw_output_truncated = total > args.max_lines or visible_chars > args.max_chars or any_line_capped
     status = "timeout" if timed_out else ("success" if rc == 0 else "failure")
@@ -1191,6 +1247,10 @@ def build_digest_payload(
     }
     if duplicate_line_groups:
         payload["duplicate_line_groups"] = duplicate_line_groups
+    if runner_result_summary is not None:
+        result_summary = runner_result_summary.as_dict()
+        if result_summary:
+            payload["runner_result_summary"] = result_summary
     if status != "success":
         payload["failure_signature"] = build_failure_signature(
             status=status,
@@ -1409,6 +1469,15 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
             if isinstance(items, list):
                 for item in items:
                     add(f"  - {item}\n")
+
+    result_summary = payload.get("runner_result_summary")
+    if isinstance(result_summary, dict) and result_summary:
+        add("\n## runner_result_summary\n")
+        add(f"- runner={result_summary.get('runner')}\n")
+        for key in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed", "warnings"):
+            if key in result_summary:
+                add(f"- {key}={result_summary.get(key)}\n")
+        add(f"- raw_line: {result_summary.get('raw_line')}\n")
 
     duplicate_line_groups = payload.get("duplicate_line_groups")
     if isinstance(duplicate_line_groups, list) and duplicate_line_groups:
@@ -2245,6 +2314,7 @@ def main() -> int:
     visible_chars = 0
     any_line_capped = False
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
+    runner_result_summary = RunnerResultSummary()
     duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
     if proc.stdout is None:
@@ -2277,6 +2347,7 @@ def main() -> int:
             if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
                 error_lines.append(visible_line)
             runner_summary.feed(line)
+            runner_result_summary.feed(line)
             if total <= args.max_lines:
                 all_lines.append(visible_line)
 
@@ -2311,6 +2382,7 @@ def main() -> int:
         if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
             error_lines.append(visible_line)
         runner_summary.feed(line)
+        runner_result_summary.feed(line)
         if total <= args.max_lines:
             all_lines.append(visible_line)
 
@@ -2331,6 +2403,7 @@ def main() -> int:
             runner_summary=runner_summary,
             line_sanitizer=line_sanitizer,
             duplicate_line_groups=duplicate_tracker.as_list(),
+            runner_result_summary=runner_result_summary,
         )
         if args.artifact_receipt:
             if artifact_capture.overflow:

@@ -90,6 +90,26 @@ class RunnerResultSummaryDigestTests(unittest.TestCase):
                 self.assertNotIn("failed", summary)
                 self.assertEqual(summary["raw_line"], "260 passed in 4.20s")
 
+    def test_pytest_summary_line_with_terminal_width_banner_is_recognized(self) -> None:
+        """Real pytest pads its summary line with '=' banner characters to fill
+        the terminal width, e.g. '=== 260 passed in 4.20s ==='; this must still
+        be recognized, with raw_line preserving the banner exactly as printed."""
+
+        banner_line = "=========================== 260 passed in 4.20s ============================"
+        code = f"print({banner_line!r})"
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(
+                    script, code, max_lines=18,
+                    extra_args=["--digest", "json", "--digest-always", "--max-chars", "4000"],
+                )
+                self.assertEqual(proc.returncode, 0)
+                data = json.loads(proc.stdout)
+                summary = data["runner_result_summary"]
+                self.assertEqual(summary["runner"], "pytest")
+                self.assertEqual(summary["passed"], 260)
+                self.assertEqual(summary["raw_line"], banner_line)
+
     def test_pytest_mixed_result_summary_extracts_every_count(self) -> None:
         code = (
             "import sys; "
