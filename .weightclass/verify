@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: broad multi-angle advisory audit hardening
-(see tests/test_broad_audit_hardening.py for the fixed task-specific
-criteria this enforces - fixed-path git resolution, fallback sanitizer
-credential coverage, and no-follow wrapper resolution).
+"""Prospective acceptance oracle: optional task_scope binding on receipt_expand
+(see packages/context-guard-receipt/tests/contract/test_g012_mcp_expand_scope.py
+for the fixed task-specific criteria this enforces).
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -18,14 +17,13 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_broad_audit_hardening"
+FOCUSED_MODULE = "packages.context-guard-receipt.tests.contract.test_g012_mcp_expand_scope"
 REGRESSION_MODULES = [
-    "tests.test_wclass_advisory_extension_predicate",
-    "tests.test_route_historical_baseline_proof",
-    "tests.test_context_guard_shell_contract",
-    "tests.test_cgw1_wrapper_shape_agreement",
-    "tests.test_sanitizer_correctness_f5",
-    "tests.test_sanitizer_one_pass_differential",
+    "packages.context-guard-receipt.tests.contract.test_g012_mcp",
+    "packages.context-guard-receipt.tests.adversarial.test_g012_mcp_limits",
+    "packages.context-guard-receipt.tests.e2e.test_g012_mcp_stdio",
+    "tests.test_contextguard_stage2_feasibility",
+    "tests.test_contextguard_stage2_protected_surfaces",
 ]
 EXIT_BASELINE = 42
 EXIT_INFRA = 3

@@ -165,6 +165,7 @@ class ArtifactRequest:
     root_identity_sha256: str
     subject_identity_sha256: str
     artifact_type: ArtifactType
+    scope_hmac_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +183,7 @@ class StoredArtifact:
     payload_sha256: str
     root_identity_sha256: str
     subject_identity_sha256: str
+    scope_hmac_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -980,6 +982,12 @@ def _validate_request(request: object, limits: StoreLimits) -> ArtifactRequest:
     _validate_hash(request.root_identity_sha256)
     _validate_hash(request.subject_identity_sha256)
     if type(request.artifact_type) is not ArtifactType:
+        _raise(StoreErrorCode.INVALID_ARGUMENT)
+    if request.scope_hmac_sha256 is not None:
+        # The durable record format does not persist this field (see
+        # issue_batch below), so a scoped request would silently resolve as
+        # unscoped after a read-back. Refuse it here rather than let scope
+        # binding silently disappear until durable persistence is added.
         _raise(StoreErrorCode.INVALID_ARGUMENT)
     return request
 

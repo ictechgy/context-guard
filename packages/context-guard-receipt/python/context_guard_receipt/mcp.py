@@ -446,6 +446,7 @@ class InMemoryCapabilityStore:
                     payload_sha256=hashlib.sha256(request.payload).hexdigest(),
                     root_identity_sha256=request.root_identity_sha256,
                     subject_identity_sha256=request.subject_identity_sha256,
+                    scope_hmac_sha256=request.scope_hmac_sha256,
                 )
                 pending.append(
                     (
@@ -813,7 +814,12 @@ def _tool_definitions() -> list[dict[str, object]]:
                     "capability": {
                         "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
                         "type": "string",
-                    }
+                    },
+                    "task_scope": {
+                        "maxLength": MAX_TASK_SCOPE_BYTES,
+                        "minLength": 1,
+                        "type": "string",
+                    },
                 },
                 "required": ["capability"],
             },
@@ -1837,16 +1843,32 @@ class MCPServer:
         result["capability"] = self._store.internalize_handle(value.get("capability"))
         return result
 
+    @staticmethod
+    def _scope_hmac_matches(expected: str | None, supplied: str | None) -> bool:
+        if expected is None or supplied is None:
+            return expected is supplied
+        return hmac.compare_digest(expected, supplied)
+
     def _expand(self, arguments: object) -> dict[str, object]:
-        if type(arguments) is not dict or set(arguments) != {"capability"}:
+        if (
+            type(arguments) is not dict
+            or not set(arguments) <= {"capability", "task_scope"}
+            or "capability" not in arguments
+        ):
             return _call_result(_tool_error("invalid_arguments"), is_error=True)
         capability = arguments["capability"]
+        task_scope = arguments.get("task_scope")
+        if "task_scope" in arguments and type(task_scope) is not str:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
         if not _valid_handle(capability, _EXTERNAL_PREFIX):
             return _call_result(_tool_error("capability_rejected"), is_error=True)
         try:
             self._revalidate_root()
+            supplied_scope_hmac = self._task_scope_hmac(task_scope)
             references = self._tool_references.get(capability)  # type: ignore[arg-type]
             if references is not None:
+                if not self._scope_hmac_matches(None, supplied_scope_hmac):
+                    return _call_result(_tool_error("capability_rejected"), is_error=True)
                 catalog, item = references
                 internal_catalog = self._internalized_reference(catalog)
                 result = (
@@ -1863,6 +1885,13 @@ class MCPServer:
                 reason = None if exact else result.refusal
             else:
                 internal = self._store.internalize_handle(capability)
+                stored = self._store.resolve(
+                    internal, expected_root_identity_sha256=self._root_identity
+                )
+                if not self._scope_hmac_matches(
+                    stored.scope_hmac_sha256, supplied_scope_hmac
+                ):
+                    return _call_result(_tool_error("capability_rejected"), is_error=True)
                 result = expand_capability(internal, root=self._root, store=self._store)
                 exact = result.disposition is ExpansionDisposition.EXACT
                 output = result.output_bytes if exact else b""
