@@ -2,8 +2,13 @@
 """Sanitize grep/diff/log output before it enters Claude context.
 
 The helper can wrap a command while preserving its exit code, or sanitize stdin.
-It redacts common credential patterns, anonymizes absolute paths by default, and
-keeps only bounded head/anchor/tail context when output is too large.
+It redacts common credential patterns unconditionally and keeps only bounded
+head/anchor/tail context when output is too large. Absolute-path anonymization
+is scoped, not default: `anonymize_paths_for_context()` only rewrites paths it
+can structurally prove are private (e.g. `filesystem_listing` matches under a
+declared private root) - the `unknown_text`/`source_code` contexts used for
+ordinary command output leave paths untouched by design, to avoid redacting
+public/unrelated paths incorrectly.
 """
 from __future__ import annotations
 

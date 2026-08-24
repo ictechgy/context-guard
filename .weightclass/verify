@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: exact-name extension registry for the
-context-guard-kit Bash allowlist (see tests/test_wclass_advisory_extension_predicate.py
-for the fixed task-specific criteria this enforces).
+"""Prospective acceptance oracle: broad multi-angle advisory audit hardening
+(see tests/test_broad_audit_hardening.py for the fixed task-specific
+criteria this enforces - fixed-path git resolution, fallback sanitizer
+credential coverage, and no-follow wrapper resolution).
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -17,11 +18,14 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_wclass_advisory_extension_predicate"
+FOCUSED_MODULE = "tests.test_broad_audit_hardening"
 REGRESSION_MODULES = [
+    "tests.test_wclass_advisory_extension_predicate",
     "tests.test_route_historical_baseline_proof",
     "tests.test_context_guard_shell_contract",
     "tests.test_cgw1_wrapper_shape_agreement",
+    "tests.test_sanitizer_correctness_f5",
+    "tests.test_sanitizer_one_pass_differential",
 ]
 EXIT_BASELINE = 42
 EXIT_INFRA = 3

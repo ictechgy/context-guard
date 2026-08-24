@@ -58,7 +58,7 @@
     },
     "canonical_sanitizer": {
       "path": "context-guard-kit/sanitize_output.py",
-      "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e"
+      "sha256": "d0ca48ccf99e86e17aebc47421a8208a630e95c4b9482b619d92fd3ad29684c9"
     },
     "corpus": {
       "path": "research/provider-live-roadmap/p3-api/v3/corpus-manifest.json",
@@ -82,7 +82,7 @@
     },
     "plugin_sanitizer": {
       "path": "plugins/context-guard/bin/context-guard-sanitize-output",
-      "sha256": "666d1f8bf3b75d049e580c0d0b806373b7bb2ae5c083a016e256e16f8ce7de9e"
+      "sha256": "d0ca48ccf99e86e17aebc47421a8208a630e95c4b9482b619d92fd3ad29684c9"
     },
     "prompt_template": {
       "path": "research/provider-live-roadmap/p3-api/v3/provider-prompt-template.txt",

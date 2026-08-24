@@ -1171,8 +1171,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen11(self) -> None:
-        """운영 레코드는 gen2~gen11을 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen12(self) -> None:
+        """운영 레코드는 gen2~gen12를 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1187,9 +1187,10 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen9",
                 "gen10",
                 "gen11",
+                "gen12",
             ),
         )
-        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11 = (
+        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11, gen12 = (
             rollback_proof.GENERATIONS
         )
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
@@ -1582,6 +1583,40 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen11.shared_subject,
             ),
             gen11_subjects,
+        )
+
+        self.assertEqual(gen12.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen12.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen12.shared_paths,
+            rollback_proof.SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(gen12.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen12.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(gen12.residual_edits, frozenset())
+        gen12_subjects = (
+            rollback_proof.GEN12_BLESS_SUBJECT,
+            rollback_proof.GEN12_B1_SUBJECT,
+            rollback_proof.GEN12_B2_SUBJECT,
+            rollback_proof.GEN12_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen12_subjects,
+            (
+                "proof: establish Gate-B-free residual gen12 wrapper no-follow hardening",
+                "proof: reapply Gate-B nudge component gen12 wrapper no-follow hardening",
+                "proof: reapply Gate-B usage component gen12 wrapper no-follow hardening",
+                "proof: reapply Gate-B integration component gen12 wrapper no-follow hardening",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen12.bless_subject,
+                gen12.b1_subject,
+                gen12.b2_subject,
+                gen12.shared_subject,
+            ),
+            gen12_subjects,
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:

@@ -20456,8 +20456,21 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertTrue(rewrite.is_sanitizable_output_command(["git", "-C", ".", "--no-pager", "log", "-p"]))
         self.assertFalse(rewrite.is_sanitizable_output_command(["rg", "--files"]))
         self.assertFalse(rewrite.is_already_wrapped(["python3", "/tmp/context-guard-sanitize-output", "--", "cmd"]))
-        self.assertIn("python3", rewrite.build_wrapped_command("/tmp/trim_command_output.py", "pytest -q"))
-        sanitized = rewrite.build_sanitized_command("/tmp/context-guard-sanitize-output", "git diff")
+        # _isolated_wrapper_prefix now opens the wrapper with O_NOFOLLOW to
+        # verify it is a real, non-symlinked regular file before resolving
+        # it, so these two wrapper paths must actually exist on disk.
+        trim_wrapper_path = "/tmp/trim_command_output.py"
+        sanitize_wrapper_path = "/tmp/context-guard-sanitize-output"
+        with open(trim_wrapper_path, "w", encoding="utf-8") as handle:
+            handle.write("# test wrapper stub\n")
+        with open(sanitize_wrapper_path, "w", encoding="utf-8") as handle:
+            handle.write("# test wrapper stub\n")
+        try:
+            self.assertIn("python3", rewrite.build_wrapped_command(trim_wrapper_path, "pytest -q"))
+            sanitized = rewrite.build_sanitized_command(sanitize_wrapper_path, "git diff")
+        finally:
+            os.remove(trim_wrapper_path)
+            os.remove(sanitize_wrapper_path)
         self.assertIn("/tmp/context-guard-sanitize-output", sanitized)
         sanitized_argv = shlex.split(sanitized)
         sentinel_index = sanitized_argv.index("--context-guard-wrapper-v1")

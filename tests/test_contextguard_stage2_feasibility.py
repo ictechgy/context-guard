@@ -352,6 +352,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_provider_live_ci_discovery.py",
         "tests/test_context_guard_shell_contract.py",
         "tests/test_wclass_advisory_extension_predicate.py",
+        "tests/test_broad_audit_hardening.py",
         "tests/test_context_guard_usage_reducer_v2.py",
         "tests/test_context_guard_advisory_mode.py",
         "tests/test_release_candidate_smoke.py",

@@ -1,22 +1,39 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle for the review of the two optional
-follow-ups on context-guard-kit: argparse "--flag=value" support in
-`_wclass_advisory_is_safe`, and a canonical command + preflight checklist
-in `docs/wclass-advisory-workflow.md`.
+"""Prospective acceptance oracle for the review of the broad
+security/architecture/performance audit hardening branch
+(weightclass-broad-audit-fixes, PR #318) on context-guard-kit.
 
 Task (fixed before any candidate is observed): review the diff between
-`main` and this branch (four files: the two Bash-hook mirrors,
-`docs/wclass-advisory-workflow.md`, and
-`tests/test_wclass_advisory_extension_predicate.py`) for correctness and
-security, with particular attention to whether the equals-syntax predicate
-actually stays as strict as the separated form, not just as permissive.
+`main` (99ee017) and this branch for correctness and security. The diff
+spans three concerns:
+
+1. Three security fixes in context-guard-kit (+ byte-identical plugin
+   mirrors): fixed-path `git` resolution in `run_guarded_git()`
+   (closing a PATH-hijack surface), `FallbackLineSanitizer` coverage
+   for PEM private-key blocks / Cookie headers / userinfo credentials
+   in `trim_command_output.py`, and `O_NOFOLLOW` symlink-swap hardening
+   in `_isolated_wrapper_prefix()`.
+2. A formal Gate-B gen12 bless/reapply/register ceremony
+   (`scripts/verify_gate_b_rollback.py`,
+   `tests/test_gate_b_rollback_proof.py`) proving the shared-integration
+   component change was applied through the documented 4-commit
+   ceremony rather than bypassing it.
+3. A two-commit v4 live-roadmap core-commit activation ceremony
+   (`research/provider-live-roadmap/p3-api/v4/live_launcher.py`,
+   `live_runner.py`, `live-contract.json`,
+   `tests/provider-live-roadmap/test_p3_anthropic_api_v4.py`) repointing
+   cascaded sanitizer/contract digest pins after the
+   `sanitize_output.py` docstring fix, with particular attention to
+   whether `EXPECTED_CORE_COMMIT`/`EXPECTED_RUNNER_SHA256`/
+   `EXPECTED_CONTRACT_SHA256` are mutually consistent and whether the
+   test's hardcoded core-commit assertion was updated to match.
 
 This is a judgment task, so this verifier cannot grade review quality
 directly. What it CAN and DOES check mechanically: that findings are
-grounded in the real changed file set (not hallucinated paths), that the
-review explicitly engages with the changed predicate function
-(`_wclass_advisory_is_safe`), and that it produces a real verdict rather
-than a vague non-answer.
+grounded in the real changed file set (not hallucinated paths), that
+the review explicitly engages with at least one of the three concerns
+above, and that it produces a real verdict rather than a vague
+non-answer.
 """
 from __future__ import annotations
 
@@ -32,14 +49,36 @@ EXIT_INFRA = 3
 REQUIRED_TOP_KEYS = {"schema_version", "mode", "summary", "findings", "limitations"}
 
 CHANGED_FILES = {
+    ".weightclass/verify",
     "context-guard-kit/rewrite_bash_for_token_budget.py",
+    "context-guard-kit/sanitize_output.py",
+    "context-guard-kit/trim_command_output.py",
+    "docs/release-runbook.md",
     "plugins/context-guard/bin/context-guard-rewrite-bash",
-    "docs/wclass-advisory-workflow.md",
-    "tests/test_wclass_advisory_extension_predicate.py",
+    "plugins/context-guard/bin/context-guard-sanitize-output",
+    "plugins/context-guard/bin/context-guard-trim-output",
+    "research/provider-live-roadmap/p3-api/v4/live-contract.json",
+    "research/provider-live-roadmap/p3-api/v4/live_launcher.py",
+    "research/provider-live-roadmap/p3-api/v4/live_runner.py",
+    "scripts/verify_gate_b_rollback.py",
+    "tests/provider-live-roadmap/test_p3_anthropic_api_v4.py",
+    "tests/test_broad_audit_hardening.py",
+    "tests/test_context_guard_kit.py",
+    "tests/test_contextguard_stage2_feasibility.py",
+    "tests/test_gate_b_rollback_proof.py",
 }
 
 CORE_LOGIC_MARKERS = [
-    "_wclass_advisory_is_safe",
+    "run_guarded_git",
+    "_approved_runtime_executable",
+    "FallbackLineSanitizer",
+    "_isolated_wrapper_prefix",
+    "UnsafeAdjacentWrapperError",
+    "gen12",
+    "EXPECTED_CORE_COMMIT",
+    "EXPECTED_RUNNER_SHA256",
+    "EXPECTED_CONTRACT_SHA256",
+    "_verify_core_commit",
 ]
 
 
@@ -97,7 +136,7 @@ def main() -> int:
     engaged_core_logic = any(marker in blob for marker in CORE_LOGIC_MARKERS)
     if not engaged_core_logic:
         return fail(
-            "review never mentions the changed predicate "
+            "review never mentions any of the changed core concerns "
             f"{CORE_LOGIC_MARKERS} - looks like a generic review, not this diff"
         )
 

@@ -147,16 +147,20 @@ The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_
 
 **Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
 
-The active `gen11` record re-blesses the context-efficiency command manifest
-while preserving effective doctor scope from `gen10`, strict user-settings
+The active `gen12` record re-blesses the wrapper no-follow hardening test
+fixture while preserving the context-efficiency command manifest from
+`gen11`, effective doctor scope from `gen10`, strict user-settings
 permissions from `gen9`, the home-settings compatibility fix from `gen8`, the
 privileged hook-runtime residual from `gen6`, and the approved-Python
 statusline fixtures from `gen7`. It carries every earlier Gate-B marker and
-path set. Its declared residual edits are exactly the canonical command
-manifest and packaged command-manifest mirror; B1 and B2 files are restored
-only by their respective reapplications.
+path set. Its declared residual edits are empty: `gen12`'s bless content is
+byte-identical to `gen11`'s bless for every component path (the wrapper
+no-follow fix lives entirely in the shared-integration reapplication, not in
+the residual baseline), so B1, B2, and the five unchanged shared paths are
+restored unmodified and only `tests/test_context_guard_kit.py`'s live
+content changes.
 
-The next routine re-bless must append `gen12` rather than rewriting or reusing
+The next routine re-bless must append `gen13` rather than rewriting or reusing
 an existing generation.
 
 Re-blessing procedure:
