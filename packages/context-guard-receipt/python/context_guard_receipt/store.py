@@ -165,6 +165,7 @@ class ArtifactRequest:
     root_identity_sha256: str
     subject_identity_sha256: str
     artifact_type: ArtifactType
+    scope_hmac_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +183,7 @@ class StoredArtifact:
     payload_sha256: str
     root_identity_sha256: str
     subject_identity_sha256: str
+    scope_hmac_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

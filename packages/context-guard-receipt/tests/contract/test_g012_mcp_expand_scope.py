@@ -93,13 +93,16 @@ class ReceiptExpandTaskScopeTests(unittest.TestCase):
         issued = server._store.issue_batch((request,))[0]  # type: ignore[attr-defined]
         return server._store.externalize_handle(issued.handle)  # type: ignore[attr-defined]
 
+    _next_id = 1
+
     def _expand(self, server: object, capability: str, task_scope: object = None) -> dict:
         arguments: dict[str, object] = {"capability": capability}
         if task_scope is not None:
             arguments["task_scope"] = task_scope
+        self.__class__._next_id += 1
         return server.handle(  # type: ignore[attr-defined]
             {
-                "id": 2,
+                "id": self.__class__._next_id,
                 "jsonrpc": "2.0",
                 "method": "tools/call",
                 "params": {"arguments": arguments, "name": "receipt_expand"},
