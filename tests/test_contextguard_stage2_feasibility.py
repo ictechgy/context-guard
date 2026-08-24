@@ -128,6 +128,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "packaging/homebrew/context-guard.rb.template",
         "packages/context-guard-receipt/python/context_guard_receipt/external_approval_v2.py",
         "packages/context-guard-receipt/schemas/external-approval-v2.schema.json",
+        "packages/context-guard-receipt/tests/contract/test_g012_mcp_expand_scope.py",
         "packages/context-guard-receipt/tests/contract/test_g016_external_approval_v2.py",
         "plugins/context-guard/.claude-plugin/plugin.json",
         "plugins/context-guard/README.ko.md",
