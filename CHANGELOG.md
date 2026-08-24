@@ -4,6 +4,18 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-24
+
+- Hardened three context-guard-kit security surfaces: `run_guarded_git()` now
+  resolves `git` through the fixed-path approved-runtime-executable resolver
+  instead of a PATH lookup, `FallbackLineSanitizer` gained PEM private-key
+  block and Cookie header redaction plus a corrected userinfo-credential
+  regex, and adjacent wrapper scripts are opened with `O_NOFOLLOW` before use
+  to reject a pre-planted symlink.
+- Corrected `sanitize_output.py`'s docstring to accurately describe that
+  `anonymize_paths_for_context()` is a deliberate no-op for `unknown_text`/
+  `source_code` contexts (behavior unchanged).
+
 ## [0.7.0] - 2026-08-22
 
 - Added a zero-provider-context advisory mode for WeightClass-style routing.
