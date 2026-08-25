@@ -18,6 +18,7 @@ import heapq
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 import posixpath
 from pathlib import Path
@@ -96,6 +97,8 @@ MAX_REPO_MAP_SIGNATURE_ENTRIES = 40
 MAX_REPO_MAP_GRAPH_RANK_ENTRIES = 30
 MAX_REPO_MAP_RETRIEVAL_HINTS = 30
 MAX_REPO_MAP_SECRET_RISK_FILES = 20
+GRAPH_CACHE_TTL_SECONDS = 3600
+GRAPH_CACHE_MAX_ENTRIES = 20
 MAX_ADAPTIVE_K_SCORE_SAMPLES = 200
 MAX_ADAPTIVE_K_SELECTED_EVIDENCE = 12
 MAX_ADAPTIVE_K_OMITTED_EVIDENCE = 12
@@ -4527,6 +4530,167 @@ def repo_map_seed_paths(args: argparse.Namespace, suggest_payload: dict[str, Any
     return seeds
 
 
+def _graph_cache_canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def _graph_cache_content_sha256(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_graph_cache_canonical_json(payload)).hexdigest()
+
+
+def _graph_cache_revision(root: Path) -> str | None:
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).stdout.strip()
+        if not head:
+            return None
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).stdout
+        if status:
+            detailed_status = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).stdout
+            generated_only = all(
+                line.startswith("?? .context-guard/packs/")
+                for line in detailed_status.splitlines()
+                if line
+            )
+            if generated_only:
+                status = ""
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return head if not status else None
+
+
+def _graph_cache_directory() -> Path:
+    configured = os.environ.get("CONTEXT_GUARD_GRAPH_CACHE_DIR")
+    if configured:
+        return Path(configured)
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return cache_home / "context-guard" / "graph-rank"
+
+
+def _graph_cache_path(
+    root: Path,
+    revision: str,
+    seed_paths: set[str],
+    query_terms: set[str],
+) -> Path:
+    key = (
+        os.path.realpath(root),
+        revision,
+        tuple(sorted(seed_paths)),
+        tuple(sorted(query_terms)),
+    )
+    digest = hashlib.sha256(_graph_cache_canonical_json(key)).hexdigest()
+    return _graph_cache_directory() / f"{digest}.json"
+
+
+def _graph_cache_loaded_payload(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    created_at = record.get("created_at")
+    payload = record.get("payload")
+    content_sha256 = record.get("content_sha256")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(float(created_at))
+        or not isinstance(payload, dict)
+        or not isinstance(content_sha256, str)
+        or time.time() - float(created_at) > GRAPH_CACHE_TTL_SECONDS
+    ):
+        return None
+    if _graph_cache_content_sha256(payload) != content_sha256:
+        return None
+    return payload
+
+
+def _graph_cache_created_at(path: Path) -> float:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeError):
+        return float("-inf")
+    created_at = record.get("created_at") if isinstance(record, dict) else None
+    if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
+        return float("-inf")
+    if not math.isfinite(float(created_at)):
+        return float("-inf")
+    return float(created_at)
+
+
+def _graph_cache_write(path: Path, payload: dict[str, Any]) -> None:
+    cache_dir = path.parent
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(cache_dir, 0o700)
+    other_files = [candidate for candidate in cache_dir.glob("*.json") if candidate != path]
+    while len(other_files) >= GRAPH_CACHE_MAX_ENTRIES:
+        oldest = min(other_files, key=_graph_cache_created_at)
+        oldest.unlink()
+        other_files.remove(oldest)
+    record = {
+        "created_at": time.time(),
+        "payload": payload,
+        "content_sha256": _graph_cache_content_sha256(payload),
+    }
+    file_descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    os.chmod(path, 0o600)
+
+
+def build_cached_repo_map_payload(
+    root: Path,
+    args: argparse.Namespace,
+    suggest_payload: dict[str, Any],
+    build_payload: dict[str, Any],
+    *,
+    root_arg: str,
+    revision: str | None = None,
+) -> dict[str, Any]:
+    if revision is None:
+        revision = _graph_cache_revision(root)
+    if revision is None:
+        return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+    seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
+    query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
+    cache_path = _graph_cache_path(root, revision, seed_paths, query_terms)
+    cached_payload = _graph_cache_loaded_payload(cache_path)
+    if cached_payload is not None:
+        return cached_payload
+    payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+    _graph_cache_write(cache_path, payload)
+    return payload
+
+
 def build_graph_rank(
     records: list[dict[str, Any]],
     signatures: list[dict[str, Any]],
@@ -5220,6 +5384,7 @@ def build_auto_explain_payload(
     root: Path | None = None,
     root_arg: str = ".",
     repo_map_payload: dict[str, Any] | None = None,
+    graph_cache_revision: str | None = None,
 ) -> dict[str, Any]:
     build_sources = [
         item
@@ -5350,7 +5515,19 @@ def build_auto_explain_payload(
     if repo_map_payload is not None:
         explain["repo_map"] = copy.deepcopy(repo_map_payload)
     elif root is not None:
-        explain["repo_map"] = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+        if getattr(args, "graph_cache", False) and graph_cache_revision is not None:
+            explain["repo_map"] = build_cached_repo_map_payload(
+                root,
+                args,
+                suggest_payload,
+                build_payload,
+                root_arg=root_arg,
+                revision=graph_cache_revision,
+            )
+        else:
+            explain["repo_map"] = build_repo_map_payload(
+                root, args, suggest_payload, build_payload, root_arg=root_arg
+            )
     if isinstance(payload.get("graph_application"), dict):
         explain["graph_application"] = copy.deepcopy(payload["graph_application"])
     if isinstance(payload.get("adaptive_k_application"), dict):
@@ -5361,6 +5538,11 @@ def build_auto_explain_payload(
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    graph_cache_revision = (
+        _graph_cache_revision(root)
+        if getattr(args, "graph_cache", False)
+        else None
+    )
     plan_only = bool(getattr(args, "selection_plan", False))
     apply_plan_path = getattr(args, "apply_selection_plan", None)
     expected_plan = read_selection_plan(root, apply_plan_path) if apply_plan_path else None
@@ -5454,7 +5636,9 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         str,
         tuple[int, int, int, int, int, int, int, int],
     ] = {}
-    if getattr(args, "symbol_memory", False) or apply_symbol_memory or args.explain:
+    if getattr(args, "symbol_memory", False) or apply_symbol_memory or (
+        args.explain and not getattr(args, "graph_cache", False)
+    ):
         repo_map_payload = build_repo_map_payload(
             root,
             args,
@@ -5908,6 +6092,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             root=root,
             root_arg=root_arg,
             repo_map_payload=repo_map_payload,
+            graph_cache_revision=graph_cache_revision,
         )
     return payload, rc
 
@@ -6134,6 +6319,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
+    auto.add_argument("--graph-cache", action="store_true", help="cache clean-revision graph-rank/repo-map explain metadata")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
     auto.add_argument(
         "--apply-adaptive-k",

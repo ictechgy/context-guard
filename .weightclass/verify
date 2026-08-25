@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: runner-aware pass/fail summary field in
-the structured command digest (see tests/test_runner_result_summary_digest.py
-for the fixed task-specific criteria this enforces).
+"""Prospective acceptance oracle: revision/worktree-bound graph-rank cache
+(see tests/test_graph_rank_cache.py for the fixed task-specific criteria
+this enforces).
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -17,9 +17,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_runner_result_summary_digest"
+FOCUSED_MODULE = "tests.test_graph_rank_cache"
 REGRESSION_MODULES = [
-    "tests.test_trim_output_digest_inflation",
     "tests.test_context_guard_kit",
 ]
 EXIT_BASELINE = 42
