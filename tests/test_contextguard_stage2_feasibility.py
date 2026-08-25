@@ -157,6 +157,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "research/benchmark-plan.md",
         "research/comparator-mechanism-acceptance-matrix.md",
         "research/forge-token-savings-brainstorm-20260804.md",
+        "research/graph-cache-advisory-integration-roadmap-20260825.md",
         "research/forge-token-savings-prompt-20260804.md",
         "research/token-savings-roadmap-20260804.md",
         "research/p2-p6-provider-free-implementation.md",
