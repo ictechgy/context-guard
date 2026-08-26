@@ -138,3 +138,46 @@ CONTEXT_GUARD_GRAPH_CACHE_DIR="$CACHE_DIR" wclass-advisory run ... --confirm-tas
 - This does not change what a candidate is allowed to modify inside its own
   clone - the shared directory sits outside the repo the campaign operates
   on, same as the task file itself.
+
+## Trust/evaluation recipes for a diff-scoped campaign (roadmap C1/C3/C4)
+
+These build on `--graph-impact-scope` (B3) and `--graph-cache` (A2-A4);
+none require anything from `wclass-advisory` beyond its existing CLI
+surface, same as the A1/A5 recipe above.
+
+**C1 - graph coverage as a diagnostic, never a ranking input.** Before
+dispatch, compute the diff's impact set once:
+
+```sh
+context-guard-pack auto --root /path/to/clean/repository \
+  --diff worktree --graph-impact-scope --explain --json \
+  --query "<the campaign's actual query>" \
+  | jq '.explain.repo_map.graph.impact_scope.scoped_paths' > /tmp/impact-set.json
+```
+
+After a candidate's patch lands, compare the files it actually touched
+(`git diff --name-only` in the candidate's own clone) against
+`impact-set.json`: `coverage = |touched ∩ scoped| / |scoped|`. Log this
+next to the campaign's verified/failed verdict as its own field - never
+average it into, or use it in place of, the verify-based accuracy result.
+High coverage says the candidate looked at the structurally connected
+files; it says nothing about whether it changed them correctly.
+
+**C3 - cache-bypass canary lane.** Give exactly one lane's task text an
+instruction to omit `--graph-cache` entirely while every other lane's task
+text uses the shared `CONTEXT_GUARD_GRAPH_CACHE_DIR` from the A1 recipe.
+If the canary lane's `explain.repo_map` payload differs from a cached
+lane's (compare the `graph_rank`/`signature_index` content, not just the
+receipt), the shared cache is stale or poisoned - stop reusing it for the
+rest of the campaign rather than silently continuing. Budget for this: it
+is one full extra rebuild every campaign, by design.
+
+**C4 - drift canary on a fixed fixture.** Before a real campaign, run the
+same `context-guard-pack auto --explain --json` invocation for every
+vendor/route against a small, checked-in fixture repository (not the real
+target). Diff each vendor's `graph_rank` path ordering; if they disagree
+beyond whatever threshold the campaign owner sets, treat that as a signal
+the route profiles themselves are producing inconsistent input and abort
+dispatch rather than spend the real campaign's budget on top of a broken
+premise. A toy fixture cannot prove the real repository is fine - it can
+only catch a route-profile-level break before it burns real dispatch cost.
