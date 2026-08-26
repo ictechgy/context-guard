@@ -69,7 +69,7 @@ ENTRY_KEYS = {"file_type", "mode", "path", "sha256", "tracked"}
 POST_STAGE2_PROTECTED_SHA256 = {
     ".claude-plugin/marketplace.json": "c3898f95e55bfc9b2a23ec7c23bf4508359f74ca1021844bdc83125c15c9c63c",
     "context-guard-kit/benchmark_runner.py": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
-    "context-guard-kit/context_pack.py": "75cf89c926afd3f3e566b2f5569f446de08b20ab72dd689fb6b6057328082ba3",
+    "context-guard-kit/context_pack.py": "2c85f913fdfe434a5dcc7f70defd4e34a41a624c59d41c67f5157c6f15a57ce2",
     "context-guard-kit/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
     "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
     "context-guard-kit/setup_wizard.py": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
@@ -77,7 +77,7 @@ POST_STAGE2_PROTECTED_SHA256 = {
     "plugins/context-guard/.claude-plugin/plugin.json": "8010939c7ae0909ebf5ae0033e0190c5b61ede4d81042fcbaa902e376fcc6a0e",
     "plugins/context-guard/bin/context-guard-bench": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
     "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
-    "plugins/context-guard/bin/context-guard-pack": "75cf89c926afd3f3e566b2f5569f446de08b20ab72dd689fb6b6057328082ba3",
+    "plugins/context-guard/bin/context-guard-pack": "2c85f913fdfe434a5dcc7f70defd4e34a41a624c59d41c67f5157c6f15a57ce2",
     "plugins/context-guard/bin/context-guard-setup": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
     "plugins/context-guard/lib/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
     "scripts/prepublish_check.py": "99d7414816a6880ad13f9d4b6265cb5e33eb8c43ccf83de1d0500df43acc9382",
