@@ -4594,7 +4594,6 @@ def _graph_cache_path(
     query_terms: set[str],
 ) -> Path:
     key = (
-        os.path.realpath(root),
         revision,
         tuple(sorted(seed_paths)),
         tuple(sorted(query_terms)),
