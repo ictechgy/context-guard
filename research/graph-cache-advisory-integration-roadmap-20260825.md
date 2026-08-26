@@ -81,9 +81,9 @@ wrapper).
 
 | Priority | Decision | Rationale |
 | --- | --- | --- |
-| Now | A2 (drop worktree path from cache key), A3 (`--graph-cache-dir` override), A4 (cache receipt) | All three are pure `context-guard-kit` changes, don't touch `wclass-advisory`, and are prerequisites for everything else in Theme A. |
-| Now | Investigate `wclass-advisory`'s lane isolation model (env-only vs. filesystem-sandboxed) | A5, A1, and every Theme B/C/D idea that assumes a shared-but-read-only cache directory depends on this being env-narrowing only, not a filesystem jail. Evidence so far (a prior campaign log noted `HOME` is unchanged and `~/.aws/credentials` remains readable despite env narrowing) suggests filesystem access is *not* sandboxed — but that was one observation on one route profile, not a verified guarantee. |
-| Next | A1 (common cache pin via wrapper), A5 (write/read separation), C5 (digest integration) | Depend on the "Now" investigation resolving in the expected direction. C5 has no such dependency and can start immediately in parallel. |
+| Done | A2 (drop worktree path from cache key), A3 (cache-dir symlink safety), A4 (cache receipt) | Landed 2026-08-26 (#327). All three were pure `context-guard-kit` changes and are prerequisites for everything else in Theme A. |
+| Done | Investigate `wclass-advisory`'s lane isolation model | Resolved 2026-08-26 (§5): confirmed from source, env-narrowing only, no filesystem isolation. A shared cache directory is technically reachable by every lane. |
+| Next | A1 (common cache pin via wrapper), A5 (write/read separation), C5 (digest integration) | Unblocked by the resolved investigation. C5 has no such dependency and can start immediately in parallel. |
 | Next | B1 (two-tier cache), B2 (per-stage TTL) | Pure `context-guard-kit` cache-policy work; can be speced once A2 lands since both build on the same key schema. |
 | Later | B3 (impact-subgraph scoping), C1 (coverage score), C3/C4 (canaries) | Useful but each needs its own small validation (does impact-subgraph scoping actually shrink the map without dropping relevant files? does coverage correlate with anything?) before it's worth wiring into a live campaign. |
 | Research only | B4, B5, C2, D1–D4 | Genuinely promising but speculative, expensive to validate, and several (D3, D4) touch cross-vendor information-sharing policy that needs its own authorization pass, not just an engineering spec. |
@@ -143,21 +143,33 @@ block:
   `research/token-savings-roadmap-20260804.md` already requires for any such
   claim.
 
-## 5. Open question blocking Theme A's cross-lane work
+## 5. Cross-lane isolation model — resolved
 
-Everything past §4 that assumes a *shared* cache directory across
-`wclass-advisory` vendor lanes rests on one unverified fact: whether lanes are
-isolated only by environment-variable narrowing (a shared filesystem path
-would work) or by an actual filesystem sandbox/jail (it would not, and A1/A5
-would need a different design — e.g., each lane writing its own cache that a
-later merge step reconciles, rather than true read-time sharing).
+**Resolved 2026-08-26: environment-variable narrowing only, no filesystem
+isolation.** Confirmed directly from `wclass-advisory`'s own source
+(`weightclass/advisory/speculative_run.py`, `run_verify()`), not inferred:
 
-The one piece of evidence available today is a prior campaign log noting the
-child environment was narrowed ("18 passed, 82 excluded") while `HOME` itself
-was left unchanged and files like `~/.aws/credentials` remained readable —
-i.e., env narrowing without filesystem isolation, on the route profile that
-ran that campaign. That is one data point on one profile, not a documented
-guarantee across all route profiles. Confirming this (by reading
-`docs/wclass-advisory-workflow.md`'s route-profile review output for the
-profiles actually in use, or by asking the advisory tool's own `review`
-subcommand) is the next concrete step before speccing A1/A5 further.
+> "The clone bounds what it can reach in the repository; it does not bound
+> the host. Put the verify command in a container or jail if the output is
+> genuinely untrusted." … "절대 경로로 `/Users/<me>/.ssh`를 직접 여는 코드는
+> 이것으로 막지 못한다. 담장이 아니라, `~`를 쓰는 평범한 도구 경로를 닫는
+> 것이다. 진짜 격리는 검증 명령 자체를 컨테이너나 jail에 넣는 것뿐이다."
+> (an absolute-path open of `~/.ssh` is not blocked by this; it closes off
+> the ordinary `~`-relative tool path, not a real fence — genuine isolation
+> would require putting the verify command itself in a container or jail)
+
+Each lane gets a narrowed environment (`PATH`/`LANG`/`LC_ALL`/`TZ`/`SHELL`/
+`USER` only, matching the earlier campaign-log observation of "18 passed, 82
+excluded") and a redirected `HOME`/`TMPDIR`, but no chroot, namespace, mount
+isolation, or filesystem jail exists anywhere in the tool. An absolute
+filesystem path — such as a shared cache directory under a campaign root —
+is reachable by every lane exactly as if isolation were off.
+
+**Consequence for A1/A5**: a shared, absolute-path cache directory design is
+now confirmed feasible (not just plausible) — no per-lane-write-then-merge
+fallback design is needed. A5's write/read separation (orchestrator writes,
+lanes read-only) is a policy convention layered on top of this, not a
+technical requirement forced by the isolation model — nothing stops a lane
+from writing to the shared directory too, so A5 has to be enforced by what
+the wrapper script tells each lane to do (task-authoring convention), not by
+any isolation guarantee from `wclass-advisory` itself.
