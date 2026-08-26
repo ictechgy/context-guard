@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: graph-cache TTL override (roadmap item B2,
-see tests/test_graph_cache_ttl.py for the fixed task-specific criteria this
-enforces: an optional --graph-cache-ttl-seconds flag on `context-guard-pack
-auto` overrides the fixed default TTL for that invocation's cache expiry
-check and receipt).
+"""Prospective acceptance oracle: diff-scoped impact-radius metadata
+(roadmap item B3, see tests/test_graph_impact_scope.py for the fixed
+task-specific criteria this enforces: an optional --graph-impact-scope
+flag on `context-guard-pack auto`, used with --diff, reports which other
+files are within N import-edge hops of the diff's changed files).
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -19,11 +19,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_graph_cache_ttl"
+FOCUSED_MODULE = "tests.test_graph_impact_scope"
 REGRESSION_MODULES = [
     "tests.test_context_guard_kit",
     "tests.test_graph_rank_cache",
     "tests.test_graph_cache_p0",
+    "tests.test_graph_cache_ttl",
 ]
 EXIT_BASELINE = 42
 EXIT_INFRA = 3

@@ -2808,6 +2808,61 @@ def run_git_diff(root: Path, diff_ref: str) -> str:
     )[0]
 
 
+def diff_changed_paths(root: Path, diff_ref: str) -> set[str]:
+    diff_text = run_git_diff(root, diff_ref)
+    changed: set[str] = set()
+    for line in diff_text.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        match = re.match(r"^diff --git a/(.+?) b/(.+)$", line)
+        if not match:
+            continue
+        left, right = match.groups()
+        path = right if right != "/dev/null" else left
+        if path and path != "/dev/null":
+            changed.add(path)
+    return changed
+
+
+def graph_impact_scope(
+    changed_paths: set[str],
+    edges: list[dict[str, str]],
+    known_paths: set[str],
+    *,
+    depth: int,
+) -> tuple[set[str], set[str]]:
+    """Undirected BFS over import edges from changed_paths, bounded by depth.
+
+    Returns (resolved_changed_paths, scoped_paths) - scoped_paths never
+    includes any resolved_changed_paths entry.
+    """
+    resolved_changed = {path for path in changed_paths if path in known_paths}
+    neighbors: dict[str, set[str]] = {}
+    for edge in edges:
+        source = str(edge.get("from", ""))
+        target = str(edge.get("to", ""))
+        if not source or not target:
+            continue
+        neighbors.setdefault(source, set()).add(target)
+        neighbors.setdefault(target, set()).add(source)
+    scoped: set[str] = set()
+    frontier = set(resolved_changed)
+    visited = set(resolved_changed)
+    for _ in range(max(0, depth)):
+        next_frontier: set[str] = set()
+        for path in frontier:
+            for neighbor in neighbors.get(path, ()):
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                next_frontier.add(neighbor)
+                scoped.add(neighbor)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    return resolved_changed, scoped
+
+
 def collect_diff_candidates(root: Path, diff_ref: str, query_terms: set[str], context_lines: int) -> list[SuggestCandidate]:
     diff_text = run_git_diff(root, diff_ref)
     candidates: list[SuggestCandidate] = []
@@ -4875,6 +4930,27 @@ def build_repo_map_payload(
     retrieval = repo_map_retrieval(record_by_path, signatures, graph_rank, root_arg=root_arg)
     tree = build_token_tree(records)
     total_bytes = sum(int(record.get("bytes", 0) or 0) for record in records)
+    graph_payload: dict[str, Any] = {
+        "edges": edges[:MAX_REPO_MAP_GRAPH_RANK_ENTRIES],
+        "edges_omitted_by_cap": max(0, len(edges) - MAX_REPO_MAP_GRAPH_RANK_ENTRIES),
+    }
+    if getattr(args, "graph_impact_scope", False) and getattr(args, "diff", None):
+        try:
+            diff_paths = diff_changed_paths(root, str(args.diff))
+        except PackError:
+            diff_paths = set()
+        depth = getattr(args, "graph_impact_scope_depth", None)
+        if not isinstance(depth, int) or depth < 0:
+            depth = 1
+        resolved_changed, scoped_paths = graph_impact_scope(
+            diff_paths, edges, set(record_by_path), depth=depth
+        )
+        graph_payload["impact_scope"] = {
+            "changed_paths": sorted(resolved_changed),
+            "depth": depth,
+            "scoped_paths": sorted(scoped_paths),
+            "scoped_path_count": len(scoped_paths),
+        }
     return {
         "schema_version": REPO_MAP_SCHEMA_VERSION,
         "summary": {
@@ -4892,10 +4968,7 @@ def build_repo_map_payload(
         "token_tree": tree,
         "secret_scan": secret_scan,
         "signature_index": signatures,
-        "graph": {
-            "edges": edges[:MAX_REPO_MAP_GRAPH_RANK_ENTRIES],
-            "edges_omitted_by_cap": max(0, len(edges) - MAX_REPO_MAP_GRAPH_RANK_ENTRIES),
-        },
+        "graph": graph_payload,
         "graph_rank": graph_rank,
         "retrieval": retrieval,
         "omitted_files": omitted[:MAX_REPO_MAP_TREE_ENTRIES],
@@ -6327,6 +6400,8 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--root", default=".", help="project root; must not be a symlink")
     auto.add_argument("--query", default="", help="task or question to match against local files")
     auto.add_argument("--diff", help="git diff range, or staged/worktree, to seed changed-file ranges")
+    auto.add_argument("--graph-impact-scope", action="store_true", help="with --diff, report other files within N import-edge hops of the diff")
+    auto.add_argument("--graph-impact-scope-depth", type=int, default=None, help="import-edge hop bound for --graph-impact-scope (default 1)")
     auto.add_argument("--files", "--file", dest="files", action="append", help="explicit relative file path(s), comma-separated or repeated")
     auto.add_argument("--output", action="append", help="relative path to sanitized command output text under root")
     auto.add_argument("--test-output", action="append", help="relative path to sanitized test output text under root")
