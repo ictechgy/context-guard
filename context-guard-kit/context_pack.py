@@ -4677,7 +4677,7 @@ def build_cached_repo_map_payload(
 ) -> dict[str, Any]:
     if revision is None:
         revision = _graph_cache_revision(root)
-    if revision is None:
+    if revision is None or _graph_cache_directory().is_symlink():
         return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
