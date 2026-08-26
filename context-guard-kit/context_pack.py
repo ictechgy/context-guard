@@ -4603,7 +4603,9 @@ def _graph_cache_path(
     return _graph_cache_directory() / f"{digest}.json"
 
 
-def _graph_cache_loaded_payload(path: Path) -> dict[str, Any] | None:
+def _graph_cache_loaded_payload(
+    path: Path, *, ttl_seconds: float = GRAPH_CACHE_TTL_SECONDS
+) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
@@ -4621,7 +4623,7 @@ def _graph_cache_loaded_payload(path: Path) -> dict[str, Any] | None:
         or not math.isfinite(float(created_at))
         or not isinstance(payload, dict)
         or not isinstance(content_sha256, str)
-        or time.time() - float(created_at) > GRAPH_CACHE_TTL_SECONDS
+        or time.time() - float(created_at) > ttl_seconds
     ):
         return None
     if _graph_cache_content_sha256(payload) != content_sha256:
@@ -4667,7 +4669,9 @@ def _graph_cache_write(path: Path, payload: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
-def _graph_cache_receipt(cache_path: Path, *, hit: bool) -> dict[str, Any] | None:
+def _graph_cache_receipt(
+    cache_path: Path, *, hit: bool, ttl_seconds: float = GRAPH_CACHE_TTL_SECONDS
+) -> dict[str, Any] | None:
     try:
         record = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
@@ -4683,7 +4687,7 @@ def _graph_cache_receipt(cache_path: Path, *, hit: bool) -> dict[str, Any] | Non
     ):
         return None
     expires_at = datetime.fromtimestamp(
-        float(created_at) + GRAPH_CACHE_TTL_SECONDS, tz=timezone.utc
+        float(created_at) + ttl_seconds, tz=timezone.utc
     )
     return {
         "hit": hit,
@@ -4709,15 +4713,16 @@ def build_cached_repo_map_payload(
             build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg),
             None,
         )
+    ttl_seconds = getattr(args, "graph_cache_ttl_seconds", None) or GRAPH_CACHE_TTL_SECONDS
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
     cache_path = _graph_cache_path(root, revision, seed_paths, query_terms)
-    cached_payload = _graph_cache_loaded_payload(cache_path)
+    cached_payload = _graph_cache_loaded_payload(cache_path, ttl_seconds=ttl_seconds)
     if cached_payload is not None:
-        return cached_payload, _graph_cache_receipt(cache_path, hit=True)
+        return cached_payload, _graph_cache_receipt(cache_path, hit=True, ttl_seconds=ttl_seconds)
     payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
     _graph_cache_write(cache_path, payload)
-    return payload, _graph_cache_receipt(cache_path, hit=False)
+    return payload, _graph_cache_receipt(cache_path, hit=False, ttl_seconds=ttl_seconds)
 
 
 def build_graph_rank(
@@ -6352,6 +6357,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--graph-cache", action="store_true", help="cache clean-revision graph-rank/repo-map explain metadata")
+    auto.add_argument("--graph-cache-ttl-seconds", type=int, default=None, help="override the default graph-cache expiry window for this invocation")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
     auto.add_argument(
         "--apply-adaptive-k",

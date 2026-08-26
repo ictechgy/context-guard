@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: P0 graph-cache hardening spec
-(see tests/test_graph_cache_p0.py for the fixed task-specific criteria this
-enforces: cache-key independence from the worktree's absolute path, symlink
-safety on the externally-configured cache directory, and a machine-readable
-cache receipt in --explain output).
-
-All three items from research/graph-cache-advisory-integration-roadmap-
-20260825.md section 4 are implemented; this covers the full focused module
-again as a final regression gate.
+"""Prospective acceptance oracle: graph-cache TTL override (roadmap item B2,
+see tests/test_graph_cache_ttl.py for the fixed task-specific criteria this
+enforces: an optional --graph-cache-ttl-seconds flag on `context-guard-pack
+auto` overrides the fixed default TTL for that invocation's cache expiry
+check and receipt).
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -23,10 +19,11 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_graph_cache_p0"
+FOCUSED_MODULE = "tests.test_graph_cache_ttl"
 REGRESSION_MODULES = [
     "tests.test_context_guard_kit",
     "tests.test_graph_rank_cache",
+    "tests.test_graph_cache_p0",
 ]
 EXIT_BASELINE = 42
 EXIT_INFRA = 3
