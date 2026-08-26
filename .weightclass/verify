@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: P0 graph-cache hardening spec, step 2 of 3
-(see tests/test_graph_cache_p0.py, GraphCacheDirectorySymlinkSafetyTests,
-for the fixed task-specific criteria this enforces: a
-CONTEXT_GUARD_GRAPH_CACHE_DIR that is a symlink must never be written
-through - the cache must be silently bypassed for that invocation instead,
-matching the existing "unsafe condition means bypass, not error" contract
-already used for a dirty working tree).
+"""Prospective acceptance oracle: P0 graph-cache hardening spec, step 3 of 3
+(see tests/test_graph_cache_p0.py, GraphCacheReceiptTests, for the fixed
+task-specific criteria this enforces: with --graph-cache and --explain, the
+explain block must carry a sibling `repo_map_cache` object reporting `hit`,
+`graph_cache_key`, `resolved_content_sha256`, and `ttl_expires_at`, present
+only when --graph-cache is passed).
 
-This is the second of three focused steps for the P0 spec in
+This is the third of three focused steps for the P0 spec in
 research/graph-cache-advisory-integration-roadmap-20260825.md section 4
-(cache-key independence [done], symlink safety, cache receipt). Step 1
-(cache-key independence) is already committed.
+(cache-key independence [done], symlink safety [done], cache receipt).
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -26,7 +24,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_graph_cache_p0.GraphCacheDirectorySymlinkSafetyTests"
+FOCUSED_MODULE = "tests.test_graph_cache_p0.GraphCacheReceiptTests"
 REGRESSION_MODULES = [
     "tests.test_context_guard_kit",
     "tests.test_graph_rank_cache",
