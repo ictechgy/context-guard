@@ -94,3 +94,47 @@ file for a new campaign does not need to be registered anywhere; a
 non-verifier-shaped file, or anything nested under a subdirectory, is still
 treated as an undeclared production change and will fail CI - the exemption
 is scoped to the directory's actual purpose, not a blanket allowance.
+
+## Sharing `--graph-cache` across a campaign's lanes (roadmap A1/A5)
+
+`context-guard-kit/context_pack.py`'s `--graph-cache` flag (revision-bound
+graph-rank/repo-map caching; see `research/graph-cache-advisory-integration-
+roadmap-20260825.md`) can save every lane in a campaign from independently
+recomputing the same repo map for the same commit, if they share a cache
+directory. This is safe to do because `wclass-advisory` isolates lanes only
+by environment-variable narrowing, not a filesystem jail (confirmed from
+`weightclass/advisory/speculative_run.py`'s own comments, roadmap §5) - an
+absolute-path cache directory is reachable from every lane exactly as if
+isolation were off, so this needs no cooperation from the advisory tool
+itself.
+
+**Warm once, share read-only, write only from the owner process:**
+
+```sh
+CACHE_DIR="$(mktemp -d)/graph-cache"   # outside the repo; owner-only by mktemp
+context-guard-pack auto --root /path/to/clean/repository \
+  --graph-cache --explain --json \
+  --query "<the campaign's actual query>" \
+  > /dev/null
+CONTEXT_GUARD_GRAPH_CACHE_DIR="$CACHE_DIR" wclass-advisory run ... --confirm-task-egress
+```
+
+- The warm-up call runs as the owner process, before dispatch, using the
+  exact `--query`/seed paths the campaign's task actually needs - a
+  mismatched query misses the cache and defeats the point.
+- Point every lane's environment at the same `CONTEXT_GUARD_GRAPH_CACHE_DIR`
+  so a lane that also calls `context-guard-pack ... --graph-cache` hits the
+  warmed record instead of rebuilding it.
+- **A5 (write/read separation)** is a task-authoring convention, not an
+  isolation guarantee: nothing stops a lane from writing to
+  `CONTEXT_GUARD_GRAPH_CACHE_DIR` too. Either don't tell candidate tasks to
+  pass `--graph-cache` at all (let them read the pre-warmed directory only
+  if your task text says so) or point `--cheap-home`/`--advisor-home`/
+  `--expensive-home` (see the section above) such that a candidate's own
+  writes land somewhere other than the shared directory.
+- Check the receipt (`explain.repo_map_cache`, roadmap A4) on any lane call
+  that used `--graph-cache` to confirm `"hit": true` before trusting that
+  the cache actually saved that lane the rebuild.
+- This does not change what a candidate is allowed to modify inside its own
+  clone - the shared directory sits outside the repo the campaign operates
+  on, same as the task file itself.
