@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: P0 graph-cache hardening spec, step 1 of 3
-(see tests/test_graph_cache_p0.py, GraphCacheKeyIndependentOfWorktreePathTests,
-for the fixed task-specific criteria this enforces: the --graph-cache cache
-key must not depend on the worktree's absolute filesystem path, so two clean
-checkouts of the identical commit/content share one cache entry instead of
-each writing their own path-keyed record).
+"""Prospective acceptance oracle: P0 graph-cache hardening spec, step 2 of 3
+(see tests/test_graph_cache_p0.py, GraphCacheDirectorySymlinkSafetyTests,
+for the fixed task-specific criteria this enforces: a
+CONTEXT_GUARD_GRAPH_CACHE_DIR that is a symlink must never be written
+through - the cache must be silently bypassed for that invocation instead,
+matching the existing "unsafe condition means bypass, not error" contract
+already used for a dirty working tree).
 
-This is the first of three focused steps for the P0 spec in
+This is the second of three focused steps for the P0 spec in
 research/graph-cache-advisory-integration-roadmap-20260825.md section 4
-(cache-key independence, symlink safety, cache receipt). Retargeted narrower
-after a combined single-task advisory campaign failed on both cheap and
-expensive tiers for both vendors.
+(cache-key independence [done], symlink safety, cache receipt). Step 1
+(cache-key independence) is already committed.
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_graph_cache_p0.GraphCacheKeyIndependentOfWorktreePathTests"
+FOCUSED_MODULE = "tests.test_graph_cache_p0.GraphCacheDirectorySymlinkSafetyTests"
 REGRESSION_MODULES = [
     "tests.test_context_guard_kit",
     "tests.test_graph_rank_cache",
