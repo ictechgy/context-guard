@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Prospective acceptance oracle: P0 graph-cache hardening spec, step 3 of 3
-(see tests/test_graph_cache_p0.py, GraphCacheReceiptTests, for the fixed
-task-specific criteria this enforces: with --graph-cache and --explain, the
-explain block must carry a sibling `repo_map_cache` object reporting `hit`,
-`graph_cache_key`, `resolved_content_sha256`, and `ttl_expires_at`, present
-only when --graph-cache is passed).
+"""Prospective acceptance oracle: P0 graph-cache hardening spec
+(see tests/test_graph_cache_p0.py for the fixed task-specific criteria this
+enforces: cache-key independence from the worktree's absolute path, symlink
+safety on the externally-configured cache directory, and a machine-readable
+cache receipt in --explain output).
 
-This is the third of three focused steps for the P0 spec in
-research/graph-cache-advisory-integration-roadmap-20260825.md section 4
-(cache-key independence [done], symlink safety [done], cache receipt).
+All three items from research/graph-cache-advisory-integration-roadmap-
+20260825.md section 4 are implemented; this covers the full focused module
+again as a final regression gate.
 
 Contract (advisory skill, implementation workflow):
 - exit 42: the focused acceptance is not yet satisfied, but nothing else broke
@@ -24,7 +23,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path.cwd()
-FOCUSED_MODULE = "tests.test_graph_cache_p0.GraphCacheReceiptTests"
+FOCUSED_MODULE = "tests.test_graph_cache_p0"
 REGRESSION_MODULES = [
     "tests.test_context_guard_kit",
     "tests.test_graph_rank_cache",
