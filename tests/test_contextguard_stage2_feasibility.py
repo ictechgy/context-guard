@@ -365,6 +365,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_workflows.py",
         "tests/test_runner_result_summary_digest.py",
         "tests/test_graph_rank_cache.py",
+        "tests/test_graph_cache_p0.py",
     }
 )
 PROVIDER_FREE_PINNED_SUPPORT_SHA256 = {
@@ -456,12 +457,12 @@ RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular', 'mode': '0644', 'path': 
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/twin-result.schema.json', 'sha256': '14b7cec1a2818d1fa0fac61b05dd77ffc683a01812372b64a8c5f24660b73735'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/twin-snapshot.schema.json', 'sha256': 'c80da58c9c3ef2d49fdf0527d3310b611c87fde6c9fc6e9ee889d2cb127b65ff'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/typed-blueprint.schema.json', 'sha256': 'd784099a65a700d9e9e72ea6993b8480c9bf7c7efa2f222a7f341a271526b97c'},
- {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': 'f19a789480085b61b6e45727ef67970c100113f9354e236b63afcbc00340ec96'},
+ {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': 'af8b13abee507581228327d2e23b3a3cf0ab15b98d2c90ffe694ac503f069048'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/__init__.py', 'sha256': 'cc7bab82ee31fa4e8bd55746442746877fee99a76cf1c9376ec95d5f3f8a11ba'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/test_g012_mcp_capabilities.py', 'sha256': '668635b035bf72078c65ca8695eafe7869073caf8004915ae8ec73ca48506adf'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/test_g012_mcp_limits.py', 'sha256': 'f08aa835ab1ed03c24df35caa3c8bf97640886ddde467f2532ff722a9bf1aa82'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/__init__.py', 'sha256': '5075760cded34ab259a764674a6620d857ab3eb623e037bf5066abe132de88bd'},
- {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': '0160f4b7ed7884af906ba13ec36b3a14184f31b7993cfeab55eee9452d3f0358'},
+ {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': '2444066a624638590b8a4e33c9b3e45bf32cacc4ee2c71146d2ff774477d3d9b'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': 'd824b626e8cd262dd906f66788d33f108983a728006dfeb3fdf0dba1316cd213'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_canonical.py', 'sha256': '574a66140918d02765e5de7a1fa2e243843e32d464e438fe637c42aae41d7fe5'},
  {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_protection.py', 'sha256': 'b05064c39f88962a7b561532cfa2ef00b8a90605375cd06d9052ced8d0ef352e'},

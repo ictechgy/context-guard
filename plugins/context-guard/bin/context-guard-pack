@@ -13,6 +13,7 @@ import argparse
 import ast
 from collections import Counter, deque
 import copy
+from datetime import datetime, timezone
 import hashlib
 import heapq
 import importlib.machinery
@@ -4594,7 +4595,6 @@ def _graph_cache_path(
     query_terms: set[str],
 ) -> Path:
     key = (
-        os.path.realpath(root),
         revision,
         tuple(sorted(seed_paths)),
         tuple(sorted(query_terms)),
@@ -4667,6 +4667,32 @@ def _graph_cache_write(path: Path, payload: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
+def _graph_cache_receipt(cache_path: Path, *, hit: bool) -> dict[str, Any] | None:
+    try:
+        record = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    created_at = record.get("created_at")
+    content_sha256 = record.get("content_sha256")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not isinstance(content_sha256, str)
+    ):
+        return None
+    expires_at = datetime.fromtimestamp(
+        float(created_at) + GRAPH_CACHE_TTL_SECONDS, tz=timezone.utc
+    )
+    return {
+        "hit": hit,
+        "graph_cache_key": cache_path.stem,
+        "resolved_content_sha256": content_sha256,
+        "ttl_expires_at": expires_at.isoformat(),
+    }
+
+
 def build_cached_repo_map_payload(
     root: Path,
     args: argparse.Namespace,
@@ -4675,20 +4701,23 @@ def build_cached_repo_map_payload(
     *,
     root_arg: str,
     revision: str | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if revision is None:
         revision = _graph_cache_revision(root)
-    if revision is None:
-        return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+    if revision is None or _graph_cache_directory().is_symlink():
+        return (
+            build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg),
+            None,
+        )
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
     cache_path = _graph_cache_path(root, revision, seed_paths, query_terms)
     cached_payload = _graph_cache_loaded_payload(cache_path)
     if cached_payload is not None:
-        return cached_payload
+        return cached_payload, _graph_cache_receipt(cache_path, hit=True)
     payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
     _graph_cache_write(cache_path, payload)
-    return payload
+    return payload, _graph_cache_receipt(cache_path, hit=False)
 
 
 def build_graph_rank(
@@ -5516,7 +5545,7 @@ def build_auto_explain_payload(
         explain["repo_map"] = copy.deepcopy(repo_map_payload)
     elif root is not None:
         if getattr(args, "graph_cache", False) and graph_cache_revision is not None:
-            explain["repo_map"] = build_cached_repo_map_payload(
+            repo_map_result, repo_map_cache_receipt = build_cached_repo_map_payload(
                 root,
                 args,
                 suggest_payload,
@@ -5524,6 +5553,9 @@ def build_auto_explain_payload(
                 root_arg=root_arg,
                 revision=graph_cache_revision,
             )
+            explain["repo_map"] = repo_map_result
+            if repo_map_cache_receipt is not None:
+                explain["repo_map_cache"] = repo_map_cache_receipt
         else:
             explain["repo_map"] = build_repo_map_payload(
                 root, args, suggest_payload, build_payload, root_arg=root_arg
