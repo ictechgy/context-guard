@@ -81,6 +81,30 @@ OIDC availability and registry reachability before downloading candidates, then
 publishes only attested build-once tarballs with `id-token: write` and without
 `NODE_AUTH_TOKEN` or `NPM_TOKEN`.
 
+## npm-promote token deprecation risk
+
+`.github/workflows/npm-promote.yml` (moves the `next` dist-tag to `latest` after
+`npm-publish.yml` has published under `next`) still authenticates with classic
+npm automation tokens (`NPM_RECEIPT_PROMOTION_TOKEN` / `NPM_ROOT_PROMOTION_TOKEN`,
+environment `npm-pair-promote`), because npm's OIDC trusted publishing currently
+covers only `npm publish`, not `npm dist-tag add`.
+
+Per npm's bypass2FA deprecation
+(<https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/>):
+- **~2026-08**: bypass2FA tokens can no longer perform account-management
+  operations (token/2FA/package-access changes).
+- **~2027-01**: bypass2FA tokens can no longer publish directly at all;
+  publication must go through a human 2FA approval.
+
+`dist-tag add` mutates what `npm install` resolves to, the same way `publish`
+does, so treat it as covered by the 2027-01 cutoff — do not provision a fresh
+bypass2FA automation token for `npm-pair-promote` expecting it to last; it is a
+bridge measure only, not a durable fix. Before relying on one, check npm's
+current docs for whether trusted publishing (OIDC) has been extended to cover
+dist-tag operations. If not, redesign `npm-promote.yml` around npm's other
+recommended path — staged publishing with a human 2FA approval at promote
+time — rather than re-provisioning a token that will stop working.
+
 ## Clean-install smoke coverage
 
 `release_smoke.py` automates the read-only subset of the clean-install smoke by staging the plugin into a temporary package copy and running:
