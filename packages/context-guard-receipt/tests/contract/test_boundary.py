@@ -307,7 +307,7 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
                 "context-guard-kit/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
                 "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
                 "context-guard-kit/setup_wizard.py": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
-                "package.json": "a673602342639fed75a6fbcff4d1c9a66ccdb9e7db4630dde2a462455bb09126",
+                "package.json": "404ffd7d223241c5f774b4f728c0516dc48991431e0b15c6116afd2aa78e9c89",
                 "plugins/context-guard/.claude-plugin/plugin.json": "9760a90b2886f8f09d2d4de4193242c3f81eaee39326d31ab8d463f3389f1e61",
                 "plugins/context-guard/bin/context-guard-bench": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
                 "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",

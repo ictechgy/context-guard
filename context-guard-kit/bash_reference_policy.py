@@ -38,6 +38,7 @@ _RECEIPT_STATE_SELECTOR_DOMAIN = b"contextguard/bash-reference-state-selector/v1
 EXPECTED_RECEIPT_PACKAGE_FILES_SHA256_BY_VERSION: dict[str, str] = {
     "0.2.0": "303d39dcddef994edf14de146e4a9d0ffe2cc1bbf67645c6017012b55cd1d62d",
     "0.2.1": "830ebd4536cf19d0c4548d83f5b3eeccab7ca689065844a82c1dd5bb0593e641",
+    "0.2.2": "1ed530b7acadbc9a45917c13c51f6a61c83e4aeb3f745bacc6791f682bf79455",
 }
 _TRANSACTION_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 _EXACT_NPM_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")

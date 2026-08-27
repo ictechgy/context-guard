@@ -90,7 +90,7 @@ EXPECTED_MCP_HELP = (
 )
 EXPECTED_PACKAGE = {
     "name": "@ictechgy/context-guard-receipt",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
     "license": "Apache-2.0",
     "type": "commonjs",

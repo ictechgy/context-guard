@@ -675,7 +675,7 @@ class BashReferenceV1Tests(unittest.TestCase):
             (package / "package.json").write_text(json.dumps({
                 "name": "@ictechgy/context-guard",
                 "version": "0.5.1",
-                "dependencies": {"@ictechgy/context-guard-receipt": "0.2.1"},
+                "dependencies": {"@ictechgy/context-guard-receipt": "0.2.2"},
             }), encoding="utf-8")
             receipt = root / "node_modules" / "@ictechgy" / "context-guard-receipt"
             (receipt / "bin").mkdir(parents=True)

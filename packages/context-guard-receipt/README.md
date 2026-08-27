@@ -31,7 +31,7 @@ project, then invoke the two installed binaries directly:
 
 ```text
 npm pack --ignore-scripts
-npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.1.tgz
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.2.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
@@ -40,7 +40,7 @@ npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.1.tgz
 
 Any downgrade to an earlier release is an external package-manager/release gate
 requiring an independently retained immutable published artifact. This package
-does not simulate or reconstruct an older release from the `0.2.1` runtime tree.
+does not simulate or reconstruct an older release from the `0.2.2` runtime tree.
 
 The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or

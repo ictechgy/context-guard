@@ -115,10 +115,10 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': '9320520b5cdb52836a30b7c52e0b9b99c41a422c869578946599adbe0e5e610d',
+  'README.md': '7dc0ff867a6e3be22d5e0fb1983b024aed54d613e351ed7a912cd5bb59ed1845',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
-  'package.json': '0d030838d8f42024789aa202faa1b30defd59c778e0a4fa1cbd9e0e6d9346dc5',
+  'package.json': '02d39de740cfbda56f989ec59b2ad44afd7c87a246b2ea28a60adde92f268991',
   'python/context_guard_receipt/__init__.py': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6',
   'python/context_guard_receipt/assembly.py': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea',
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',

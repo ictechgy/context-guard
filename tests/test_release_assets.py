@@ -28,7 +28,7 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
         )
         root_version = root_package["version"]
         receipt_version = receipt_package["version"]
-        self.assertEqual(receipt_version, "0.2.1")
+        self.assertEqual(receipt_version, "0.2.2")
         self.assertEqual(
             root_package["dependencies"]["@ictechgy/context-guard-receipt"],
             receipt_version,
@@ -81,7 +81,7 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
         inventory_bytes = inventory_path.read_bytes()
         self.assertEqual(
             hashlib.sha256(inventory_bytes).hexdigest(),
-            "830ebd4536cf19d0c4548d83f5b3eeccab7ca689065844a82c1dd5bb0593e641",
+            "1ed530b7acadbc9a45917c13c51f6a61c83e4aeb3f745bacc6791f682bf79455",
         )
         policy = runpy.run_path(
             str(ROOT / "context-guard-kit/bash_reference_policy.py"),

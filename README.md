@@ -237,7 +237,7 @@ Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skil
 ### Opt-in Bash references for Claude Code
 
 The `bash_reference_v1` route is available only from an exact, project-local npm
-installation. The root package pins `@ictechgy/context-guard-receipt@0.2.1`; a
+installation. The root package pins `@ictechgy/context-guard-receipt@0.2.2`; a
 global, `npx`, source-checkout, Homebrew, or Claude marketplace-plugin layout
 keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
