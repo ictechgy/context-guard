@@ -118,7 +118,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'README.md': '7dc0ff867a6e3be22d5e0fb1983b024aed54d613e351ed7a912cd5bb59ed1845',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
-  'package.json': '02d39de740cfbda56f989ec59b2ad44afd7c87a246b2ea28a60adde92f268991',
+  'package.json': '90def60c27e89df03047e56bb8c5e2d16381bdde53c1b5dcf03405d3aeb8b783',
   'python/context_guard_receipt/__init__.py': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6',
   'python/context_guard_receipt/assembly.py': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea',
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',

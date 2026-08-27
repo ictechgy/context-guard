@@ -81,7 +81,7 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
         inventory_bytes = inventory_path.read_bytes()
         self.assertEqual(
             hashlib.sha256(inventory_bytes).hexdigest(),
-            "1ed530b7acadbc9a45917c13c51f6a61c83e4aeb3f745bacc6791f682bf79455",
+            "42f5c74722f409b1fbf1101433808acdcdf547d750d19bd9160f8b65596e7de2",
         )
         policy = runpy.run_path(
             str(ROOT / "context-guard-kit/bash_reference_policy.py"),
