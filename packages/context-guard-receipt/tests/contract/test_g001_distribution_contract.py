@@ -94,6 +94,11 @@ EXPECTED_PACKAGE = {
     "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
     "license": "Apache-2.0",
     "type": "commonjs",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ictechgy/context-guard.git",
+        "directory": "packages/context-guard-receipt",
+    },
     "bin": {
         "context-guard-receipt": "bin/context-guard-receipt.cjs",
         "context-guard-receipt-mcp": "bin/context-guard-receipt-mcp.cjs",
