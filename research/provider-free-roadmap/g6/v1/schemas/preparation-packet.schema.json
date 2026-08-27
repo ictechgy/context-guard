@@ -392,7 +392,7 @@
           "type": "string"
         },
         "g5_freeze_lock_sha256": {
-          "const": "4da399f445b2ff1d033c712083bd605b7cb0e6f210c7c24abe36d5f1df501f96",
+          "const": "1afb0bae91fd38693d9c3beb262ef9b87046eca9b975dbb7e10994435dab6363",
           "type": "string"
         },
         "g5_preregistration": {
@@ -407,7 +407,7 @@
               "type": "string"
             },
             "sha256": {
-              "const": "6aed6f0818d5364d052eb98413be3cf57342f13374d1c421605b2bb4526654af",
+              "const": "62ba6947b0c11043d1486b9f7bd16dd5f4ea7f5c173b4009c097f7bb5bc195af",
               "type": "string"
             }
           },
@@ -449,7 +449,7 @@
               "type": "integer"
             },
             "sha256": {
-              "const": "7667de85f2fb71ef84b57f4edf7544a30d5a171043567b30e49fdab1b5f161b6",
+              "const": "f45a4845976755647b1404615429c49356e75e32e7df7442c0476220fd35c019",
               "type": "string"
             }
           },
@@ -460,7 +460,7 @@
           "type": "object"
         },
         "g5_tree_sha256": {
-          "const": "de89fe567ccdaead27ff9853066108defbbab910f2a1fb42a005a2df2a7238be",
+          "const": "1ad74f5d4705cc911f7ccfbc903fb395cb8b0e2655b76616ae923e3bbe6d55f6",
           "type": "string"
         },
         "g5_verifier": {
@@ -475,7 +475,7 @@
               "type": "string"
             },
             "sha256": {
-              "const": "0a6952142804247c443300d28dac6345175a61d19ceaa00273840459a46e6672",
+              "const": "75e38c3a6733f74584d70df1616aeda0e2f8e4d4fb31d8745eb633321c43755f",
               "type": "string"
             }
           },

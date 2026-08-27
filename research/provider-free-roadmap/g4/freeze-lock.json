@@ -1,12 +1,12 @@
 {
   "algorithm": "sha256",
   "g3_source": {
-    "lock_sha256": "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52",
-    "manifest_sha256": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889",
+    "lock_sha256": "9a1643bb4994724efc8e50e50fbdca0992174a34216c94e1827dcc7bfe874eb2",
+    "manifest_sha256": "508a47a0b66c945dc5f5b791ec38a2a815bed6a6f7493babf23d89f60b428bae",
     "runner_sha256": "6683de5244428714a273dd50f9b12a84c9a4c47e96f3cc97e1c18272c5b50f23",
     "schema_set_bytes": 25254,
     "schema_set_sha256": "2ad1c70def6011139ecc76d4761268d6534af564f39bcce381fcbcf9a1cc2a7c",
-    "tree_root_sha256": "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b"
+    "tree_root_sha256": "0424970cf2ead64f52f7e3469d0445d6d39bbfe46f859c21833e69a3c3ab4078"
   },
   "inventory": [
     {
@@ -19,13 +19,13 @@
       "bytes": 664,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g4/v1/claim-policy.json",
-      "sha256": "522413abffa1a99ff74160d7f6055bffabf2a02eaded3bf3adc077d7ea19dee2"
+      "sha256": "2d0b990a34eebb882039f4443f3527c9955875d8f1696f082af4660ecaeafef0"
     },
     {
       "bytes": 1155,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g4/v1/schemas/claim-policy.schema.json",
-      "sha256": "f51b1969688e651f56abcaef8cdb86a4e4e538da74688c8359bff099044f5999"
+      "sha256": "38ea41a916c2792174446adabc218334e62d32c824d5775c2ff5ca74cb4d077c"
     },
     {
       "bytes": 3686,
@@ -43,7 +43,7 @@
       "bytes": 22950,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g4/v1/verify.py",
-      "sha256": "60296da05f0418287a7a74fe9d98e0c8e38befaf5dad59b9d11ff4ce07a2884b"
+      "sha256": "b20ffcf8ac10e7cf0300c90ca91e63238e1f69bc1ed8ee1acbf6b0fc6bdd82e7"
     },
     {
       "bytes": 15713,
@@ -53,5 +53,5 @@
     }
   ],
   "schema_version": "contextguard.g4-freeze-lock/v1",
-  "tree_root_sha256": "568b7630561ab6fe48b3cf702c0f9562a92aa24fca03064419d8812818545458"
+  "tree_root_sha256": "6a97fb1c574232c78f4acc2aef84ddf9bc66e40d2ba287373bb5c00345d3a46c"
 }

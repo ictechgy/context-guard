@@ -14,8 +14,8 @@
   ],
   "schema_version": "contextguard.g4-claim-policy/v2",
   "source_contract": {
-    "g3_freeze_lock_sha256": "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52",
-    "g3_manifest_sha256": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889",
-    "g3_tree_sha256": "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b"
+    "g3_freeze_lock_sha256": "9a1643bb4994724efc8e50e50fbdca0992174a34216c94e1827dcc7bfe874eb2",
+    "g3_manifest_sha256": "508a47a0b66c945dc5f5b791ec38a2a815bed6a6f7493babf23d89f60b428bae",
+    "g3_tree_sha256": "0424970cf2ead64f52f7e3469d0445d6d39bbfe46f859c21833e69a3c3ab4078"
   }
 }

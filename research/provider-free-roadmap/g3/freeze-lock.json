@@ -1,9 +1,9 @@
 {
   "algorithm": "sha256",
   "g2_source": {
-    "lock_sha256": "dfe0bf76f9dad2441d6d7e41ecec19cf936b9c6f47ef33c8e53e7da56a4cd552",
-    "tree_root_sha256": "27568e5c8488c6dd5c99665d770d11115f8048e0787675a6574daf7328a13811",
-    "verifier_sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
+    "lock_sha256": "a3e66b4894233dc8f8e2317926fcde10c41ba938b7dfb29777cfd4388e5b04db",
+    "tree_root_sha256": "830c0434eb8b49a0395c5e3fab3b87251ff2054263ecbdd9b1c261f6f79c06c6",
+    "verifier_sha256": "e1beb3f986368f8b5055f6dc91cb0b95d91db0dbfdbccb779a1ee1f376a87d94"
   },
   "inventory": [
     {
@@ -19,10 +19,10 @@
       "sha256": "f9869c1d685bcd4cc8be13bc120871909ea071a1a241305456aeb0b8eacc3bda"
     },
     {
-      "bytes": 9852,
+      "bytes": 11436,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g3/v1/manifest.json",
-      "sha256": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889"
+      "sha256": "508a47a0b66c945dc5f5b791ec38a2a815bed6a6f7493babf23d89f60b428bae"
     },
     {
       "bytes": 73745,
@@ -82,9 +82,9 @@
       "bytes": 42280,
       "mode": "0644",
       "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-      "sha256": "c78f2510c23f343a4355ec43f5f7924a6a5ac0e98aa174c7e199f3e937ac4496"
+      "sha256": "772e76db2ee184b6ef1c27d5afa700cc815bc47cbdd4b33022546e619571051a"
     }
   ],
   "schema_version": "contextguard.g3-freeze-lock/v1",
-  "tree_root_sha256": "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b"
+  "tree_root_sha256": "0424970cf2ead64f52f7e3469d0445d6d39bbfe46f859c21833e69a3c3ab4078"
 }

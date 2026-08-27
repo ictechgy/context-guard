@@ -13,7 +13,6 @@ import argparse
 import ast
 from collections import Counter, deque
 import copy
-from datetime import datetime, timezone
 import hashlib
 import heapq
 import importlib.machinery
@@ -4741,14 +4740,14 @@ def _graph_cache_receipt(
         or not isinstance(content_sha256, str)
     ):
         return None
-    expires_at = datetime.fromtimestamp(
-        float(created_at) + ttl_seconds, tz=timezone.utc
+    expires_at_iso = time.strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(float(created_at) + ttl_seconds)
     )
     return {
         "hit": hit,
         "graph_cache_key": cache_path.stem,
         "resolved_content_sha256": content_sha256,
-        "ttl_expires_at": expires_at.isoformat(),
+        "ttl_expires_at": expires_at_iso,
     }
 
 

@@ -1,16 +1,16 @@
 {
   "packer_bindings": {
     "canonical": {
-      "bytes": 257840,
+      "bytes": 268797,
       "mode": "0755",
       "path": "context-guard-kit/context_pack.py",
-      "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"
+      "sha256": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4"
     },
     "plugin": {
-      "bytes": 257840,
+      "bytes": 268797,
       "mode": "0755",
       "path": "plugins/context-guard/bin/context-guard-pack",
-      "sha256": "8568f024c0bf4e8bccb46bf96c28ede7f0d456b4b314d92eb5a7fd64e8d8142f"
+      "sha256": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4"
     },
     "require_byte_equality": true
   },
@@ -295,10 +295,10 @@
       "bytes": 81832,
       "mode": "0644",
       "path": "research/provider-free-roadmap/g2/v1/verify.py",
-      "sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
+      "sha256": "e1beb3f986368f8b5055f6dc91cb0b95d91db0dbfdbccb779a1ee1f376a87d94"
     }
   ],
-  "public_tree_root_sha256": "44c5f0816192db446ec104e885ddf309c77f6bd55e6ac7cea2534d055af44106",
+  "public_tree_root_sha256": "48f476d6f81a8ceb5e040d0e4c85c1fcecccdd0afa1bc34ea6f8d859b08f3a2a",
   "python_binding": {
     "bytes": 52448,
     "implementation": "cpython",
@@ -323,5 +323,5 @@
   ],
   "scorer_tree_root_sha256": "6e349c75476fd18facd6770c51aae151449e79ae2bb20a2c149b6f736b328921",
   "tree_algorithm": "sha256-domain-separated-length-prefixed-v2",
-  "tree_root_sha256": "27568e5c8488c6dd5c99665d770d11115f8048e0787675a6574daf7328a13811"
+  "tree_root_sha256": "830c0434eb8b49a0395c5e3fab3b87251ff2054263ecbdd9b1c261f6f79c06c6"
 }

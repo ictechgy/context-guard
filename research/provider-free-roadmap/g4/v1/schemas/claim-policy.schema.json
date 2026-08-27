@@ -5,7 +5,7 @@
     "allowed_claims": {"const": ["provider_free_rehearsal", "correctness_of_local_contract", "reproducibility", "measurement_readiness"], "type": "array"},
     "forbidden_claims": {"const": ["token_savings", "provider_performance", "production_readiness", "external_validity", "generalization"], "type": "array"},
     "schema_version": {"const": "contextguard.g4-claim-policy/v2", "type": "string"},
-    "source_contract": {"additionalProperties": false, "properties": {"g3_freeze_lock_sha256": {"const": "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52", "type": "string"}, "g3_manifest_sha256": {"const": "e9258b25e9af652196dc99401bfa053c3446f3241865639822db3a07ff139889", "type": "string"}, "g3_tree_sha256": {"const": "f04f8374b2afa9621ee3719b80c295c75faa9bde2de5c286bcac1ffbce55299b", "type": "string"}}, "required": ["g3_freeze_lock_sha256", "g3_manifest_sha256", "g3_tree_sha256"], "type": "object"}
+    "source_contract": {"additionalProperties": false, "properties": {"g3_freeze_lock_sha256": {"const": "9a1643bb4994724efc8e50e50fbdca0992174a34216c94e1827dcc7bfe874eb2", "type": "string"}, "g3_manifest_sha256": {"const": "508a47a0b66c945dc5f5b791ec38a2a815bed6a6f7493babf23d89f60b428bae", "type": "string"}, "g3_tree_sha256": {"const": "0424970cf2ead64f52f7e3469d0445d6d39bbfe46f859c21833e69a3c3ab4078", "type": "string"}}, "required": ["g3_freeze_lock_sha256", "g3_manifest_sha256", "g3_tree_sha256"], "type": "object"}
   },
   "required": ["allowed_claims", "forbidden_claims", "schema_version", "source_contract"],
   "type": "object"
