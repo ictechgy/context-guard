@@ -54,7 +54,7 @@
     },
     "canonical_packer": {
       "path": "context-guard-kit/context_pack.py",
-      "sha256": "2c85f913fdfe434a5dcc7f70defd4e34a41a624c59d41c67f5157c6f15a57ce2"
+      "sha256": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4"
     },
     "canonical_sanitizer": {
       "path": "context-guard-kit/sanitize_output.py",
@@ -78,7 +78,7 @@
     },
     "plugin_packer": {
       "path": "plugins/context-guard/bin/context-guard-pack",
-      "sha256": "2c85f913fdfe434a5dcc7f70defd4e34a41a624c59d41c67f5157c6f15a57ce2"
+      "sha256": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4"
     },
     "plugin_sanitizer": {
       "path": "plugins/context-guard/bin/context-guard-sanitize-output",

@@ -15,7 +15,7 @@
       "test_artifact": {
         "bytes": 55701,
         "path": "tests/test_provider_free_roadmap_boundary.py",
-        "sha256": "a5d860ff793d88e088894eab5c381fa0743928b610e02b68788bcee41815d871"
+        "sha256": "cf1aad92a3c530fc75e747c15a7a47eaacfffec6a34e30c0c6a9d77cee73e13e"
       }
     },
     "g2-contract-tests": {
@@ -28,42 +28,42 @@
       "verifier_artifact": {
         "bytes": 81832,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
+        "sha256": "e1beb3f986368f8b5055f6dc91cb0b95d91db0dbfdbccb779a1ee1f376a87d94"
       }
     },
     "g3-rehearsal-tests": {
       "g2_verifier_artifact": {
         "bytes": 81832,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
+        "sha256": "e1beb3f986368f8b5055f6dc91cb0b95d91db0dbfdbccb779a1ee1f376a87d94"
       },
       "g3_lock_artifact": {
-        "bytes": 3330,
+        "bytes": 3331,
         "path": "research/provider-free-roadmap/g3/freeze-lock.json",
-        "sha256": "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52"
+        "sha256": "9a1643bb4994724efc8e50e50fbdca0992174a34216c94e1827dcc7bfe874eb2"
       },
       "module": "g3_rehearsal_tests",
       "test_artifact": {
         "bytes": 42280,
         "path": "tests/provider-free-roadmap/test_g3_rehearsal.py",
-        "sha256": "c78f2510c23f343a4355ec43f5f7924a6a5ac0e98aa174c7e199f3e937ac4496"
+        "sha256": "772e76db2ee184b6ef1c27d5afa700cc815bc47cbdd4b33022546e619571051a"
       }
     },
     "g4-claim-gates": {
       "g2_verifier_artifact": {
         "bytes": 81832,
         "path": "research/provider-free-roadmap/g2/v1/verify.py",
-        "sha256": "7785decb9381fa9027138e2c6fa82ca98dbea33e3ab9e99c2a24872942b6c98f"
+        "sha256": "e1beb3f986368f8b5055f6dc91cb0b95d91db0dbfdbccb779a1ee1f376a87d94"
       },
       "g3_lock_artifact": {
-        "bytes": 3330,
+        "bytes": 3331,
         "path": "research/provider-free-roadmap/g3/freeze-lock.json",
-        "sha256": "ad04a69d9600ce57ee23e0cd1a5e3b415f7947e3232fdcd55191da6f2e199c52"
+        "sha256": "9a1643bb4994724efc8e50e50fbdca0992174a34216c94e1827dcc7bfe874eb2"
       },
       "g4_lock_artifact": {
         "bytes": 2202,
         "path": "research/provider-free-roadmap/g4/freeze-lock.json",
-        "sha256": "4680432dc093982db2627d207e782f523bf3896e9562d14e220b798f473b7e51"
+        "sha256": "1cb0be185e5fc8942fbda8ba73aaedf532eaa42b8a679823aab95e61c80fd7ec"
       },
       "module": "g4_claim_gate_tests",
       "test_artifact": {
@@ -76,12 +76,12 @@
       "g4_lock_artifact": {
         "bytes": 2202,
         "path": "research/provider-free-roadmap/g4/freeze-lock.json",
-        "sha256": "4680432dc093982db2627d207e782f523bf3896e9562d14e220b798f473b7e51"
+        "sha256": "1cb0be185e5fc8942fbda8ba73aaedf532eaa42b8a679823aab95e61c80fd7ec"
       },
       "g5_lock_artifact": {
         "bytes": 2438,
         "path": "research/provider-free-roadmap/g5/freeze-lock.json",
-        "sha256": "4da399f445b2ff1d033c712083bd605b7cb0e6f210c7c24abe36d5f1df501f96"
+        "sha256": "1afb0bae91fd38693d9c3beb262ef9b87046eca9b975dbb7e10994435dab6363"
       },
       "module": "g5_p2_preregistration_tests",
       "test_artifact": {
@@ -94,12 +94,12 @@
       "g5_lock_artifact": {
         "bytes": 2438,
         "path": "research/provider-free-roadmap/g5/freeze-lock.json",
-        "sha256": "4da399f445b2ff1d033c712083bd605b7cb0e6f210c7c24abe36d5f1df501f96"
+        "sha256": "1afb0bae91fd38693d9c3beb262ef9b87046eca9b975dbb7e10994435dab6363"
       },
       "g6_lock_artifact": {
         "bytes": 2069,
         "path": "research/provider-free-roadmap/g6/freeze-lock.json",
-        "sha256": "d623371ca4944847b528c270359b8c48970666c9b6215416bb1f630bb79d8578"
+        "sha256": "013be2656301daa44c4c87d218245193fba226e40a1a7813db8f618c99bf9736"
       },
       "module": "g6_prepared_unapproved_tests",
       "test_artifact": {

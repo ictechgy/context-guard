@@ -4,6 +4,33 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-27
+
+- Added an opt-in `--graph-cache` flag to `context-guard-pack auto` that
+  caches deterministic graph-rank/repo-map explain metadata, keyed to a
+  clean git commit, worktree/query, with content-hash self-authentication,
+  TTL expiry, and a bounded quota with oldest-first eviction.
+- Hardened `--graph-cache`: the cache key no longer depends on the
+  worktree's absolute filesystem path (two clean checkouts of the same
+  commit/content now share one cache entry); a symlinked
+  `CONTEXT_GUARD_GRAPH_CACHE_DIR` is never followed (the cache is bypassed
+  for that invocation instead of writing through it); `--explain` now
+  reports a machine-readable `repo_map_cache` receipt (`hit`,
+  `graph_cache_key`, `resolved_content_sha256`, `ttl_expires_at`).
+- Added `--graph-cache-ttl-seconds` to override the fixed default cache
+  expiry window for a single invocation.
+- Added `--graph-impact-scope` (with `--graph-impact-scope-depth`, default
+  1): used together with `--diff`, reports which other files are within N
+  import-edge hops of the diff's changed files as additive
+  `explain.repo_map.graph.impact_scope` metadata.
+- Bound `receipt_expand` to an optional caller-declared `task_scope`,
+  matching the same scope-commitment check `receipt_context` already
+  applies - plumbing only, no current issuer populates a scope yet.
+- Added `runner_result_summary`, a purely additive trim-output digest
+  field that recognizes pytest's and cargo test's own terminal aggregate
+  summary line regardless of exit code, so a large successful run gets the
+  same structured digest benefit a failing run already had.
+
 ## [0.7.1] - 2026-08-24
 
 - Hardened three context-guard-kit security surfaces: `run_guarded_git()` now
