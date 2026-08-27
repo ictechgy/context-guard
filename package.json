@@ -13,7 +13,7 @@
   },
   "type": "commonjs",
   "dependencies": {
-    "@ictechgy/context-guard-receipt": "0.2.1"
+    "@ictechgy/context-guard-receipt": "0.2.2"
   },
   "bin": {
     "context-guard": "plugins/context-guard/bin/context-guard",

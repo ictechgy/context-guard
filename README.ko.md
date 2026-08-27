@@ -224,7 +224,7 @@ npm exec @ictechgy/context-guard -- --version
 ### Claude Code용 선택적 Bash reference
 
 `bash_reference_v1` 경로는 정확한 프로젝트 로컬 npm 설치에서만 사용할 수
-있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.2.1`을 정확히
+있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.2.2`을 정확히
 고정합니다. global npm, `npx`, 소스 체크아웃, Homebrew, Claude marketplace
 plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 reference 경로를
 사용할 수 없다고 알립니다.
