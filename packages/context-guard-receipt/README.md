@@ -10,6 +10,9 @@ diagnostics:
 ```text
 context-guard-receipt inspect boundary
 context-guard-receipt evaluate phase --input <file|->
+context-guard-receipt evaluate full-wire --input <file|->
+context-guard-receipt evaluate calibration --input <file|->
+context-guard-receipt evaluate route-v2 --input <file|->
 context-guard-receipt assemble --kind evidence|blueprint|tool-schemas --descriptor <file|-> --root <absolute>
 context-guard-receipt run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
 context-guard-receipt inspect diagnostics --input <file|->
@@ -31,7 +34,7 @@ project, then invoke the two installed binaries directly:
 
 ```text
 npm pack --ignore-scripts
-npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.2.tgz
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.3.0.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
@@ -40,7 +43,7 @@ npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.2.2.tgz
 
 Any downgrade to an earlier release is an external package-manager/release gate
 requiring an independently retained immutable published artifact. This package
-does not simulate or reconstruct an older release from the `0.2.2` runtime tree.
+does not simulate or reconstruct an older release from the `0.3.0` runtime tree.
 
 The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or
@@ -104,7 +107,7 @@ reserved `inspect` targets, including `lease`, stay unavailable.
 The MCP binary is a bounded local stdio server for one explicit absolute
 `--root`. After normal MCP initialization it exposes only `receipt_assemble`,
 `receipt_context`, `receipt_diagnose`, `receipt_expand`, `receipt_inspect`,
-`receipt_tool_select`, and `receipt_twin`; it does not expose command capture,
+`receipt_pack`, `receipt_tool_select`, and `receipt_twin`; it does not expose command capture,
 reference-expiry administration, configuration, registration, provider, or
 network tools. Its `cgr1m_` capabilities are random, process-local, limited to
 300 seconds, and invalid after process exit or restart. Without `--state-dir`,
@@ -113,6 +116,21 @@ absolute `--state-dir` enables only the existing authenticated advisory twin;
 the directory is fixed by the server process and cannot be supplied by a tool
 call. If the pinned root instance or its logical state drifts, the server stops
 accepting work and must be restarted.
+
+`receipt_pack` reads up to sixteen explicit, unique, non-empty regular files
+beneath the pinned root, preserves their caller order, and emits one bounded
+evidence pack. Whole files that fit the declared retained-byte budget remain
+inline; the rest become exact source-current capabilities. Every deferred
+capability is bound to the required `task_scope`, and neither paths nor scope
+text are returned. The tool does not rank files, infer task relevance, or
+intercept host context.
+
+`receipt_tool_select` optionally accepts `profile_id` together with
+`task_scope`. Within that process, the same profile reuses the exact original
+catalog bundle and capabilities. A changed catalog or retain policy is refused
+as profile drift rather than silently rebuilding a new prefix, and deferred
+schema expansion requires the matching task scope. Profile labels are keyed
+locally and never reflected.
 
 `receipt_context` is the explicit product bridge for repeated local files and
 logs. `action: "store"` requires the caller to affirm `caller_classification:
@@ -451,6 +469,27 @@ same-UID isolation boundary or an atomic defense against trusted actors.
 
 Use `context-guard-receipt --help` for the human-readable command summary and
 `context-guard-receipt-mcp --help` for the explicit bounded stdio MCP summary.
+
+## Full-wire budget and calibration evaluation
+
+`context-guard-receipt evaluate full-wire --input <file|->` reads one bounded
+canonical envelope with `baseline`, `candidate`, `protected_pointers`, and an
+`enforce` boolean. It compares the complete canonical request bytes, blocks
+protected-pointer or output-budget regressions, and reports stable-prefix
+preservation diagnostically without emitting or storing either request.
+
+`context-guard-receipt evaluate calibration --input <file|->` joins bounded
+preflight and observed numeric rows by opaque `(model_hmac, request_hmac)`
+identity. It reports integer input-estimate multipliers, cache-prediction
+accuracy, and output-budget utilization only when the declared minimum sample
+count is met. Recommendations are never applied automatically and contain no
+raw model, request, prompt, or path data.
+
+`context-guard-receipt evaluate route-v2 --input <file|->` evaluates one closed
+integer-microusd total-cost envelope. Provider input/output, cache, expansion,
+retry, helper, and local costs are summed before the quality, risk, evidence,
+full-wire, and savings gates are applied. The result is shadow-only advice;
+`runtime_applied` and runtime route authority remain false on every path.
 
 ## Closed phase evaluation
 

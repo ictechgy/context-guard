@@ -162,7 +162,7 @@ context-guard setup --rules-only --agent claude --scope project --narration-mode
 | 출력 축약과 민감정보 가림 | 테스트·빌드·검색·diff 출력을 작게 만들고, 에이전트 컨텍스트에 들어가기 전에 민감해 보이는 값을 가립니다. |
 | 선언형 출력 필터 | 사용자 정의 JSON DSL로 성공 출력만 명시적으로 줄이고, 보호해야 하는 실패 출력은 원문 stdout/stderr와 종료 코드를 보존합니다. |
 | 로컬 로그 보관소 | 큰 로그를 대화 밖 로컬 저장소에 보관하고, 요약 정보나 요청한 줄 범위만 다시 가져옵니다. |
-| Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정합니다. `context-guard route-advisor`는 로컬 총비용과 batchability route 후보를 요약하며, ledger를 쓸 때도 원문 대신 keyed HMAC fingerprint만 저장합니다. `--enforce`를 명시하지 않으면 경고만 합니다. |
+| Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정합니다. `context-guard-receipt evaluate full-wire`는 baseline/candidate 전체 요청 envelope를 하나의 canonical-byte ceiling으로 비교하고 protected JSON pointer와 출력 토큰 예산이 유지되거나 줄었는지 검사합니다. `context-guard route-advisor`는 로컬 총비용과 batchability route 후보를 요약하며, ledger를 쓸 때도 원문 대신 keyed HMAC fingerprint만 저장합니다. `--enforce`를 명시하지 않으면 경고만 합니다. |
 | 예산 기반 컨텍스트 패커 | 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown 팩으로 조립하고, 로컬 신호에서 `build`용 manifest를 추천하며, `--explain`, `--adaptive-k`, `--symbol-memory`로 로컬 자문 메타데이터를 덧붙일 수 있습니다. |
 | Tool/MCP schema pruner | 로컬 catalog에서 bounded top-k tool/schema 자문 리포트를 만들고, compact 요약 기록과 전체 가림 처리된 payload 재조회 경로를 남깁니다. |
 | 보수적 stdin 압축기 | 선택한 JSON, diff, 로그, 검색 출력, 코드, 산문을 줄이고, 관측 바이트 근거와 추정 토큰 proxy를 함께 표시합니다. `--mode readable`은 exact fallback 안내가 있는 opt-in 산문 preview를 추가합니다. |
@@ -224,7 +224,7 @@ npm exec @ictechgy/context-guard -- --version
 ### Claude Code용 선택적 Bash reference
 
 `bash_reference_v1` 경로는 정확한 프로젝트 로컬 npm 설치에서만 사용할 수
-있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.2.2`을 정확히
+있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.3.0`을 정확히
 고정합니다. global npm, `npx`, 소스 체크아웃, Homebrew, Claude marketplace
 plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 reference 경로를
 사용할 수 없다고 알립니다.
@@ -420,10 +420,15 @@ context-guard-pack auto --root . --query "checkout retry 수정" --diff worktree
 ### 총비용, batchability, routing 후보 자문
 
 ```bash
+context-guard-receipt evaluate full-wire --input full-wire-evaluation.json
 ./plugins/context-guard/bin/context-guard route-advisor --workload workload.json --json
 ./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
 ./plugins/context-guard/bin/context-guard cost advisory --workload advisory-workload.json --json
 ```
+
+`context-guard-receipt evaluate full-wire`는 `schema_version=contextguard.full-wire-budget-request/v1`, `baseline`, `candidate`, `protected_pointers`, boolean `enforce`를 담은 크기 제한 canonical JSON envelope 하나를 읽습니다. 전체 canonical JSON byte를 비교하고 protected pointer 값이 같으며 한쪽에 `max_tokens`가 선언된 경우 candidate 예산이 늘거나 사라지지 않았는지 검사합니다. Cache-prefix 보존은 진단 정보이고, 요청 원문은 출력·저장하지 않으며 canonical JSON byte는 실제 HTTP wire byte나 provider 측정 token 절감값이 아닙니다.
+
+`context-guard-receipt evaluate calibration`은 선언된 최소 표본 이후 HMAC-only preflight/observation row를 결합하고, `evaluate route-v2`는 그 integer 총비용 정책을 shadow-only 자문으로 평가합니다. 어느 명령도 자동 route나 절감 주장을 허가하지 않습니다.
 
 `context-guard route-advisor`는 로컬 passive advisor입니다. caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽고 total-cost accounting, batchability blocker, batch API·prompt-cache prefix 보존·structured outputs·저비용 모델 평가 같은 route 후보를 출력합니다. queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오지 않으며, provider feature는 caller-supplied 또는 unknown/recheck-required로 표시합니다. 추천은 후보일 뿐입니다. hosted token/cost 절감을 주장하려면 matched successful task, 비열등 quality gate, shifted-cost evidence가 필요합니다.
 
@@ -632,7 +637,11 @@ reference를 반환하며, 반복 조회에는 같은 live reference를 재사�
 process-local입니다. 선택적 task scope는 task 간 재사용을 막고, 명시적 release는
 context GC를 수행하며, content-free history에는 process-keyed HMAC과 결정만
 남습니다. `receipt_diagnose`는 파일 byte를 반환하지 않고 비적용 shadow
-firewall/router와 prefix 재사용 기반 scout/surgeon 안내를 제공합니다. 명시적
+firewall/router와 prefix 재사용 기반 scout/surgeon 안내를 제공합니다.
+`receipt_pack`은 필수 task scope에 묶인 caller 순서의 bounded multi-file pack과
+exact deferred expansion을 만들며, task-scoped `receipt_tool_select` profile은
+하나의 안정적인 catalog bundle을 재사용하고 drift를 새 prefix로 재생성하지 않고
+거부합니다. 명시적
 private `--state-dir`로 같은 binary를 시작하면 action을 실행하지 않는
 authenticated `receipt_twin` 근거 기록만 추가됩니다. 스스로 등록되거나 전체
 prompt를 가로채지 않고, capability가 재시작을 넘어 유지되지 않으며, provider를

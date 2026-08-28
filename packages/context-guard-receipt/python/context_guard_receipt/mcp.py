@@ -108,6 +108,7 @@ _TOOL_NAMES: Final = (
     "receipt_diagnose",
     "receipt_expand",
     "receipt_inspect",
+    "receipt_pack",
     "receipt_tool_select",
     "receipt_twin",
 )
@@ -146,6 +147,13 @@ class _ContextCacheEntry:
 @dataclass(frozen=True, slots=True)
 class _ContextLease:
     scope_hmac_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolProfileEntry:
+    descriptor_sha256: str
+    capabilities: tuple[str, ...]
+    result: dict[str, object]
 
 
 MAX_CONTEXT_HISTORY_EVENTS: Final = 256
@@ -833,10 +841,57 @@ def _tool_definitions() -> list[dict[str, object]]:
         },
         {
             "annotations": annotations,
+            "description": (
+                "Build one bounded multi-file evidence pack with task-scoped exact expansion."
+            ),
+            "inputSchema": {
+                **closed,
+                "properties": {
+                    "relative_paths": {
+                        "items": {"maxLength": 4096, "minLength": 1, "type": "string"},
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": True,
+                    },
+                    "retained_budget_bytes": {
+                        "maximum": MAX_ASSEMBLY_PAYLOAD_BYTES,
+                        "minimum": 0,
+                        "type": "integer",
+                    },
+                    "task_scope": {
+                        "maxLength": MAX_TASK_SCOPE_BYTES,
+                        "minLength": 1,
+                        "type": "string",
+                    },
+                },
+                "required": [
+                    "relative_paths",
+                    "retained_budget_bytes",
+                    "task_scope",
+                ],
+            },
+            "name": "receipt_pack",
+        },
+        {
+            "annotations": annotations,
             "description": "Select a bounded tool-schema catalog beneath the pinned root.",
             "inputSchema": {
                 **closed,
-                "properties": {"descriptor": {"type": "object"}},
+                "properties": {
+                    "descriptor": {"type": "object"},
+                    "profile_id": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9._-]+$",
+                        "type": "string",
+                    },
+                    "task_scope": {
+                        "maxLength": MAX_TASK_SCOPE_BYTES,
+                        "minLength": 1,
+                        "type": "string",
+                    },
+                },
                 "required": ["descriptor"],
             },
             "name": "receipt_tool_select",
@@ -945,7 +1000,16 @@ class MCPServer:
         self._tool_calls = 0
         self._seen_ids: set[tuple[type, object]] = set()
         self._call_lock = threading.Lock()
-        self._tool_references: dict[str, tuple[dict[str, object], dict[str, object] | None]] = {}
+        self._tool_references: dict[
+            str,
+            tuple[
+                dict[str, object],
+                dict[str, object] | None,
+                str | None,
+            ],
+        ] = {}
+        self._tool_profiles: dict[str, _ToolProfileEntry] = {}
+        self._tool_profile_cache_hits = 0
         self._context_cache: dict[
             tuple[str, str, tuple[str, ...], str | None], _ContextCacheEntry
         ] = {}
@@ -1284,6 +1348,114 @@ class MCPServer:
         if expanded.disposition is not ExpansionDisposition.EXACT:
             raise _InvalidInput
         return expanded.output_bytes
+
+    def _pack_capabilities(self, output: bytes) -> tuple[str, ...]:
+        parsed = parse_canonical_json_bytes(output, limits=_RESPONSE_JSON_LIMITS)
+        if type(parsed) is not dict or parsed.get("artifact_kind") != "evidence_pack":
+            raise _InvalidInput
+        segments = parsed.get("segments")
+        if type(segments) is not list:
+            raise _InvalidInput
+        capabilities: list[str] = []
+        for segment in segments:
+            if type(segment) is not dict or segment.get("kind") not in {
+                "retained",
+                "deferred",
+            }:
+                raise _InvalidInput
+            if segment.get("kind") != "deferred":
+                continue
+            capability = segment.get("capability")
+            if not _valid_handle(capability, _EXTERNAL_PREFIX):
+                raise _InvalidInput
+            capabilities.append(capability)  # type: ignore[arg-type]
+        if not capabilities:
+            raise _InvalidInput
+        return tuple(capabilities)
+
+    def _pack(self, arguments: object) -> dict[str, object]:
+        if type(arguments) is not dict or set(arguments) != {
+            "relative_paths",
+            "retained_budget_bytes",
+            "task_scope",
+        }:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        relative_paths = arguments.get("relative_paths")
+        retained_budget = arguments.get("retained_budget_bytes")
+        task_scope = arguments.get("task_scope")
+        if (
+            type(relative_paths) is not list
+            or not relative_paths
+            or len(relative_paths) > 16
+            or any(type(path) is not str for path in relative_paths)
+            or len(set(relative_paths)) != len(relative_paths)
+            or type(retained_budget) is not int
+            or not 0 <= retained_budget <= MAX_ASSEMBLY_PAYLOAD_BYTES
+            or type(task_scope) is not str
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        try:
+            task_scope_hmac = self._task_scope_hmac(task_scope)
+            if task_scope_hmac is None:
+                raise _InvalidInput
+            payload_parts: list[bytes] = []
+            ranges: list[dict[str, object]] = []
+            offset = 0
+            retained = 0
+            self._revalidate_root()
+            for relative_path in relative_paths:
+                source = self._read_context_file(relative_path)
+                if not source or offset + len(source) > MAX_ASSEMBLY_PAYLOAD_BYTES:
+                    raise _InvalidInput
+                mode = (
+                    "retained"
+                    if retained + len(source) <= retained_budget
+                    else "deferred"
+                )
+                if mode == "retained":
+                    retained += len(source)
+                end = offset + len(source)
+                ranges.append(
+                    {
+                        "caller_classification": "eligible",
+                        "detector_signals": [],
+                        "end_byte": end,
+                        "mode": mode,
+                        "source": {
+                            "relative_path": relative_path,
+                            "selection": {"kind": "file"},
+                        },
+                        "start_byte": offset,
+                    }
+                )
+                payload_parts.append(source)
+                offset = end
+            descriptor = {
+                "payload_b64u": _b64u(b"".join(payload_parts)),
+                "ranges": ranges,
+                "schema_version": "contextguard-receipt-evidence-pack-descriptor/v1",
+            }
+            result = self._assemble({"descriptor": descriptor, "kind": "evidence"})
+            structured = result.get("structuredContent")
+            if (
+                type(structured) is dict
+                and structured.get("disposition") == "deferred"
+                and type(structured.get("output_b64u")) is str
+            ):
+                encoded = structured["output_b64u"].encode("ascii")
+                output = base64.urlsafe_b64decode(
+                    encoded + b"=" * ((4 - len(encoded) % 4) % 4)
+                )
+                for capability in self._pack_capabilities(output):
+                    self._context_handles[capability] = _ContextLease(
+                        scope_hmac_sha256=task_scope_hmac
+                    )
+            self._revalidate_root()
+            return result
+        except (CanonicalJSONError, _InvalidInput, OSError, ValueError):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        except Exception:
+            return _call_result(_tool_error("operation_failed"), is_error=True)
 
     def _diagnose(self, arguments: object) -> dict[str, object]:
         required = {
@@ -1786,26 +1958,66 @@ class MCPServer:
         except Exception:
             return _call_result(_tool_error("operation_failed"), is_error=True)
 
-    def _record_tool_references(self, output: bytes) -> None:
+    def _record_tool_references(
+        self, output: bytes, *, scope_hmac_sha256: str | None = None
+    ) -> tuple[str, ...]:
         try:
             value = parse_canonical_json_bytes(output, limits=_RESPONSE_JSON_LIMITS)
         except CanonicalJSONError:
-            return
+            return ()
         if type(value) is not dict:
-            return
+            return ()
         catalog = value.get("catalog_reference")
         deferred = value.get("deferred")
         if type(catalog) is not dict or type(deferred) is not list:
-            return
+            return ()
+        capabilities: list[str] = []
         capability = catalog.get("capability")
         if _valid_handle(capability, _EXTERNAL_PREFIX):
-            self._tool_references[capability] = (catalog, None)  # type: ignore[index]
+            self._tool_references[capability] = (  # type: ignore[index]
+                catalog,
+                None,
+                scope_hmac_sha256,
+            )
+            capabilities.append(capability)  # type: ignore[arg-type]
         for item in deferred:
             if type(item) is dict and _valid_handle(item.get("capability"), _EXTERNAL_PREFIX):
-                self._tool_references[item["capability"]] = (catalog, item)  # type: ignore[index]
+                self._tool_references[item["capability"]] = (  # type: ignore[index]
+                    catalog,
+                    item,
+                    scope_hmac_sha256,
+                )
+                capabilities.append(item["capability"])  # type: ignore[arg-type]
+        return tuple(capabilities)
+
+    def _tool_profile_key(self, profile_id: object, task_scope_hmac: str) -> str:
+        if (
+            type(profile_id) is not str
+            or not 1 <= len(profile_id) <= 64
+            or not profile_id.isascii()
+            or any(
+                character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+                for character in profile_id
+            )
+        ):
+            raise _InvalidInput
+        mac = hmac.new(self._context_hash_key, digestmod=hashlib.sha256)
+        for field in (
+            b"contextguard-receipt/mcp-tool-profile/v1",
+            profile_id.encode("ascii"),
+            task_scope_hmac.encode("ascii"),
+        ):
+            mac.update(len(field).to_bytes(8, "big"))
+            mac.update(field)
+        return mac.hexdigest()
 
     def _tool_select(self, arguments: object) -> dict[str, object]:
-        if type(arguments) is not dict or set(arguments) != {"descriptor"}:
+        if (
+            type(arguments) is not dict
+            or "descriptor" not in arguments
+            or set(arguments) - {"descriptor", "profile_id", "task_scope"}
+            or (("profile_id" in arguments) != ("task_scope" in arguments))
+        ):
             return _call_result(_tool_error("invalid_arguments"), is_error=True)
         descriptor = arguments["descriptor"]
         if type(descriptor) is not dict:
@@ -1814,6 +2026,33 @@ class MCPServer:
             _walk_json(descriptor)
             self._revalidate_root()
             raw = canonical_json_bytes(descriptor, TOOL_SCHEMA_DESCRIPTOR_LIMITS)
+            profile_key: str | None = None
+            task_scope_hmac: str | None = None
+            if "profile_id" in arguments:
+                task_scope_hmac = self._task_scope_hmac(arguments.get("task_scope"))
+                if task_scope_hmac is None:
+                    raise _InvalidInput
+                profile_key = self._tool_profile_key(
+                    arguments.get("profile_id"), task_scope_hmac
+                )
+                existing = self._tool_profiles.get(profile_key)
+                descriptor_sha256 = hashlib.sha256(raw).hexdigest()
+                if existing is not None:
+                    if not hmac.compare_digest(
+                        existing.descriptor_sha256, descriptor_sha256
+                    ):
+                        return _call_result(
+                            _tool_error("profile_drift"), is_error=True
+                        )
+                    try:
+                        for capability in existing.capabilities:
+                            self._store.internalize_handle(capability)
+                    except StoreError:
+                        return _call_result(
+                            _tool_error("profile_expired"), is_error=True
+                        )
+                    self._tool_profile_cache_hits += 1
+                    return existing.result
             result = assemble_tool_schemas(raw, store=self._store)
             output = (
                 self._externalized_deferred_bytes(result.output_bytes)
@@ -1821,7 +2060,9 @@ class MCPServer:
                 else result.output_bytes
             )
             receipt = result.receipt
-            self._record_tool_references(output)
+            capabilities = self._record_tool_references(
+                output, scope_hmac_sha256=task_scope_hmac
+            )
             self._revalidate_root()
             payload = _payload_bytes(
                 kind="mcp_tool_selection_result",
@@ -1829,10 +2070,17 @@ class MCPServer:
                 output=output,
                 receipt=receipt,
             )
-            return _call_result(
+            response = _call_result(
                 payload,
                 is_error=result.disposition is ToolSchemaDisposition.REFUSED,
             )
+            if profile_key is not None:
+                self._tool_profiles[profile_key] = _ToolProfileEntry(
+                    descriptor_sha256=hashlib.sha256(raw).hexdigest(),
+                    capabilities=capabilities,
+                    result=response,
+                )
+            return response
         except (ToolSchemaError, CanonicalJSONError, _InvalidInput, ValueError):
             return _call_result(_tool_error("invalid_arguments"), is_error=True)
         except Exception:
@@ -1867,9 +2115,11 @@ class MCPServer:
             supplied_scope_hmac = self._task_scope_hmac(task_scope)
             references = self._tool_references.get(capability)  # type: ignore[arg-type]
             if references is not None:
-                if not self._scope_hmac_matches(None, supplied_scope_hmac):
+                catalog, item, reference_scope_hmac = references
+                if not self._scope_hmac_matches(
+                    reference_scope_hmac, supplied_scope_hmac
+                ):
                     return _call_result(_tool_error("capability_rejected"), is_error=True)
-                catalog, item = references
                 internal_catalog = self._internalized_reference(catalog)
                 result = (
                     expand_tool_schema_catalog(internal_catalog, store=self._store)
@@ -1888,8 +2138,14 @@ class MCPServer:
                 stored = self._store.resolve(
                     internal, expected_root_identity_sha256=self._root_identity
                 )
+                lease = self._context_handles.get(capability)  # type: ignore[arg-type]
+                expected_scope_hmac = (
+                    lease.scope_hmac_sha256
+                    if lease is not None
+                    else stored.scope_hmac_sha256
+                )
                 if not self._scope_hmac_matches(
-                    stored.scope_hmac_sha256, supplied_scope_hmac
+                    expected_scope_hmac, supplied_scope_hmac
                 ):
                     return _call_result(_tool_error("capability_rejected"), is_error=True)
                 result = expand_capability(internal, root=self._root, store=self._store)
@@ -1931,6 +2187,7 @@ class MCPServer:
             "provider_claim_authority": False,
             "schema_version": "contextguard-receipt-mcp-inspection/v1",
             "scope": "process",
+            "tool_profile_cache_hits": self._tool_profile_cache_hits,
             "total_artifact_bytes": total,
             "total_artifact_bytes_limit": MAX_TOTAL_ARTIFACT_BYTES,
         }
@@ -2018,7 +2275,7 @@ class MCPServer:
                     "protocolVersion": version,
                     "serverInfo": {
                         "name": "context-guard-receipt",
-                        "version": "1.2.0",
+                        "version": "1.3.0",
                     },
                 },
             )
@@ -2083,6 +2340,8 @@ class MCPServer:
                     result = self._diagnose(arguments)
                 elif params["name"] == "receipt_expand":
                     result = self._expand(arguments)
+                elif params["name"] == "receipt_pack":
+                    result = self._pack(arguments)
                 elif params["name"] == "receipt_tool_select":
                     result = self._tool_select(arguments)
                 elif params["name"] == "receipt_twin":
@@ -2171,6 +2430,7 @@ class MCPServer:
         self._context_hash_key = b""
         self._state_dir = None
         self._tool_references.clear()
+        self._tool_profiles.clear()
         self._store.close()
         os.close(self._root_fd)
 

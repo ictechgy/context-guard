@@ -175,7 +175,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Declarative output filter | Opt-in JSON DSL for user-owned command filters with protected failure passthrough and validation before use. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
-| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache risk and cost ranges. `context-guard route-advisor` summarizes local total-cost and batchability route candidates, stores only keyed HMAC fingerprints where a ledger is used, and stays passive unless `--enforce` is explicit. |
+| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache risk and cost ranges. `context-guard-receipt evaluate full-wire` compares complete baseline/candidate request envelopes under one canonical-byte ceiling and can require protected JSON pointers plus the output-token budget to stay unchanged or smaller. `context-guard route-advisor` summarizes local total-cost and batchability route candidates, stores only keyed HMAC fingerprints where a ledger is used, and stays passive unless `--enforce` is explicit. |
 | Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, adds `--explain` for compact local selection reasons plus bounded repo-map metadata, and adds opt-in `--adaptive-k` / `--symbol-memory` advisory metadata. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies; `--mode readable` adds an opt-in readable prose preview with exact fallback guidance. |
@@ -237,7 +237,7 @@ Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skil
 ### Opt-in Bash references for Claude Code
 
 The `bash_reference_v1` route is available only from an exact, project-local npm
-installation. The root package pins `@ictechgy/context-guard-receipt@0.2.2`; a
+installation. The root package pins `@ictechgy/context-guard-receipt@0.3.0`; a
 global, `npx`, source-checkout, Homebrew, or Claude marketplace-plugin layout
 keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
@@ -457,10 +457,15 @@ The packer uses deterministic standard-library heuristics only: no network, mode
 ### Advise on total cost, batchability, and routing
 
 ```bash
+context-guard-receipt evaluate full-wire --input full-wire-evaluation.json
 ./plugins/context-guard/bin/context-guard route-advisor --workload workload.json --json
 ./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
 ./plugins/context-guard/bin/context-guard cost advisory --workload advisory-workload.json --json
 ```
+
+`context-guard-receipt evaluate full-wire` reads one bounded canonical JSON envelope containing `schema_version=contextguard.full-wire-budget-request/v1`, `baseline`, `candidate`, `protected_pointers`, and boolean `enforce`. It compares complete canonical JSON bytes, requires selected protected pointers to remain equal, and rejects an increased or unavailable `max_tokens` budget when the other side declares one. Cache-prefix preservation is diagnostic. It emits or stores neither request and treats canonical JSON bytes as a local comparison unit, not exact HTTP wire bytes or provider-measured token savings.
+
+`context-guard-receipt evaluate calibration` joins HMAC-only preflight and observation rows after a declared sample floor, while `evaluate route-v2` applies the resulting integer total-cost policy as shadow-only advice. Neither command authorizes an automatic route or a savings claim.
 
 `context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only. Hosted token or cost savings claims require matched successful tasks, non-inferior quality, and shifted-cost evidence.
 
@@ -700,7 +705,10 @@ most 65,536 bytes. Optional task scopes prevent cross-task reuse, explicit
 release performs context GC, and the content-free history records only
 process-keyed HMACs and decisions. `receipt_diagnose` adds non-applying shadow
 firewall/router plus prefix-reuse scout/surgeon advice without returning file
-bytes. Starting the same binary with an explicit private `--state-dir` enables
+bytes. `receipt_pack` creates a caller-ordered bounded multi-file pack with a
+required task scope and exact deferred expansion. Optional task-scoped
+`receipt_tool_select` profiles reuse one stable catalog bundle and reject drift
+instead of silently rebuilding a new tool prefix. Starting the same binary with an explicit private `--state-dir` enables
 only `receipt_twin`, which records authenticated revalidation evidence but
 executes no action. The flow remains opt-in: it does not register itself,
 intercept whole prompts, survive capability restart, call a provider, or make a

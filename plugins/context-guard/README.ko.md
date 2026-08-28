@@ -49,7 +49,7 @@ npx @ictechgy/context-guard --version
 짧은 `bash_reference_v1` Bash 출력 경로는 이 marketplace plugin/소스 배치에서
 의도적으로 활성화되지 않습니다. 정확한 프로젝트 로컬
 `@ictechgy/context-guard@0.8.0` npm 설치와
-`@ictechgy/context-guard-receipt@0.2.2` 의존성이 필요하며, 그 뒤
+`@ictechgy/context-guard-receipt@0.3.0` 의존성이 필요하며, 그 뒤
 `setup --agent claude --scope project --bash-reference-v1`로 명시적으로
 활성화해야 합니다. Plugin setup은 동작하지 않는 reference flag를 설치하지 않고
 legacy trim을 유지하며 경고합니다. 활성화·비활성화, 7일 handle, 상태 보존은
@@ -124,7 +124,7 @@ context-guard-pack auto --root . --query "retry 수정" --diff worktree --output
 - **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact 요약 기록과 payload integrity check로 전체 가림 처리된 schema 재조회를 보존합니다. `defer-report`는 core inline tool과 deferred stub/namespace 요약을 나누고 gross deferred-schema 및 net initial-report `chars_div_4` proxy 회계를 보여주지만, deferred tool을 쓰기 전에는 전체 schema를 다시 조회해야 합니다.
 - **적용형 adaptive breadth**는 명시적 `auto --apply-adaptive-k`에서만 동작합니다. 로컬 회귀 gate 통과 뒤 heuristic source를 줄이고 caller가 지정한 file/output/test-output 및 diff source는 항상 보존하며, 같은 byte budget으로 다시 build하고 `adaptive_k_application`을 기록합니다. 로컬 proxy는 provider token/cost 절감 주장을 허용하지 않습니다.
 - **보수적 압축기**는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
-- **정적 cache-score lint와 Anthropic 비용 가드/route advisor**는 `context-guard-cache-score`로 로컬 prompt/request cache layout과 사용자 제공 cache write/read multiplier 기반 amortization 위험을 안내하고, `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard route-advisor`는 caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽는 local-only passive advisor이며 queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오거나 provider feature 지식을 authoritative하게 취급하지 않고 total-cost accounting, batchability blocker, route 후보를 출력합니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
+- **정적 cache-score lint와 Anthropic 비용 가드/route advisor**는 `context-guard-cache-score`로 로컬 prompt/request cache layout과 사용자 제공 cache write/read multiplier 기반 amortization 위험을 안내하고, `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard-receipt evaluate full-wire`는 크기가 제한된 canonical baseline/candidate request envelope를 하나의 canonical-byte ceiling으로 비교하면서 선택한 JSON pointer와 출력 토큰 예산을 보존하고 request 원문을 출력하지 않습니다. `context-guard route-advisor`는 caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽는 local-only passive advisor이며 queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오거나 provider feature 지식을 authoritative하게 취급하지 않고 total-cost accounting, batchability blocker, route 후보를 출력합니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
 - **출력 축약기**는 감싼 명령의 종료 코드를 보존하면서 긴 로그를 줄이고, `--digest markdown` 또는 `--digest json`으로 실행기 실패 정보, 가림 처리된 failure signature, 중복 라인 그룹, 다음 조회 제안이 담긴 요약을 만들 수 있습니다. `--artifact-receipt`를 digest mode와 함께 쓰면 sanitized 전체 출력을 로컬 artifact receipt로 저장하고 `contextguard-artifact:<id>` 핸들과 `context-guard-artifact receipt/get/search ...` 재조회 명령으로 누락된 slice를 다시 확장할 수 있습니다.
 - **민감정보 가림 도구**는 검색, diff, 로그 출력에서 자격 증명 패턴, 비공개 키 블록, 인증 헤더, 자격 증명이 포함된 URL, 민감해 보이는 경로를 가립니다.
 - **상태표시줄**은 모델, 컨텍스트, 비용 신호를 짧게 보여주고, 대화 기록 데이터가 있으면 캐시 읽기와 캐시 재사용 신호도 함께 표시합니다.
@@ -190,7 +190,10 @@ exact reference로 저장하고, 같은 live reference를 재사용하며, 한 �
 65,536바이트의 exact slice를 조회합니다. 선택적 task scope와 명시적 release는
 process-local context GC를 제공하고, content-free history에는 keyed digest와
 결정만 남습니다. `receipt_diagnose`는 비적용 firewall/router와 prefix 재사용
-scout/surgeon 안내를 제공하며, 명시적 private `--state-dir`는 authenticated
+scout/surgeon 안내를 제공합니다. `receipt_pack`은 필수 task scope에 묶인 caller
+순서의 bounded multi-file pack과 exact deferred expansion을 만들고, task-scoped
+`receipt_tool_select` profile은 하나의 안정적인 catalog bundle을 재사용하며
+drift를 거부합니다. 명시적 private `--state-dir`는 authenticated
 advisory `receipt_twin`만 활성화합니다. 자동 등록, prompt 가로채기, capability의
 재시작 후 지속 저장, provider 호출, hosted 절감 주장은 하지 않습니다.
 

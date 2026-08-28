@@ -80,7 +80,7 @@ class G012McpCoreTests(unittest.TestCase):
             }
         )
 
-    def test_initialize_and_tools_list_expose_only_the_seven_provider_free_tools(self) -> None:
+    def test_initialize_and_tools_list_expose_only_the_eight_provider_free_tools(self) -> None:
         """Break caught: the MCP surface is absent, open-ended, or provider-coupled."""
 
         from context_guard_receipt.mcp import MCPServer
@@ -107,7 +107,7 @@ class G012McpCoreTests(unittest.TestCase):
 
         self.assertEqual(initialized["jsonrpc"], "2.0")
         self.assertEqual(initialized["id"], 1)
-        self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.2.0")
+        self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.3.0")
         self.assertEqual(
             {tool["name"] for tool in listed["result"]["tools"]},
             {
@@ -116,6 +116,7 @@ class G012McpCoreTests(unittest.TestCase):
                 "receipt_diagnose",
                 "receipt_expand",
                 "receipt_inspect",
+                "receipt_pack",
                 "receipt_tool_select",
                 "receipt_twin",
             },

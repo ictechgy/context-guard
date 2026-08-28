@@ -326,6 +326,14 @@ class G012McpLimitTests(unittest.TestCase):
                 ),
                 ("receipt_expand", {"capability": "cgr1m_" + "A" * 43}),
                 ("receipt_inspect", {}),
+                (
+                    "receipt_pack",
+                    {
+                        "relative_paths": ["source.bin"],
+                        "retained_budget_bytes": 0,
+                        "task_scope": "scope",
+                    },
+                ),
                 ("receipt_tool_select", {"descriptor": {}}),
             ):
                 for field, value in forbidden.items():
