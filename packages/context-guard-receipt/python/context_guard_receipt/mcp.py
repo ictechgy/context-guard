@@ -1479,13 +1479,6 @@ class MCPServer:
                         "total_bytes": len(output),
                     }
                 )
-            self._record_context_history(
-                action="batch_read",
-                disposition="exact",
-                reason="bounded_exact_slices",
-                task_scope_hmac_sha256=task_scope_hmac,
-                byte_length=total_returned,
-            )
             self._revalidate_root()
             return _call_result(
                 {

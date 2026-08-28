@@ -170,6 +170,46 @@ class ReceiptBatchMCPTests(unittest.TestCase):
         self.assertFalse(batch["inputSchema"]["additionalProperties"])
         self.assertEqual(batch["inputSchema"]["properties"]["queries"]["maxItems"], 16)
 
+    def test_batch_read_does_not_mutate_context_history(self) -> None:
+        from context_guard_receipt.mcp import MCPServer
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "read-only.log").write_bytes(b"read only\n" * 2_000)
+            server = MCPServer(str(root))
+            self.ready(server)
+            capability = self.store(server, 2, "read-only.log", "task-a")
+            before = self.call(
+                server,
+                3,
+                "receipt_context",
+                {"action": "history", "limit": 64},
+            )
+            batch = self.call(
+                server,
+                4,
+                "receipt_batch",
+                {
+                    "queries": [
+                        {"capability": capability, "max_bytes": 32, "offset": 0}
+                    ],
+                    "task_scope": "task-a",
+                },
+            )
+            after = self.call(
+                server,
+                5,
+                "receipt_context",
+                {"action": "history", "limit": 64},
+            )
+            server.close()
+
+        self.assertIs(batch["result"]["isError"], False)
+        self.assertEqual(
+            before["result"]["structuredContent"]["events"],
+            after["result"]["structuredContent"]["events"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

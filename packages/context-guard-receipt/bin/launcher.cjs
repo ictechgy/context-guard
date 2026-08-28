@@ -138,7 +138,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/external_approval.py': '809405655f7b171f7b564f5ad381ae88237e325e1fe3a7e2bbb9f1442d20c6d0',
   'python/context_guard_receipt/external_approval_v2.py': '67e3d487a3df42bb30d7debf8f7fa7e85d62c75c62cd3a7308babaa92fae189a',
   'python/context_guard_receipt/identity.py': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c',
-  'python/context_guard_receipt/mcp.py': '3d2343edc58459fa972ab99c411b8bf865be4fd5af542c2a28887cb8bf82f45f',
+  'python/context_guard_receipt/mcp.py': 'cb3519972570d5b364cf8fa17d21554f21e5b5c9dbd86cc82380a33f18ea100e',
   'python/context_guard_receipt/merged_capture.py': 'a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf',
   'python/context_guard_receipt/net_efficiency.py': '04a686d0e6edd6a11906e82fee341787ed414a758fe8315e69d05e280c3711e5',
   'python/context_guard_receipt/phase_evaluation.py': '2ee911bb898e28d5ba23e7bd3599a41125a0e7d13c9e4c9359a84e7ff721dc46',
