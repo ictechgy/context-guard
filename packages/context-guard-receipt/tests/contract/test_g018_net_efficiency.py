@@ -211,6 +211,21 @@ class NetEfficiencyTests(unittest.TestCase):
         self.assertEqual(report["canary"]["distinct_run_window_count"], 1)
         self.assertEqual(report["canary"]["minimum_distinct_run_windows"], 2)
 
+    def test_net_efficiency_holds_when_baseline_has_no_valid_success(self) -> None:
+        envelope = self.envelope()
+        for pair in envelope["pairs"]:  # type: ignore[union-attr]
+            pair["baseline"]["success"] = False
+            pair["baseline"]["quality_basis_points"] = 0
+
+        result = run_evaluator("net-efficiency", envelope)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "hold")
+        self.assertIn(
+            "baseline_has_no_successful_tasks", report["blocking_reasons"]
+        )
+
     def test_net_efficiency_holds_candidates_dominated_on_cost_or_latency(self) -> None:
         for field, value, expected_reason in (
             ("provider_cost_microusd", 2_000, "cost_per_success_regressed"),

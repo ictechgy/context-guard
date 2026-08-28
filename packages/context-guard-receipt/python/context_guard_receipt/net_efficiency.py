@@ -255,6 +255,8 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
         None if latency_improvement is None else -latency_improvement
     )
     blockers: list[str] = []
+    if baseline["success_count"] == 0:
+        blockers.append("baseline_has_no_successful_tasks")
     if len(run_windows) < int(policy["minimum_distinct_run_windows"]):
         blockers.append("insufficient_canary_windows")
     if not success_noninferior:
