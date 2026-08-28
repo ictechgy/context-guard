@@ -50,6 +50,7 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/identity.py",
     "python/context_guard_receipt/mcp.py",
     "python/context_guard_receipt/merged_capture.py",
+    "python/context_guard_receipt/net_efficiency.py",
     "python/context_guard_receipt/phase_evaluation.py",
     "python/context_guard_receipt/protection.py",
     "python/context_guard_receipt/reference_expiry.py",

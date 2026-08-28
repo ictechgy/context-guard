@@ -60,6 +60,11 @@ Commands:
   evaluate full-wire --input <file|->
   evaluate calibration --input <file|->
   evaluate route-v2 --input <file|->
+  evaluate net-efficiency --input <file|->
+  evaluate prefix-plan --input <file|->
+  evaluate fanout-plan --input <file|->
+  evaluate prune-plan --input <file|->
+  evaluate shadow-policy --input <file|->
   assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]
   run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
   expand <handle> --root <absolute> --state-dir <absolute> [options]
@@ -324,7 +329,17 @@ def _valid_run(arguments: Sequence[str]) -> bool:
 def _valid_evaluate(arguments: Sequence[str]) -> bool:
     return (
         len(arguments) == 3
-        and arguments[0] in {"phase", "full-wire", "calibration", "route-v2"}
+        and arguments[0] in {
+            "phase",
+            "full-wire",
+            "calibration",
+            "route-v2",
+            "net-efficiency",
+            "prefix-plan",
+            "fanout-plan",
+            "prune-plan",
+            "shadow-policy",
+        }
         and arguments[1] == "--input"
         and _is_file_argument(arguments[2])
     )
@@ -1607,6 +1622,68 @@ def _evaluate_total_cost_route(arguments: Sequence[str]) -> int:
     return 0
 
 
+def _evaluate_net_efficiency(arguments: Sequence[str]) -> int:
+    operation = {
+        "fanout-plan": "evaluate_fanout_plan",
+        "net-efficiency": "evaluate_net_efficiency",
+        "prefix-plan": "evaluate_prefix_plan",
+        "prune-plan": "evaluate_prune_plan",
+        "shadow-policy": "evaluate_shadow_policy",
+    }.get(arguments[0], "evaluate_net_efficiency")
+    try:
+        from .net_efficiency import (
+            INPUT_LIMITS,
+            RESULT_LIMITS,
+            NetEfficiencyError,
+            evaluate_net_efficiency,
+            evaluate_fanout_plan,
+            evaluate_prefix_plan,
+            evaluate_prune_plan,
+            evaluate_shadow_policy,
+        )
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+
+    evaluator = {
+        "net-efficiency": evaluate_net_efficiency,
+        "fanout-plan": evaluate_fanout_plan,
+        "prefix-plan": evaluate_prefix_plan,
+        "prune-plan": evaluate_prune_plan,
+        "shadow-policy": evaluate_shadow_policy,
+    }.get(arguments[0])
+    if evaluator is None:
+        return emit_error(operation, "error", "evaluation_input_rejected", 65)
+    try:
+        raw = read_descriptor(
+            arguments[2], maximum_bytes=INPUT_LIMITS.max_document_bytes
+        )
+    except CliIOError:
+        return emit_error(operation, "error", "evaluation_input_unavailable", 74)
+    try:
+        envelope = parse_canonical_json_bytes(raw, INPUT_LIMITS)
+    except CanonicalJSONError:
+        return emit_error(operation, "error", "evaluation_input_rejected", 65)
+    try:
+        result = evaluator(envelope)
+    except NetEfficiencyError:
+        return emit_error(operation, "error", "evaluation_input_rejected", 65)
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+    try:
+        payload = canonical_json_bytes(result, RESULT_LIMITS)
+    except CanonicalJSONError:
+        return emit_error(operation, "error", "evaluation_result_rejected", 65)
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+    try:
+        write_stdout(payload)
+    except CliIOError:
+        return emit_error(operation, "error", "evaluation_delivery_failed", 74)
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+    return 0
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments and arguments[0] == "--private-bash-reference-broker-v1":
@@ -1626,6 +1703,14 @@ def receipt_main(arguments: Sequence[str]) -> int:
             return _evaluate_cost_calibration(arguments[1:])
         if arguments[1] == "route-v2":
             return _evaluate_total_cost_route(arguments[1:])
+        if arguments[1] in {
+            "net-efficiency",
+            "fanout-plan",
+            "prefix-plan",
+            "prune-plan",
+            "shadow-policy",
+        }:
+            return _evaluate_net_efficiency(arguments[1:])
         return _evaluate_phase(arguments[1:])
     if arguments and arguments[0] == "assemble" and _valid_assemble(arguments[1:]):
         return _assemble(arguments[1:])

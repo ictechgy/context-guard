@@ -188,6 +188,7 @@ class G012InstalledMCPTests(unittest.TestCase):
                 [tool["name"] for tool in listed["result"]["tools"]],
                 [
                     "receipt_assemble",
+                    "receipt_batch",
                     "receipt_context",
                     "receipt_diagnose",
                     "receipt_expand",

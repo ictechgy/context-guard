@@ -4,6 +4,15 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added provider-free `net-efficiency`, `fanout-plan`, `prefix-plan`,
+  `prune-plan`, and `shadow-policy` evaluators. They gate matched quality,
+  fully loaded cost, p95 latency, output/model-round regressions, distinct
+  canary windows, fan-out workload shape, cache-prefix amortization, exact
+  fallback pruning, and deterministic no-op routing without applying a live
+  request change or granting a performance claim.
+- Added the task-scoped read-only `receipt_batch` MCP tool, which collapses up
+  to sixteen already-authorized exact context slices into one bounded call.
+  It adds no path discovery, shell, provider, credential, or network authority.
 - Added a passive full-wire budget gate that compares complete
   baseline and candidate request envelopes under one canonical-byte ceiling.
   The shipped surface is `context-guard-receipt evaluate full-wire`; it detects

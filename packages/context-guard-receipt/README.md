@@ -13,6 +13,11 @@ context-guard-receipt evaluate phase --input <file|->
 context-guard-receipt evaluate full-wire --input <file|->
 context-guard-receipt evaluate calibration --input <file|->
 context-guard-receipt evaluate route-v2 --input <file|->
+context-guard-receipt evaluate net-efficiency --input <file|->
+context-guard-receipt evaluate fanout-plan --input <file|->
+context-guard-receipt evaluate prefix-plan --input <file|->
+context-guard-receipt evaluate prune-plan --input <file|->
+context-guard-receipt evaluate shadow-policy --input <file|->
 context-guard-receipt assemble --kind evidence|blueprint|tool-schemas --descriptor <file|-> --root <absolute>
 context-guard-receipt run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
 context-guard-receipt inspect diagnostics --input <file|->
@@ -106,7 +111,7 @@ reserved `inspect` targets, including `lease`, stay unavailable.
 
 The MCP binary is a bounded local stdio server for one explicit absolute
 `--root`. After normal MCP initialization it exposes only `receipt_assemble`,
-`receipt_context`, `receipt_diagnose`, `receipt_expand`, `receipt_inspect`,
+`receipt_batch`, `receipt_context`, `receipt_diagnose`, `receipt_expand`, `receipt_inspect`,
 `receipt_pack`, `receipt_tool_select`, and `receipt_twin`; it does not expose command capture,
 reference-expiry administration, configuration, registration, provider, or
 network tools. Its `cgr1m_` capabilities are random, process-local, limited to
@@ -116,6 +121,13 @@ absolute `--state-dir` enables only the existing authenticated advisory twin;
 the directory is fixed by the server process and cannot be supplied by a tool
 call. If the pinned root instance or its logical state drifts, the server stops
 accepting work and must be restarted.
+
+`receipt_batch` accepts up to sixteen exact slice queries over live
+`receipt_context` capabilities already bound to one required `task_scope`.
+The combined returned payload is capped at 65,536 bytes, and every result keeps
+its exact capability and byte range. One invalid scope or range rejects the
+whole call without returning partial bytes. The tool adds no filesystem
+discovery, filtering language, command execution, provider, or network access.
 
 `receipt_pack` accepts up to sixteen explicit, unique source entries, each
 containing a relative path and a live `receipt_context` capability already
@@ -491,6 +503,23 @@ integer-microusd total-cost envelope. Provider input/output, cache, expansion,
 retry, helper, and local costs are summed before the quality, risk, evidence,
 full-wire, and savings gates are applied. The result is shadow-only advice;
 `runtime_applied` and runtime route authority remain false on every path.
+
+`evaluate net-efficiency` compares matched HMAC task pairs and distinct HMAC
+run windows using provider usage, fully loaded provider plus shifted cost,
+quality, success, p95 wall time, output tokens, model requests, tool calls and
+yields, corrections, and rehydrations. Caller-declared non-inferiority,
+regression, and minimum-improvement margins decide only `recommend` or `hold`.
+
+`evaluate fanout-plan` gates independent multi-call workloads before batching;
+`evaluate prefix-plan` compares only HMAC component identities and
+caller-supplied cache economics/capabilities; `evaluate prune-plan` selects
+only stale, exact-fallback, unprotected tool-result indexes at an explicit task
+boundary; and `evaluate shadow-policy` deterministically keeps the mandatory
+no-op lane unless a complete, quality-safe, net-efficiency-recommended
+candidate has lower full cost or, at equal cost, lower p95 latency. Exact ties
+stay on no-op; any permitted tradeoff in the other metric is bounded by the
+candidate's preceding net-efficiency policy. All four are content-free,
+shadow-only plans and authorize no execution or request mutation.
 
 ## Closed phase evaluation
 

@@ -49,6 +49,11 @@ EXPECTED_HELP = (
     "  evaluate full-wire --input <file|->\n"
     "  evaluate calibration --input <file|->\n"
     "  evaluate route-v2 --input <file|->\n"
+    "  evaluate net-efficiency --input <file|->\n"
+    "  evaluate prefix-plan --input <file|->\n"
+    "  evaluate fanout-plan --input <file|->\n"
+    "  evaluate prune-plan --input <file|->\n"
+    "  evaluate shadow-policy --input <file|->\n"
     "  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n"
     "  run --escrow --root <absolute> --state-dir <absolute> "
     "[--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> "
@@ -158,6 +163,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/identity.py": 0o644,
     "python/context_guard_receipt/mcp.py": 0o644,
     "python/context_guard_receipt/merged_capture.py": 0o644,
+    "python/context_guard_receipt/net_efficiency.py": 0o644,
     "python/context_guard_receipt/phase_evaluation.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
     "python/context_guard_receipt/reference_expiry.py": 0o644,
