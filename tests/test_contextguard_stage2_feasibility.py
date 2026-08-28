@@ -121,6 +121,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "context-guard-kit/task_memory.py",
         "context-guard-kit/trim_command_output.py",
         "docs/distribution.md",
+        "docs/net-efficiency-p0-p2.md",
         "docs/release-runbook.md",
         "docs/wclass-advisory-workflow.md",
         "docs/weightclass-advisory-mode.md",
