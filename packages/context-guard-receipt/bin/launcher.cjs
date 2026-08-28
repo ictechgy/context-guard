@@ -117,7 +117,7 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': '4aa91c1e9caf241fc9b1c86475d7c31e67603eec646a33c0237a5d34912f5939',
+  'README.md': 'da0e8f997aa80274335b8fbfe0f0483a127bf7bcf633a4f2883f0cbcca58acad',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
   'package.json': '0986e17db75ca6f66be57eb34e4a9f568d762291aaf8963d2e44f3462520168c',

@@ -521,6 +521,88 @@ stay on no-op; any permitted tradeoff in the other metric is bounded by the
 candidate's preceding net-efficiency policy. All four are content-free,
 shadow-only plans and authorize no execution or request mutation.
 
+### Minimal evaluator inputs
+
+The examples below are synthetic and contain no provider evidence. Save the
+single JSON line exactly as shown, including a trailing newline. The evaluator
+parser requires canonical JSON: sorted keys, no insignificant whitespace, no
+duplicate keys, signed-64 integers, and frozen-NFC strings. Replace the HMAC
+placeholders with opaque HMAC-SHA-256 identities from your own observation
+pipeline; do not substitute raw task, model, prompt, path, or window labels.
+
+<details>
+<summary><code>net-efficiency</code> — matched quality-safe cost and latency improvement</summary>
+
+```json
+{"pairs":[{"baseline":{"cache_read_tokens":1000,"cache_write_tokens":100,"correction_turns":0,"model_requests":5,"provider_cost_microusd":1000,"provider_input_tokens":2000,"provider_output_tokens":500,"quality_basis_points":9000,"rehydration_calls":0,"shifted_cost_microusd":100,"success":true,"tool_calls":4,"tool_yields":2,"wall_time_ms":1000},"candidate":{"cache_read_tokens":1000,"cache_write_tokens":100,"correction_turns":0,"model_requests":4,"provider_cost_microusd":700,"provider_input_tokens":2000,"provider_output_tokens":350,"quality_basis_points":9000,"rehydration_calls":0,"shifted_cost_microusd":100,"success":true,"tool_calls":4,"tool_yields":2,"wall_time_ms":800},"pair_hmac":"1111111111111111111111111111111111111111111111111111111111111111","run_window_hmac":"2222222222222222222222222222222222222222222222222222222222222222","task_hmac":"3333333333333333333333333333333333333333333333333333333333333333"}],"policy":{"maximum_correction_turn_regression_basis_points":0,"maximum_cost_per_success_regression_basis_points":0,"maximum_model_request_regression_basis_points":0,"maximum_output_regression_basis_points":0,"maximum_p95_wall_time_regression_basis_points":0,"maximum_rehydration_call_regression_basis_points":0,"maximum_tool_call_regression_basis_points":0,"maximum_tool_yield_regression_basis_points":0,"minimum_distinct_run_windows":1,"minimum_net_improvement_basis_points":1000,"quality_noninferiority_margin_basis_points":0,"success_noninferiority_margin_basis_points":0},"schema_version":"contextguard.net-efficiency-request/v1"}
+```
+
+```bash
+context-guard-receipt evaluate net-efficiency --input net-efficiency.json
+```
+
+The synthetic result is `recommend`; recommendation and claim authority remain
+shadow-only and false.
+</details>
+
+<details>
+<summary><code>fanout-plan</code> — independent filterable multi-call work</summary>
+
+```json
+{"policy":{"maximum_shifted_cost_microusd":500,"minimum_operations":3,"minimum_payload_reduction_basis_points":2000},"schema_version":"contextguard.fanout-plan-request/v1","workload":{"estimated_model_round_trips_baseline":8,"estimated_returned_bytes":10000,"estimated_source_bytes":100000,"independent":true,"operation_count":8,"sequential_dependency":false,"shifted_cost_microusd":100}}
+```
+
+```bash
+context-guard-receipt evaluate fanout-plan --input fanout-plan.json
+```
+
+The synthetic result is `eligible`; execution authority remains false.
+</details>
+
+<details>
+<summary><code>prefix-plan</code> — tool-prefix drift with native deferral available</summary>
+
+```json
+{"baseline":{"context_management_hmac":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","effort_hmac":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","stable_prefix_tokens":12000,"system_hmac":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","tools_hmac":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","verbosity_hmac":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"cache_policy":{"expected_reuses":10,"minimum_cacheable_tokens":1024,"read_multiplier_basis_points":1000,"write_multiplier_basis_points":12500},"candidate":{"context_management_hmac":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","effort_hmac":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","stable_prefix_tokens":8000,"system_hmac":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","tools_hmac":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","verbosity_hmac":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"capabilities":{"supports_deferred_tools":true,"supports_explicit_breakpoints":true},"schema_version":"contextguard.prefix-plan-request/v1"}
+```
+
+```bash
+context-guard-receipt evaluate prefix-plan --input prefix-plan.json
+```
+
+The synthetic recommendation is `evaluate_native_deferred_loading`; request
+mutation authority remains false.
+</details>
+
+<details>
+<summary><code>prune-plan</code> — stale exact-fallback result at a task boundary</summary>
+
+```json
+{"items":[{"age_turns":9,"bytes":8000,"exact_fallback":true,"protected":false,"rehydration_count":0},{"age_turns":20,"bytes":12000,"exact_fallback":true,"protected":true,"rehydration_count":0}],"policy":{"maximum_pruned_bytes":16000,"maximum_rehydrations":1,"minimum_age_turns":5,"minimum_result_bytes":2000},"schema_version":"contextguard.prune-plan-request/v1","task_boundary":true}
+```
+
+```bash
+context-guard-receipt evaluate prune-plan --input prune-plan.json
+```
+
+The synthetic plan selects index `0` only. It never edits a transcript.
+</details>
+
+<details>
+<summary><code>shadow-policy</code> — lower-cost eligible lane versus mandatory no-op</summary>
+
+```json
+{"candidates":[{"cost_per_success_microusd":1000,"evidence_complete":true,"lane":"no_op","net_efficiency_decision":"baseline","p95_wall_time_ms":1000,"quality_noninferior":true},{"cost_per_success_microusd":800,"evidence_complete":true,"lane":"fanout","net_efficiency_decision":"recommend","p95_wall_time_ms":900,"quality_noninferior":true}],"schema_version":"contextguard.shadow-policy-request/v1"}
+```
+
+```bash
+context-guard-receipt evaluate shadow-policy --input shadow-policy.json
+```
+
+The synthetic selected lane is `fanout`; `runtime_applied` and routing authority
+remain false.
+</details>
+
 ## Closed phase evaluation
 
 `context-guard-receipt evaluate phase --input <file|->` evaluates one canonical

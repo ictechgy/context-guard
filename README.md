@@ -474,6 +474,8 @@ distinct canary windows, fan-out shape, cache-prefix stability, and safe
 task-boundary pruning while remaining shadow-only. Its task-scoped
 `receipt_batch` MCP tool returns multiple already-authorized exact slices in
 one bounded read-only call; it adds no shell, provider, or network authority.
+Copy-paste canonical JSON and commands for all five evaluators are in the
+[Receipt minimal evaluator inputs](packages/context-guard-receipt/README.md#minimal-evaluator-inputs).
 
 `context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only. Hosted token or cost savings claims require matched successful tasks, non-inferior quality, and shifted-cost evidence.
 

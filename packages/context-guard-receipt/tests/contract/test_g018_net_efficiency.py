@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -792,6 +793,56 @@ class ArithmeticBoundaryTests(unittest.TestCase):
                 with self.assertRaises(NetEfficiencyError) as caught:
                     evaluator(envelope)
                 self.assertEqual(caught.exception.code, "derived_integer_out_of_range")
+
+
+class ReadmeExampleTests(unittest.TestCase):
+    def test_minimal_evaluator_examples_are_canonical_and_executable(self) -> None:
+        readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
+        section = readme.split("### Minimal evaluator inputs", 1)[1].split(
+            "## Closed phase evaluation", 1
+        )[0]
+        blocks = re.findall(r"```json\n([^\n]+)\n```", section)
+        names = (
+            "net-efficiency",
+            "fanout-plan",
+            "prefix-plan",
+            "prune-plan",
+            "shadow-policy",
+        )
+        expectations = (
+            ("decision", "recommend", "runtime_apply_allowed"),
+            ("decision", "eligible", "execution_authorized"),
+            (
+                "recommendation",
+                "evaluate_native_deferred_loading",
+                "request_mutation_allowed",
+            ),
+            ("selected_indexes", [0], "transcript_mutation_allowed"),
+            ("selected_lane", "fanout", "runtime_route_authorized"),
+        )
+        self.assertEqual(len(blocks), len(names))
+        for name, raw, (field, expected, authority_field) in zip(
+            names, blocks, expectations, strict=True
+        ):
+            with self.subTest(name=name):
+                value = json.loads(raw)
+                self.assertEqual(
+                    raw,
+                    json.dumps(
+                        value,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                result = run_evaluator(name, value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report[field], expected)
+                self.assertIs(report["authority"][authority_field], False)
+                self.assertIs(report["authority"]["provider_claim_authority"], False)
+                if name == "shadow-policy":
+                    self.assertIs(report["runtime_applied"], False)
 
 
 if __name__ == "__main__":
