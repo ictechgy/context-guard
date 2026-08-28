@@ -46,6 +46,9 @@ EXPECTED_HELP = (
     "Commands:\n"
     "  inspect boundary\n"
     "  evaluate phase --input <file|->\n"
+    "  evaluate full-wire --input <file|->\n"
+    "  evaluate calibration --input <file|->\n"
+    "  evaluate route-v2 --input <file|->\n"
     "  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n"
     "  run --escrow --root <absolute> --state-dir <absolute> "
     "[--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> "
@@ -90,7 +93,7 @@ EXPECTED_MCP_HELP = (
 )
 EXPECTED_PACKAGE = {
     "name": "@ictechgy/context-guard-receipt",
-    "version": "0.2.2",
+    "version": "0.3.0",
     "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
     "license": "Apache-2.0",
     "type": "commonjs",
@@ -144,6 +147,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/cli.py": 0o644,
     "python/context_guard_receipt/cli_io.py": 0o644,
     "python/context_guard_receipt/contracts.py": 0o644,
+    "python/context_guard_receipt/cost_optimization.py": 0o644,
     "python/context_guard_receipt/diagnostic_ledger.py": 0o644,
     "python/context_guard_receipt/diagnostics.py": 0o644,
     "python/context_guard_receipt/execution_twin.py": 0o644,

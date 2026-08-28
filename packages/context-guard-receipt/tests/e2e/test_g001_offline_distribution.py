@@ -763,6 +763,7 @@ class G001OfflineDistributionTests(unittest.TestCase):
                     "receipt_diagnose",
                     "receipt_expand",
                     "receipt_inspect",
+                    "receipt_pack",
                     "receipt_tool_select",
                     "receipt_twin",
                 ],

@@ -4,6 +4,23 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added a passive full-wire budget gate that compares complete
+  baseline and candidate request envelopes under one canonical-byte ceiling.
+  The shipped surface is `context-guard-receipt evaluate full-wire`; it detects
+  protected JSON-pointer changes and output-budget growth, reports cache-prefix
+  preservation diagnostically, and never emits or stores request content.
+- Added provider-free HMAC-only cost calibration that joins preflight and
+  observation rows, emits integer input/cache/output corrections only after a
+  declared sample floor, and never grants automatic routing authority.
+- Added additive shadow-only total-cost router v2 accounting for provider
+  input/output, cache, expansion, retry, helper, and local cost while preserving
+  the existing byte router contract.
+- Added the task-scoped `receipt_pack` MCP tool for bounded multi-file evidence
+  packs and exact deferred expansion, plus session-stable tool profiles that
+  reuse one catalog snapshot and reject profile drift.
+- Bumped the independent Receipt companion to 0.3.0 and updated the root exact
+  dependency and package trust manifest for the new public contracts.
+
 ## [0.8.0] - 2026-08-27
 
 - Added an opt-in `--graph-cache` flag to `context-guard-pack auto` that
