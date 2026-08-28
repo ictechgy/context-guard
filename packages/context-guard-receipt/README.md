@@ -117,13 +117,14 @@ the directory is fixed by the server process and cannot be supplied by a tool
 call. If the pinned root instance or its logical state drifts, the server stops
 accepting work and must be restarted.
 
-`receipt_pack` reads up to sixteen explicit, unique, non-empty regular files
-beneath the pinned root, preserves their caller order, and emits one bounded
-evidence pack. Whole files that fit the declared retained-byte budget remain
-inline; the rest become exact source-current capabilities. Every deferred
-capability is bound to the required `task_scope`, and neither paths nor scope
-text are returned. The tool does not rank files, infer task relevance, or
-intercept host context.
+`receipt_pack` accepts up to sixteen explicit, unique source entries, each
+containing a relative path and a live `receipt_context` capability already
+bound to the same required `task_scope`. The server revalidates the capability,
+its original path binding, and the current exact bytes before constructing one
+caller-ordered bounded evidence pack. Whole files that fit the declared
+retained-byte budget remain inline; the rest become new task-scoped exact
+source-current capabilities. Paths and scope text are never returned. The tool
+does not rank files, infer task relevance, or intercept host context.
 
 `receipt_tool_select` optionally accepts `profile_id` together with
 `task_scope`. Within that process, the same profile reuses the exact original

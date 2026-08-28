@@ -329,7 +329,12 @@ class G012McpLimitTests(unittest.TestCase):
                 (
                     "receipt_pack",
                     {
-                        "relative_paths": ["source.bin"],
+                        "sources": [
+                            {
+                                "capability": "cgr1m_" + "A" * 43,
+                                "relative_path": "source.bin",
+                            }
+                        ],
                         "retained_budget_bytes": 0,
                         "task_scope": "scope",
                     },

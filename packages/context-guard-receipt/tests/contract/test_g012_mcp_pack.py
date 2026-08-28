@@ -44,25 +44,63 @@ class ReceiptPackMCPTests(unittest.TestCase):
         raw = base64.urlsafe_b64decode(encoded + "=" * ((4 - len(encoded) % 4) % 4))
         return json.loads(raw)
 
+    @staticmethod
+    def store_context(
+        server: object, request_id: int, relative_path: str, task_scope: str
+    ) -> str:
+        response = server.handle(  # type: ignore[attr-defined]
+            {
+                "id": request_id,
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "arguments": {
+                        "action": "store",
+                        "caller_classification": "eligible",
+                        "detector_signals": [],
+                        "relative_path": relative_path,
+                        "task_scope": task_scope,
+                    },
+                    "name": "receipt_context",
+                },
+            }
+        )
+        return response["result"]["structuredContent"]["reference"]["capability"]
+
     def test_pack_retains_budgeted_source_and_scopes_deferred_expansion(self) -> None:
         from context_guard_receipt.mcp import MCPServer
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            small = b"small exact source\n" * 4
+            small = b"small exact source\n" * 80
             large = b"large exact source\n" * 2_000
             (root / "small.txt").write_bytes(small)
             (root / "large.txt").write_bytes(large)
             server = MCPServer(str(root))
             self.ready(server)
+            small_capability = self.store_context(
+                server, 2, "small.txt", "issue-123"
+            )
+            large_capability = self.store_context(
+                server, 3, "large.txt", "issue-123"
+            )
             stored = server.handle(
                 {
-                    "id": 2,
+                    "id": 4,
                     "jsonrpc": "2.0",
                     "method": "tools/call",
                     "params": {
                         "arguments": {
-                            "relative_paths": ["small.txt", "large.txt"],
+                            "sources": [
+                                {
+                                    "capability": small_capability,
+                                    "relative_path": "small.txt",
+                                },
+                                {
+                                    "capability": large_capability,
+                                    "relative_path": "large.txt",
+                                },
+                            ],
                             "retained_budget_bytes": len(small),
                             "task_scope": "issue-123",
                         },
@@ -71,6 +109,7 @@ class ReceiptPackMCPTests(unittest.TestCase):
                 }
             )
             self.assertIn("result", stored)
+            self.assertIs(stored["result"]["isError"], False)
             pack = self.decode_payload(stored)
             deferred = [
                 segment
@@ -85,7 +124,7 @@ class ReceiptPackMCPTests(unittest.TestCase):
             capability = deferred[0]["capability"]
             expanded = server.handle(
                 {
-                    "id": 3,
+                    "id": 5,
                     "jsonrpc": "2.0",
                     "method": "tools/call",
                     "params": {
@@ -99,7 +138,7 @@ class ReceiptPackMCPTests(unittest.TestCase):
             )
             refused = server.handle(
                 {
-                    "id": 4,
+                    "id": 6,
                     "jsonrpc": "2.0",
                     "method": "tools/call",
                     "params": {
@@ -153,7 +192,7 @@ class ReceiptPackMCPTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(
             set(schema["required"]),
-            {"relative_paths", "retained_budget_bytes", "task_scope"},
+            {"sources", "retained_budget_bytes", "task_scope"},
         )
         self.assertFalse(tools["receipt_pack"]["annotations"]["openWorldHint"])
 
@@ -162,13 +201,22 @@ class ReceiptPackMCPTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            relative_paths = []
+            sources = []
             for index in range(16):
                 relative_path = f"source-{index}.txt"
-                (root / relative_path).write_bytes(b"bounded\n")
-                relative_paths.append(relative_path)
+                (root / relative_path).write_bytes(b"bounded\n" * 512)
+                sources.append(relative_path)
             server = MCPServer(str(root))
             self.ready(server)
+            scoped_sources = [
+                {
+                    "capability": self.store_context(
+                        server, index + 2, relative_path, "bounded-revalidation"
+                    ),
+                    "relative_path": relative_path,
+                }
+                for index, relative_path in enumerate(sources)
+            ]
             original = server._revalidate_root
             calls = [0]
 
@@ -179,12 +227,12 @@ class ReceiptPackMCPTests(unittest.TestCase):
             server._revalidate_root = counted_revalidation  # type: ignore[method-assign]
             response = server.handle(
                 {
-                    "id": 2,
+                    "id": 20,
                     "jsonrpc": "2.0",
                     "method": "tools/call",
                     "params": {
                         "arguments": {
-                            "relative_paths": relative_paths,
+                            "sources": scoped_sources,
                             "retained_budget_bytes": 900_000,
                             "task_scope": "bounded-revalidation",
                         },

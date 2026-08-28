@@ -847,12 +847,25 @@ def _tool_definitions() -> list[dict[str, object]]:
             "inputSchema": {
                 **closed,
                 "properties": {
-                    "relative_paths": {
-                        "items": {"maxLength": 4096, "minLength": 1, "type": "string"},
+                    "sources": {
+                        "items": {
+                            **closed,
+                            "properties": {
+                                "capability": {
+                                    "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
+                                    "type": "string",
+                                },
+                                "relative_path": {
+                                    "maxLength": 4096,
+                                    "minLength": 1,
+                                    "type": "string",
+                                },
+                            },
+                            "required": ["capability", "relative_path"],
+                        },
                         "maxItems": 16,
                         "minItems": 1,
                         "type": "array",
-                        "uniqueItems": True,
                     },
                     "retained_budget_bytes": {
                         "maximum": MAX_ASSEMBLY_PAYLOAD_BYTES,
@@ -866,7 +879,7 @@ def _tool_definitions() -> list[dict[str, object]]:
                     },
                 },
                 "required": [
-                    "relative_paths",
+                    "sources",
                     "retained_budget_bytes",
                     "task_scope",
                 ],
@@ -1375,20 +1388,27 @@ class MCPServer:
 
     def _pack(self, arguments: object) -> dict[str, object]:
         if type(arguments) is not dict or set(arguments) != {
-            "relative_paths",
+            "sources",
             "retained_budget_bytes",
             "task_scope",
         }:
             return _call_result(_tool_error("invalid_arguments"), is_error=True)
-        relative_paths = arguments.get("relative_paths")
+        sources = arguments.get("sources")
         retained_budget = arguments.get("retained_budget_bytes")
         task_scope = arguments.get("task_scope")
         if (
-            type(relative_paths) is not list
-            or not relative_paths
-            or len(relative_paths) > 16
-            or any(type(path) is not str for path in relative_paths)
-            or len(set(relative_paths)) != len(relative_paths)
+            type(sources) is not list
+            or not sources
+            or len(sources) > 16
+            or any(
+                type(source) is not dict
+                or set(source) != {"capability", "relative_path"}
+                or not _valid_handle(source.get("capability"), _EXTERNAL_PREFIX)
+                or type(source.get("relative_path")) is not str
+                for source in sources
+            )
+            or len({source["capability"] for source in sources}) != len(sources)
+            or len({source["relative_path"] for source in sources}) != len(sources)
             or type(retained_budget) is not int
             or not 0 <= retained_budget <= MAX_ASSEMBLY_PAYLOAD_BYTES
             or type(task_scope) is not str
@@ -1403,18 +1423,35 @@ class MCPServer:
             offset = 0
             retained = 0
             self._revalidate_root()
-            for relative_path in relative_paths:
-                source = self._read_context_file(relative_path)
-                if not source or offset + len(source) > MAX_ASSEMBLY_PAYLOAD_BYTES:
+            for source_request in sources:
+                capability = source_request["capability"]
+                relative_path = source_request["relative_path"]
+                authorized = any(
+                    cache_key[0] == relative_path
+                    and cache_key[3] == task_scope_hmac
+                    and cache_entry.external_handle == capability
+                    for cache_key, cache_entry in self._context_cache.items()
+                )
+                if not authorized:
+                    raise _InvalidInput
+                capability_bytes = self._context_artifact_bytes(
+                    capability, task_scope
+                )
+                current_bytes = self._read_context_file(relative_path)
+                if (
+                    not capability_bytes
+                    or not hmac.compare_digest(capability_bytes, current_bytes)
+                    or offset + len(capability_bytes) > MAX_ASSEMBLY_PAYLOAD_BYTES
+                ):
                     raise _InvalidInput
                 mode = (
                     "retained"
-                    if retained + len(source) <= retained_budget
+                    if retained + len(capability_bytes) <= retained_budget
                     else "deferred"
                 )
                 if mode == "retained":
-                    retained += len(source)
-                end = offset + len(source)
+                    retained += len(capability_bytes)
+                end = offset + len(capability_bytes)
                 ranges.append(
                     {
                         "caller_classification": "eligible",
@@ -1428,7 +1465,7 @@ class MCPServer:
                         "start_byte": offset,
                     }
                 )
-                payload_parts.append(source)
+                payload_parts.append(capability_bytes)
                 offset = end
             descriptor = {
                 "payload_b64u": _b64u(b"".join(payload_parts)),

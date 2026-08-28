@@ -463,7 +463,7 @@ context-guard-receipt evaluate full-wire --input full-wire-evaluation.json
 ./plugins/context-guard/bin/context-guard cost advisory --workload advisory-workload.json --json
 ```
 
-`context-guard-receipt evaluate full-wire` reads one bounded canonical JSON envelope containing `schema_version=contextguard.full-wire-budget-request/v1`, `baseline`, `candidate`, `protected_pointers`, and boolean `enforce`. It compares complete canonical JSON bytes, requires selected protected pointers to remain equal, and rejects an increased or unavailable `max_tokens` budget when the other side declares one. Cache-prefix preservation is diagnostic. It emits or stores neither request and treats canonical JSON bytes as a local comparison unit, not exact HTTP wire bytes or provider-measured token savings.
+`context-guard-receipt evaluate full-wire` reads one bounded canonical JSON envelope containing `schema_version=contextguard.full-wire-budget-request/v1`, `baseline`, `candidate`, `protected_pointers`, and boolean `enforce`. It compares complete canonical JSON bytes, requires selected protected pointers to remain equal, and rejects an increased or unavailable `max_tokens` budget when the other side declares one. Cache-prefix preservation is diagnostic. It does not emit or store either request, and it treats canonical JSON bytes as a local comparison unit, not exact HTTP wire bytes or provider-measured token savings.
 
 `context-guard-receipt evaluate calibration` joins HMAC-only preflight and observation rows after a declared sample floor, while `evaluate route-v2` applies the resulting integer total-cost policy as shadow-only advice. Neither command authorizes an automatic route or a savings claim.
 
@@ -705,8 +705,9 @@ most 65,536 bytes. Optional task scopes prevent cross-task reuse, explicit
 release performs context GC, and the content-free history records only
 process-keyed HMACs and decisions. `receipt_diagnose` adds non-applying shadow
 firewall/router plus prefix-reuse scout/surgeon advice without returning file
-bytes. `receipt_pack` creates a caller-ordered bounded multi-file pack with a
-required task scope and exact deferred expansion. Optional task-scoped
+bytes. `receipt_pack` creates a caller-ordered bounded multi-file pack only from
+prior `receipt_context` capabilities bound to the same required task scope.
+Optional task-scoped
 `receipt_tool_select` profiles reuse one stable catalog bundle and reject drift
 instead of silently rebuilding a new tool prefix. Starting the same binary with an explicit private `--state-dir` enables
 only `receipt_twin`, which records authenticated revalidation evidence but

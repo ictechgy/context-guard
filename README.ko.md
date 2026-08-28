@@ -638,8 +638,9 @@ process-local입니다. 선택적 task scope는 task 간 재사용을 막고, �
 context GC를 수행하며, content-free history에는 process-keyed HMAC과 결정만
 남습니다. `receipt_diagnose`는 파일 byte를 반환하지 않고 비적용 shadow
 firewall/router와 prefix 재사용 기반 scout/surgeon 안내를 제공합니다.
-`receipt_pack`은 필수 task scope에 묶인 caller 순서의 bounded multi-file pack과
-exact deferred expansion을 만들며, task-scoped `receipt_tool_select` profile은
+`receipt_pack`은 같은 필수 task scope에 먼저 묶인 `receipt_context` capability만
+사용해 caller 순서의 bounded multi-file pack과 exact deferred expansion을 만들며,
+task-scoped `receipt_tool_select` profile은
 하나의 안정적인 catalog bundle을 재사용하고 drift를 새 prefix로 재생성하지 않고
 거부합니다. 명시적
 private `--state-dir`로 같은 binary를 시작하면 action을 실행하지 않는

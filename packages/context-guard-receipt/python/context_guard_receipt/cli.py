@@ -52,12 +52,36 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  evaluate phase --input <file|->\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  import merged-capture --spool <absolute> --transaction-id <64hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]\n  recover merged-capture --transaction-id <64hex> --root <absolute> --state-dir <absolute>\n  inspect merged-capture-import --root <absolute> --state-dir <absolute>\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Merged-capture import accepts only a completed private canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
-MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory> [--state-dir <absolute-directory>]\n\nRun the bounded local stdio MCP surface for one fixed repository root. Capabilities are process-local and expire when the process exits. An optional server-owned state directory enables only the advisory execution-twin tool. No registration, provider, model, credential, or network access is performed.\n"""
-HELP = HELP.replace(
-    "  evaluate phase --input <file|->\n",
-    "  evaluate phase --input <file|->\n  evaluate full-wire --input <file|->\n  evaluate calibration --input <file|->\n  evaluate route-v2 --input <file|->\n",
-)
+HELP = """usage: context-guard-receipt <command>
+
+Commands:
+  inspect boundary
+  evaluate phase --input <file|->
+  evaluate full-wire --input <file|->
+  evaluate calibration --input <file|->
+  evaluate route-v2 --input <file|->
+  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]
+  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
+  expand <handle> --root <absolute> --state-dir <absolute> [options]
+  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]
+  import merged-capture --spool <absolute> --transaction-id <64hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]
+  recover merged-capture --transaction-id <64hex> --root <absolute> --state-dir <absolute>
+  inspect merged-capture-import --root <absolute> --state-dir <absolute>
+  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]
+  inspect firewall --input <file|->
+  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]
+  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>
+  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]
+  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>
+  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]
+  inspect <receipt|lease|state> [options]
+
+Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Merged-capture import accepts only a completed private canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.
+"""
+MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory> [--state-dir <absolute-directory>]
+
+Run the bounded local stdio MCP surface for one fixed repository root. Capabilities are process-local and expire when the process exits. An optional server-owned state directory enables only the advisory execution-twin tool. No registration, provider, model, credential, or network access is performed.
+"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
 TOOL_SCHEMA_EXPANSION_REQUEST_VERSION = (
@@ -1504,7 +1528,10 @@ def _evaluate_full_wire(arguments: Sequence[str]) -> int:
             FullWireError,
             evaluate_full_wire,
         )
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
 
+    try:
         raw = read_descriptor(
             arguments[2], maximum_bytes=FULL_WIRE_INPUT_LIMITS.max_document_bytes
         )
@@ -1533,7 +1560,10 @@ def _evaluate_cost_calibration(arguments: Sequence[str]) -> int:
             FullWireError,
             evaluate_cost_calibration,
         )
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
 
+    try:
         raw = read_descriptor(
             arguments[2], maximum_bytes=FULL_WIRE_INPUT_LIMITS.max_document_bytes
         )
@@ -1558,7 +1588,10 @@ def _evaluate_total_cost_route(arguments: Sequence[str]) -> int:
             FullWireError,
             evaluate_total_cost_route,
         )
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
 
+    try:
         raw = read_descriptor(
             arguments[2], maximum_bytes=FULL_WIRE_INPUT_LIMITS.max_document_bytes
         )

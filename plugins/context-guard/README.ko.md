@@ -190,8 +190,9 @@ exact reference로 저장하고, 같은 live reference를 재사용하며, 한 �
 65,536바이트의 exact slice를 조회합니다. 선택적 task scope와 명시적 release는
 process-local context GC를 제공하고, content-free history에는 keyed digest와
 결정만 남습니다. `receipt_diagnose`는 비적용 firewall/router와 prefix 재사용
-scout/surgeon 안내를 제공합니다. `receipt_pack`은 필수 task scope에 묶인 caller
-순서의 bounded multi-file pack과 exact deferred expansion을 만들고, task-scoped
+scout/surgeon 안내를 제공합니다. `receipt_pack`은 같은 필수 task scope에 먼저
+묶인 `receipt_context` capability만 사용해 caller 순서의 bounded multi-file
+pack과 exact deferred expansion을 만들고, task-scoped
 `receipt_tool_select` profile은 하나의 안정적인 catalog bundle을 재사용하며
 drift를 거부합니다. 명시적 private `--state-dir`는 authenticated
 advisory `receipt_twin`만 활성화합니다. 자동 등록, prompt 가로채기, capability의

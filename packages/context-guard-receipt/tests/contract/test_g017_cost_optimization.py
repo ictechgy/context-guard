@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
-ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+ROOT = PACKAGE_ROOT.parents[1]
 RECEIPT_ENTRYPOINTS = (
     ROOT
     / "packages"
@@ -249,6 +253,8 @@ class CostCalibrationTests(unittest.TestCase):
                 )
                 self.assertEqual(group["cache_prediction_accuracy_basis_points"], 10_000)
                 self.assertEqual(group["output_budget_utilization_basis_points"], 2_000)
+                self.assertIn("output_budget_sample_count", group)
+                self.assertEqual(group["output_budget_sample_count"], 3)
                 self.assertFalse(report["authority"]["auto_apply_allowed"])
 
     def test_calibration_with_insufficient_samples_emits_no_recommendation(self) -> None:
@@ -276,6 +282,31 @@ class CostCalibrationTests(unittest.TestCase):
 
 
 class CostOptimizationCliTests(unittest.TestCase):
+    def test_cost_evaluator_import_failures_return_internal_error(self) -> None:
+        package_python = ROOT / "packages" / "context-guard-receipt" / "python"
+        if str(package_python) not in sys.path:
+            sys.path.insert(0, str(package_python))
+        import context_guard_receipt.cli as cli
+
+        handlers = (
+            cli._evaluate_full_wire,
+            cli._evaluate_cost_calibration,
+            cli._evaluate_total_cost_route,
+        )
+        for handler in handlers:
+            with self.subTest(handler=handler.__name__):
+                error_output = io.StringIO()
+                with (
+                    mock.patch.dict(
+                        sys.modules,
+                        {"context_guard_receipt.cost_optimization": None},
+                    ),
+                    contextlib.redirect_stderr(error_output),
+                ):
+                    result = handler(("evaluation", "--input", "missing.json"))
+                self.assertEqual(result, 70)
+                self.assertIn("evaluation_internal_failure", error_output.getvalue())
+
     def test_route_v2_cli_emits_shadow_total_cost_decision(self) -> None:
         envelope = {
             "baseline_total_microusd": 1_000,

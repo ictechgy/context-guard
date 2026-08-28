@@ -13,7 +13,7 @@
     {
       "mode": "0644",
       "path": "README.md",
-      "sha256": "74450eee13ad0789ba205d49c136556781f87ef01efef1d12594b40e22889e9b"
+      "sha256": "86ec70091519d3e704564fa30fa1d086d62916286a881ca403e3daed743565bd"
     },
     {
       "mode": "0755",
@@ -28,7 +28,7 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "0946b9a03ab33b42b4301b5f8e2c777a33bfa38fb5b743441f4c0cfe7e740067"
+      "sha256": "d423f3a39932c9386a69647b2d90ac5bb76be4004afe416166b6fb6b8701757d"
     },
     {
       "mode": "0644",
@@ -63,7 +63,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/cli.py",
-      "sha256": "803f1053555af0f65bfcc6381f18482b9121acac5cf1d179cbd02b5c36c112d3"
+      "sha256": "5a256df7c338896d307d1b8e965dd4ae37ae264adeba71a45630c4f4404a7817"
     },
     {
       "mode": "0644",
@@ -78,7 +78,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/cost_optimization.py",
-      "sha256": "9602558af14189bb7b18fa6809666a8df24bf8e393fefc10e2a3a12c32279823"
+      "sha256": "38432aa4cf2cfc104eef153017e204c9b3889abfdc6e37e66bf26a24f85460af"
     },
     {
       "mode": "0644",
@@ -123,7 +123,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/mcp.py",
-      "sha256": "b2dcb04a384998428c21c9cfe9c7c7a9dfa7da12d734cbd5e53fcc9bdec39968"
+      "sha256": "b53b2c9a4cec4ca18c505a067a5602a2aaf79eed68a289f7fada5a91165f2073"
     },
     {
       "mode": "0644",

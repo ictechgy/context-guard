@@ -382,6 +382,7 @@ def evaluate_cost_calibration(envelope: object) -> dict[str, object]:
                 "output_budget_utilization_basis_points": (
                     _median_integer(output_ratios) if ready else None
                 ),
+                "output_budget_sample_count": len(output_ratios),
                 "readiness": (
                     "recommendation_ready" if ready else "insufficient_evidence"
                 ),

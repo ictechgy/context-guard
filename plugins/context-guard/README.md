@@ -228,7 +228,8 @@ that beneficial, reuses the live reference, and reads exact slices of at most
 context GC; content-free history stores only keyed digests and decisions.
 `receipt_diagnose` exposes non-applying firewall/router and prefix-reuse
 scout/surgeon advice. `receipt_pack` builds a caller-ordered bounded multi-file
-pack with required task-scoped exact expansion, while task-scoped
+pack only from prior `receipt_context` capabilities bound to the same required
+task scope, while task-scoped
 `receipt_tool_select` profiles reuse one stable catalog bundle and reject
 drift. An explicit private `--state-dir` enables only the
 authenticated advisory `receipt_twin`. It does not auto-register, intercept
