@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -792,6 +793,47 @@ class ArithmeticBoundaryTests(unittest.TestCase):
                 with self.assertRaises(NetEfficiencyError) as caught:
                     evaluator(envelope)
                 self.assertEqual(caught.exception.code, "derived_integer_out_of_range")
+
+
+class ReadmeExampleTests(unittest.TestCase):
+    def test_minimal_evaluator_examples_are_canonical_and_executable(self) -> None:
+        readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
+        section = readme.split("### Minimal evaluator inputs", 1)[1].split(
+            "## Closed phase evaluation", 1
+        )[0]
+        blocks = re.findall(r"```json\n([^\n]+)\n```", section)
+        names = (
+            "net-efficiency",
+            "fanout-plan",
+            "prefix-plan",
+            "prune-plan",
+            "shadow-policy",
+        )
+        expectations = (
+            ("decision", "recommend"),
+            ("decision", "eligible"),
+            ("recommendation", "evaluate_native_deferred_loading"),
+            ("selected_indexes", [0]),
+            ("selected_lane", "fanout"),
+        )
+        self.assertEqual(len(blocks), len(names))
+        for name, raw, (field, expected) in zip(
+            names, blocks, expectations, strict=True
+        ):
+            with self.subTest(name=name):
+                value = json.loads(raw)
+                self.assertEqual(
+                    raw,
+                    json.dumps(
+                        value,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                result = run_evaluator(name, value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)[field], expected)
 
 
 if __name__ == "__main__":
