@@ -161,6 +161,7 @@ class NetEfficiencyTests(unittest.TestCase):
         self.assertEqual(report["decision"], "hold")
         self.assertIn("success_rate_regressed", report["blocking_reasons"])
         self.assertIn("quality_regressed", report["blocking_reasons"])
+        self.assertIn("matched_pair_failed", report["blocking_reasons"])
         self.assertIn("output_tokens_regressed", report["blocking_reasons"])
         self.assertIn("model_requests_regressed", report["blocking_reasons"])
 
@@ -225,6 +226,83 @@ class NetEfficiencyTests(unittest.TestCase):
         self.assertIn(
             "baseline_has_no_successful_tasks", report["blocking_reasons"]
         )
+
+    def test_net_efficiency_does_not_round_tiny_cost_improvement_to_full_savings(self) -> None:
+        envelope = self.envelope()
+        template = envelope["pairs"][0]  # type: ignore[index]
+        pairs = []
+        for index in range(256):
+            pair = json.loads(json.dumps(template))
+            pair["pair_hmac"] = f"{index + 1:064x}"
+            pair["run_window_hmac"] = f"{(index % 2) + 500:064x}"
+            pair["task_hmac"] = f"{(index % 16) + 700:064x}"
+            pair["baseline"].update(
+                {
+                    "provider_cost_microusd": 1,
+                    "provider_output_tokens": 500,
+                    "model_requests": 5,
+                    "shifted_cost_microusd": 0,
+                    "wall_time_ms": 1_000,
+                }
+            )
+            pair["candidate"].update(
+                {
+                    "provider_cost_microusd": 0 if index == 0 else 1,
+                    "provider_output_tokens": 500,
+                    "model_requests": 5,
+                    "shifted_cost_microusd": 0,
+                    "wall_time_ms": 1_000,
+                }
+            )
+            pairs.append(pair)
+        envelope["pairs"] = pairs
+
+        result = run_evaluator("net-efficiency", envelope)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "hold")
+        self.assertEqual(
+            report["efficiency"]["cost_per_success_improvement_basis_points"],
+            39,
+        )
+        self.assertEqual(
+            report["efficiency"]["candidate"]["cost_per_success_microusd"],
+            1,
+        )
+        self.assertIn("insufficient_net_improvement", report["blocking_reasons"])
+
+    def test_noninferiority_margin_cannot_hide_a_matched_candidate_failure(self) -> None:
+        envelope = self.envelope()
+        envelope["pairs"] = envelope["pairs"][:2]  # type: ignore[index]
+        envelope["policy"]["success_noninferiority_margin_basis_points"] = 5_000  # type: ignore[index]
+        envelope["policy"]["quality_noninferiority_margin_basis_points"] = 5_000  # type: ignore[index]
+        failed = envelope["pairs"][1]["candidate"]  # type: ignore[index]
+        failed.update(
+            {
+                "provider_cost_microusd": 0,
+                "provider_output_tokens": 500,
+                "model_requests": 5,
+                "quality_basis_points": 0,
+                "shifted_cost_microusd": 0,
+                "success": False,
+                "wall_time_ms": 500,
+            }
+        )
+        successful = envelope["pairs"][0]["candidate"]  # type: ignore[index]
+        successful.update(
+            {
+                "provider_output_tokens": 500,
+                "model_requests": 5,
+            }
+        )
+
+        result = run_evaluator("net-efficiency", envelope)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "hold")
+        self.assertIn("matched_pair_failed", report["blocking_reasons"])
 
     def test_net_efficiency_holds_candidates_dominated_on_cost_or_latency(self) -> None:
         for field, value, expected_reason in (
@@ -477,6 +555,80 @@ class ShadowPolicyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertEqual(result.stdout, "")
         self.assertNotIn(marker, result.stderr)
+
+
+class ArithmeticBoundaryTests(unittest.TestCase):
+    def test_derived_signed_64_overflow_is_rejected_before_result_construction(self) -> None:
+        package_python = PACKAGE_ROOT / "python"
+        if str(package_python) not in sys.path:
+            sys.path.insert(0, str(package_python))
+        from context_guard_receipt.net_efficiency import (
+            NetEfficiencyError,
+            evaluate_fanout_plan,
+            evaluate_net_efficiency,
+            evaluate_prefix_plan,
+        )
+
+        net_envelope = NetEfficiencyTests().envelope()
+        net_envelope["pairs"][0]["baseline"]["provider_cost_microusd"] = (  # type: ignore[index]
+            2**63 - 1
+        )
+        prefix_envelope = {
+            "baseline": {
+                "context_management_hmac": "a" * 64,
+                "effort_hmac": "b" * 64,
+                "stable_prefix_tokens": 2**63 - 1,
+                "system_hmac": "c" * 64,
+                "tools_hmac": "d" * 64,
+                "verbosity_hmac": "e" * 64,
+            },
+            "cache_policy": {
+                "expected_reuses": 1_000_000,
+                "minimum_cacheable_tokens": 1,
+                "read_multiplier_basis_points": 100_000,
+                "write_multiplier_basis_points": 100_000,
+            },
+            "candidate": {
+                "context_management_hmac": "a" * 64,
+                "effort_hmac": "b" * 64,
+                "stable_prefix_tokens": 2**63 - 1,
+                "system_hmac": "c" * 64,
+                "tools_hmac": "d" * 64,
+                "verbosity_hmac": "e" * 64,
+            },
+            "capabilities": {
+                "supports_deferred_tools": False,
+                "supports_explicit_breakpoints": True,
+            },
+            "schema_version": "contextguard.prefix-plan-request/v1",
+        }
+        fanout_envelope = {
+            "policy": {
+                "maximum_shifted_cost_microusd": 0,
+                "minimum_operations": 1,
+                "minimum_payload_reduction_basis_points": 0,
+            },
+            "schema_version": "contextguard.fanout-plan-request/v1",
+            "workload": {
+                "estimated_model_round_trips_baseline": 2,
+                "estimated_returned_bytes": 2**63 - 1,
+                "estimated_source_bytes": 1,
+                "independent": True,
+                "operation_count": 2,
+                "sequential_dependency": False,
+                "shifted_cost_microusd": 0,
+            },
+        }
+
+        for evaluator, envelope in (
+            (evaluate_net_efficiency, net_envelope),
+            (evaluate_prefix_plan, prefix_envelope),
+            (evaluate_fanout_plan, fanout_envelope),
+        ):
+            with self.subTest(evaluator=evaluator.__name__):
+                with self.assertRaises(NetEfficiencyError) as caught:
+                    evaluator(envelope)
+                self.assertEqual(caught.exception.code, "derived_integer_out_of_range")
 
 
 if __name__ == "__main__":

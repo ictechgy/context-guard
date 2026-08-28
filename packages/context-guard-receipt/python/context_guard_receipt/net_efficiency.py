@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Final
 
 from .canonical import JSONLimits
@@ -21,6 +22,7 @@ SHADOW_POLICY_RESULT_VERSION: Final = "contextguard.shadow-policy-result/v1"
 MAX_MATCHED_PAIRS: Final = 256
 MAX_PRUNE_ITEMS: Final = 256
 MAX_SHADOW_CANDIDATES: Final = 16
+MIN_INTEGER: Final = -(2**63)
 MAX_INTEGER: Final = 2**63 - 1
 
 INPUT_LIMITS: Final = JSONLimits(
@@ -71,15 +73,44 @@ def _hmac(value: object, code: str) -> str:
     return value
 
 
+def _derived_integer(value: int) -> int:
+    if not MIN_INTEGER <= value <= MAX_INTEGER:
+        raise NetEfficiencyError("derived_integer_out_of_range")
+    return value
+
+
+def _bounded_sum(values: Iterable[int]) -> int:
+    return _derived_integer(sum(values))
+
+
 def _basis_points_change(baseline: int, candidate: int) -> int | None:
     if baseline == 0:
         return 0 if candidate == 0 else None
-    return (candidate - baseline) * 10_000 // baseline
+    return _derived_integer((candidate - baseline) * 10_000 // baseline)
 
 
 def _basis_points_improvement(baseline: int, candidate: int) -> int | None:
     change = _basis_points_change(baseline, candidate)
     return None if change is None else -change
+
+
+def _cost_per_success_improvement(
+    baseline: dict[str, int], candidate: dict[str, int]
+) -> int | None:
+    baseline_successes = baseline["success_count"]
+    candidate_successes = candidate["success_count"]
+    if baseline_successes == 0 or candidate_successes == 0:
+        return None
+    baseline_total = baseline["total_cost_microusd"]
+    candidate_total = candidate["total_cost_microusd"]
+    if baseline_total == 0:
+        return 0 if candidate_total == 0 else None
+    numerator = (
+        baseline_total * candidate_successes
+        - candidate_total * baseline_successes
+    )
+    denominator = baseline_total * candidate_successes
+    return _derived_integer(numerator * 10_000 // denominator)
 
 
 def _p95(values: list[int]) -> int:
@@ -120,34 +151,46 @@ def _run(value: object) -> dict[str, object]:
 
 def _aggregate(runs: list[dict[str, object]]) -> dict[str, int]:
     success_count = sum(1 for run in runs if run["success"])
-    total_cost = sum(
+    total_cost = _bounded_sum(
         int(run["provider_cost_microusd"]) + int(run["shifted_cost_microusd"])
         for run in runs
     )
     return {
-        "cache_read_tokens": sum(int(run["cache_read_tokens"]) for run in runs),
-        "cache_write_tokens": sum(int(run["cache_write_tokens"]) for run in runs),
-        "correction_turns": sum(int(run["correction_turns"]) for run in runs),
-        "cost_per_success_microusd": (
-            total_cost // success_count if success_count else MAX_INTEGER
+        "cache_read_tokens": _bounded_sum(
+            int(run["cache_read_tokens"]) for run in runs
         ),
-        "model_requests": sum(int(run["model_requests"]) for run in runs),
+        "cache_write_tokens": _bounded_sum(
+            int(run["cache_write_tokens"]) for run in runs
+        ),
+        "correction_turns": _bounded_sum(
+            int(run["correction_turns"]) for run in runs
+        ),
+        "cost_per_success_microusd": (
+            (total_cost + success_count - 1) // success_count
+            if success_count
+            else MAX_INTEGER
+        ),
+        "model_requests": _bounded_sum(
+            int(run["model_requests"]) for run in runs
+        ),
         "p95_wall_time_ms": _p95([int(run["wall_time_ms"]) for run in runs]),
-        "provider_input_tokens": sum(
+        "provider_input_tokens": _bounded_sum(
             int(run["provider_input_tokens"]) for run in runs
         ),
-        "provider_output_tokens": sum(
+        "provider_output_tokens": _bounded_sum(
             int(run["provider_output_tokens"]) for run in runs
         ),
-        "quality_basis_points": sum(
+        "quality_basis_points": _bounded_sum(
             int(run["quality_basis_points"]) for run in runs
         )
         // len(runs),
-        "rehydration_calls": sum(int(run["rehydration_calls"]) for run in runs),
+        "rehydration_calls": _bounded_sum(
+            int(run["rehydration_calls"]) for run in runs
+        ),
         "success_count": success_count,
         "success_rate_basis_points": success_count * 10_000 // len(runs),
-        "tool_calls": sum(int(run["tool_calls"]) for run in runs),
-        "tool_yields": sum(int(run["tool_yields"]) for run in runs),
+        "tool_calls": _bounded_sum(int(run["tool_calls"]) for run in runs),
+        "tool_yields": _bounded_sum(int(run["tool_yields"]) for run in runs),
         "total_cost_microusd": total_cost,
     }
 
@@ -241,10 +284,7 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
     tool_yield_regression = _basis_points_change(
         baseline["tool_yields"], candidate["tool_yields"]
     )
-    cost_improvement = _basis_points_improvement(
-        baseline["cost_per_success_microusd"],
-        candidate["cost_per_success_microusd"],
-    )
+    cost_improvement = _cost_per_success_improvement(baseline, candidate)
     latency_improvement = _basis_points_improvement(
         baseline["p95_wall_time_ms"], candidate["p95_wall_time_ms"]
     )
@@ -257,6 +297,13 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
     blockers: list[str] = []
     if baseline["success_count"] == 0:
         blockers.append("baseline_has_no_successful_tasks")
+    if any(
+        baseline_run["success"] and not candidate_run["success"]
+        for baseline_run, candidate_run in zip(
+            baseline_runs, candidate_runs, strict=True
+        )
+    ):
+        blockers.append("matched_pair_failed")
     if len(run_windows) < int(policy["minimum_distinct_run_windows"]):
         blockers.append("insufficient_canary_windows")
     if not success_noninferior:
@@ -420,7 +467,7 @@ def evaluate_prefix_plan(envelope: object) -> dict[str, object]:
     tokens = int(candidate["stable_prefix_tokens"])
     minimum = int(cache["minimum_cacheable_tokens"])
     eligible = tokens >= minimum and minimum > 0
-    cached_equivalent = (
+    cached_equivalent = _derived_integer(
         tokens
         * (
             int(cache["write_multiplier_basis_points"])
@@ -429,7 +476,9 @@ def evaluate_prefix_plan(envelope: object) -> dict[str, object]:
         )
         // 10_000
     )
-    uncached_equivalent = tokens * (int(cache["expected_reuses"]) + 1)
+    uncached_equivalent = _derived_integer(
+        tokens * (int(cache["expected_reuses"]) + 1)
+    )
     amortizes = eligible and cached_equivalent < uncached_equivalent
     if "tools" in changed and capabilities["supports_deferred_tools"]:
         recommendation = "evaluate_native_deferred_loading"
