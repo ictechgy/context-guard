@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -443,6 +446,46 @@ class PrefixPlanTests(unittest.TestCase):
         self.assertNotIn("a" * 64, result.stdout)
         self.assertNotIn("f" * 64, result.stdout)
 
+    def test_prefix_plan_treats_zero_minimum_as_no_cache_threshold(self) -> None:
+        result = run_evaluator(
+            "prefix-plan",
+            {
+                "baseline": {
+                    "context_management_hmac": "a" * 64,
+                    "effort_hmac": "b" * 64,
+                    "stable_prefix_tokens": 8_000,
+                    "system_hmac": "c" * 64,
+                    "tools_hmac": "d" * 64,
+                    "verbosity_hmac": "e" * 64,
+                },
+                "cache_policy": {
+                    "expected_reuses": 10,
+                    "minimum_cacheable_tokens": 0,
+                    "read_multiplier_basis_points": 1_000,
+                    "write_multiplier_basis_points": 12_500,
+                },
+                "candidate": {
+                    "context_management_hmac": "a" * 64,
+                    "effort_hmac": "b" * 64,
+                    "stable_prefix_tokens": 8_000,
+                    "system_hmac": "c" * 64,
+                    "tools_hmac": "d" * 64,
+                    "verbosity_hmac": "e" * 64,
+                },
+                "capabilities": {
+                    "supports_deferred_tools": False,
+                    "supports_explicit_breakpoints": True,
+                },
+                "schema_version": "contextguard.prefix-plan-request/v1",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["amortization"]["candidate_cache_eligible"])
+        self.assertTrue(report["amortization"]["projected_amortizes"])
+        self.assertEqual(report["recommendation"], "preserve_prefix")
+
 
 class FanoutPlanTests(unittest.TestCase):
     def test_fanout_plan_requires_independent_multi_call_payload_reduction(self) -> None:
@@ -630,6 +673,51 @@ class ShadowPolicyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertEqual(result.stdout, "")
         self.assertNotIn(marker, result.stderr)
+        self.assertEqual(
+            json.loads(result.stderr)["operation"], "evaluate_shadow_policy"
+        )
+
+    def test_evaluator_stdout_failure_is_reported_as_delivery_failure(self) -> None:
+        package_python = PACKAGE_ROOT / "python"
+        if str(package_python) not in sys.path:
+            sys.path.insert(0, str(package_python))
+        import context_guard_receipt.cli as cli
+        from context_guard_receipt.cli_io import CliIOError
+
+        envelope = {
+            "candidates": [
+                {
+                    "cost_per_success_microusd": 1_000,
+                    "evidence_complete": True,
+                    "lane": "no_op",
+                    "net_efficiency_decision": "baseline",
+                    "p95_wall_time_ms": 1_000,
+                    "quality_noninferior": True,
+                }
+            ],
+            "schema_version": "contextguard.shadow-policy-request/v1",
+        }
+        raw = (
+            json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("ascii")
+        error_output = io.StringIO()
+        with (
+            mock.patch.object(cli, "read_descriptor", return_value=raw),
+            mock.patch.object(
+                cli,
+                "write_stdout",
+                side_effect=CliIOError("stdout_unwritable"),
+            ),
+            contextlib.redirect_stderr(error_output),
+        ):
+            return_code = cli._evaluate_net_efficiency(
+                ("shadow-policy", "--input", "ignored")
+            )
+
+        self.assertEqual(return_code, 74)
+        error = json.loads(error_output.getvalue())
+        self.assertEqual(error["operation"], "evaluate_shadow_policy")
+        self.assertEqual(error["reason"], "evaluation_delivery_failed")
 
 
 class ArithmeticBoundaryTests(unittest.TestCase):

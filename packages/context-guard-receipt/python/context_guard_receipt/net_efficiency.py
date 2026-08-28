@@ -556,7 +556,7 @@ def evaluate_prefix_plan(envelope: object) -> dict[str, object]:
     ]
     tokens = int(candidate["stable_prefix_tokens"])
     minimum = int(cache["minimum_cacheable_tokens"])
-    eligible = tokens >= minimum and minimum > 0
+    eligible = tokens >= minimum
     cached_equivalent = _derived_integer(
         tokens
         * (

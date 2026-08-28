@@ -1623,7 +1623,13 @@ def _evaluate_total_cost_route(arguments: Sequence[str]) -> int:
 
 
 def _evaluate_net_efficiency(arguments: Sequence[str]) -> int:
-    operation = "evaluate_net_efficiency"
+    operation = {
+        "fanout-plan": "evaluate_fanout_plan",
+        "net-efficiency": "evaluate_net_efficiency",
+        "prefix-plan": "evaluate_prefix_plan",
+        "prune-plan": "evaluate_prune_plan",
+        "shadow-policy": "evaluate_shadow_policy",
+    }.get(arguments[0], "evaluate_net_efficiency")
     try:
         from .net_efficiency import (
             INPUT_LIMITS,
@@ -1651,13 +1657,28 @@ def _evaluate_net_efficiency(arguments: Sequence[str]) -> int:
         raw = read_descriptor(
             arguments[2], maximum_bytes=INPUT_LIMITS.max_document_bytes
         )
-        envelope = parse_canonical_json_bytes(raw, INPUT_LIMITS)
-        result = evaluator(envelope)
-        write_stdout(canonical_json_bytes(result, RESULT_LIMITS))
     except CliIOError:
         return emit_error(operation, "error", "evaluation_input_unavailable", 74)
-    except (CanonicalJSONError, NetEfficiencyError):
+    try:
+        envelope = parse_canonical_json_bytes(raw, INPUT_LIMITS)
+    except CanonicalJSONError:
         return emit_error(operation, "error", "evaluation_input_rejected", 65)
+    try:
+        result = evaluator(envelope)
+    except NetEfficiencyError:
+        return emit_error(operation, "error", "evaluation_input_rejected", 65)
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+    try:
+        payload = canonical_json_bytes(result, RESULT_LIMITS)
+    except CanonicalJSONError:
+        return emit_error(operation, "error", "evaluation_result_rejected", 65)
+    except Exception:
+        return emit_error(operation, "error", "evaluation_internal_failure", 70)
+    try:
+        write_stdout(payload)
+    except CliIOError:
+        return emit_error(operation, "error", "evaluation_delivery_failed", 74)
     except Exception:
         return emit_error(operation, "error", "evaluation_internal_failure", 70)
     return 0

@@ -515,9 +515,11 @@ regression, and minimum-improvement margins decide only `recommend` or `hold`.
 caller-supplied cache economics/capabilities; `evaluate prune-plan` selects
 only stale, exact-fallback, unprotected tool-result indexes at an explicit task
 boundary; and `evaluate shadow-policy` deterministically keeps the mandatory
-no-op lane unless a complete, quality-safe candidate is strictly better. All
-four are content-free, shadow-only plans and authorize no execution or request
-mutation.
+no-op lane unless a complete, quality-safe, net-efficiency-recommended
+candidate has lower full cost or, at equal cost, lower p95 latency. Exact ties
+stay on no-op; any permitted tradeoff in the other metric is bounded by the
+candidate's preceding net-efficiency policy. All four are content-free,
+shadow-only plans and authorize no execution or request mutation.
 
 ## Closed phase evaluation
 
