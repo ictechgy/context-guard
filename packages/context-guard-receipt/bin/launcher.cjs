@@ -140,7 +140,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/identity.py': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c',
   'python/context_guard_receipt/mcp.py': 'cb3519972570d5b364cf8fa17d21554f21e5b5c9dbd86cc82380a33f18ea100e',
   'python/context_guard_receipt/merged_capture.py': 'a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf',
-  'python/context_guard_receipt/net_efficiency.py': 'a001c03bd302088208f3eaf8b82e748f4c0db2aea92db7dc933a50cfccaf554c',
+  'python/context_guard_receipt/net_efficiency.py': '52e465998421ed7569329178fd3ea917a50ca54ad7e7149ac45d5d9fd0c9afc3',
   'python/context_guard_receipt/phase_evaluation.py': '2ee911bb898e28d5ba23e7bd3599a41125a0e7d13c9e4c9359a84e7ff721dc46',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',

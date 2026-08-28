@@ -28,7 +28,7 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "311b5b5885cd56320edc915b0bb29830f0f7a39ed3227372f515fd40d5294cf9"
+      "sha256": "47b96c34055be9546f651d19b2a72b79f0c6d6c41f8edcce994e2e764fc9876c"
     },
     {
       "mode": "0644",
@@ -133,7 +133,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/net_efficiency.py",
-      "sha256": "a001c03bd302088208f3eaf8b82e748f4c0db2aea92db7dc933a50cfccaf554c"
+      "sha256": "52e465998421ed7569329178fd3ea917a50ca54ad7e7149ac45d5d9fd0c9afc3"
     },
     {
       "mode": "0644",

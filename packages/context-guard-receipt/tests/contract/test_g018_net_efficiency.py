@@ -304,6 +304,81 @@ class NetEfficiencyTests(unittest.TestCase):
         self.assertEqual(report["decision"], "hold")
         self.assertIn("matched_pair_failed", report["blocking_reasons"])
 
+    def test_basis_point_thresholds_use_exact_comparisons(self) -> None:
+        model_envelope = self.envelope()
+        model_envelope["pairs"] = model_envelope["pairs"][:1]  # type: ignore[index]
+        model_envelope["policy"]["minimum_distinct_run_windows"] = 1  # type: ignore[index]
+        model_envelope["policy"][  # type: ignore[index]
+            "maximum_model_request_regression_basis_points"
+        ] = 3_333
+        baseline = model_envelope["pairs"][0]["baseline"]  # type: ignore[index]
+        candidate = model_envelope["pairs"][0]["candidate"]  # type: ignore[index]
+        baseline.update({"model_requests": 3, "wall_time_ms": 1_000})
+        candidate.update(
+            {
+                "model_requests": 4,
+                "provider_cost_microusd": 500,
+                "wall_time_ms": 800,
+            }
+        )
+
+        model_result = run_evaluator("net-efficiency", model_envelope)
+
+        self.assertEqual(model_result.returncode, 0, model_result.stderr)
+        model_report = json.loads(model_result.stdout)
+        self.assertEqual(model_report["decision"], "hold")
+        self.assertIn("model_requests_regressed", model_report["blocking_reasons"])
+
+        latency_envelope = self.envelope()
+        latency_envelope["pairs"] = latency_envelope["pairs"][:1]  # type: ignore[index]
+        latency_envelope["policy"]["minimum_distinct_run_windows"] = 1  # type: ignore[index]
+        latency_envelope["policy"]["minimum_net_improvement_basis_points"] = 3_334  # type: ignore[index]
+        baseline = latency_envelope["pairs"][0]["baseline"]  # type: ignore[index]
+        candidate = latency_envelope["pairs"][0]["candidate"]  # type: ignore[index]
+        baseline.update({"provider_cost_microusd": 1_000, "wall_time_ms": 3})
+        candidate.update(
+            {
+                "model_requests": baseline["model_requests"],
+                "provider_cost_microusd": 1_000,
+                "provider_output_tokens": baseline["provider_output_tokens"],
+                "wall_time_ms": 2,
+            }
+        )
+
+        latency_result = run_evaluator("net-efficiency", latency_envelope)
+
+        self.assertEqual(latency_result.returncode, 0, latency_result.stderr)
+        latency_report = json.loads(latency_result.stdout)
+        self.assertEqual(latency_report["decision"], "hold")
+        self.assertIn(
+            "insufficient_net_improvement", latency_report["blocking_reasons"]
+        )
+
+    def test_repeated_task_cannot_dilute_another_tasks_quality_collapse(self) -> None:
+        envelope = self.envelope()
+        template = envelope["pairs"][0]  # type: ignore[index]
+        pairs = []
+        for index in range(100):
+            pair = json.loads(json.dumps(template))
+            pair["pair_hmac"] = f"{index + 1:064x}"
+            pair["run_window_hmac"] = f"{(index % 2) + 900:064x}"
+            pair["task_hmac"] = "a" * 64 if index < 99 else "b" * 64
+            pair["candidate"]["provider_cost_microusd"] = 500
+            pair["candidate"]["wall_time_ms"] = 500
+            if index == 99:
+                pair["candidate"]["quality_basis_points"] = 0
+            pairs.append(pair)
+        envelope["pairs"] = pairs
+        envelope["policy"]["quality_noninferiority_margin_basis_points"] = 90  # type: ignore[index]
+
+        result = run_evaluator("net-efficiency", envelope)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["decision"], "hold")
+        self.assertIn("task_quality_regressed", report["blocking_reasons"])
+        self.assertFalse(report["quality"]["task_quality_noninferior"])
+
     def test_net_efficiency_holds_candidates_dominated_on_cost_or_latency(self) -> None:
         for field, value, expected_reason in (
             ("provider_cost_microusd", 2_000, "cost_per_success_regressed"),

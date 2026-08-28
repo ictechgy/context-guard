@@ -83,10 +83,20 @@ def _bounded_sum(values: Iterable[int]) -> int:
     return _derived_integer(sum(values))
 
 
+def _truncate_division(numerator: int, denominator: int) -> int:
+    if denominator <= 0:
+        raise NetEfficiencyError("derived_integer_out_of_range")
+    if numerator >= 0:
+        return numerator // denominator
+    return -((-numerator) // denominator)
+
+
 def _basis_points_change(baseline: int, candidate: int) -> int | None:
     if baseline == 0:
         return 0 if candidate == 0 else None
-    return _derived_integer((candidate - baseline) * 10_000 // baseline)
+    return _derived_integer(
+        _truncate_division((candidate - baseline) * 10_000, baseline)
+    )
 
 
 def _basis_points_improvement(baseline: int, candidate: int) -> int | None:
@@ -110,7 +120,54 @@ def _cost_per_success_improvement(
         - candidate_total * baseline_successes
     )
     denominator = baseline_total * candidate_successes
-    return _derived_integer(numerator * 10_000 // denominator)
+    return _derived_integer(_truncate_division(numerator * 10_000, denominator))
+
+
+def _regression_exceeds(baseline: int, candidate: int, maximum: int) -> bool:
+    if baseline == 0:
+        return candidate > 0
+    return (candidate - baseline) * 10_000 > maximum * baseline
+
+
+def _improvement_at_least(baseline: int, candidate: int, minimum: int) -> bool:
+    if baseline == 0:
+        return candidate == 0 and minimum == 0
+    return (baseline - candidate) * 10_000 >= minimum * baseline
+
+
+def _cost_regression_exceeds(
+    baseline: dict[str, int], candidate: dict[str, int], maximum: int
+) -> bool:
+    baseline_successes = baseline["success_count"]
+    candidate_successes = candidate["success_count"]
+    if baseline_successes == 0 or candidate_successes == 0:
+        return True
+    return (
+        candidate["total_cost_microusd"] * baseline_successes * 10_000
+        > baseline["total_cost_microusd"]
+        * candidate_successes
+        * (10_000 + maximum)
+    )
+
+
+def _cost_improvement_at_least(
+    baseline: dict[str, int], candidate: dict[str, int], minimum: int
+) -> bool:
+    baseline_successes = baseline["success_count"]
+    candidate_successes = candidate["success_count"]
+    baseline_total = baseline["total_cost_microusd"]
+    if baseline_successes == 0 or candidate_successes == 0:
+        return False
+    if baseline_total == 0:
+        return candidate["total_cost_microusd"] == 0 and minimum == 0
+    return (
+        (
+            baseline_total * candidate_successes
+            - candidate["total_cost_microusd"] * baseline_successes
+        )
+        * 10_000
+        >= minimum * baseline_total * candidate_successes
+    )
 
 
 def _p95(values: list[int]) -> int:
@@ -208,6 +265,7 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
     candidate_runs: list[dict[str, object]] = []
     seen_pairs: set[str] = set()
     matched_tasks: set[str] = set()
+    task_quality: dict[str, list[int]] = {}
     run_windows: set[str] = set()
     for value in pairs:
         pair = _closed(
@@ -229,8 +287,14 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
         seen_pairs.add(pair_hmac)
         matched_tasks.add(task_hmac)
         run_windows.add(run_window_hmac)
-        baseline_runs.append(_run(pair["baseline"]))
-        candidate_runs.append(_run(pair["candidate"]))
+        baseline_run = _run(pair["baseline"])
+        candidate_run = _run(pair["candidate"])
+        baseline_runs.append(baseline_run)
+        candidate_runs.append(candidate_run)
+        quality = task_quality.setdefault(task_hmac, [0, 0, 0])
+        quality[0] += int(baseline_run["quality_basis_points"])
+        quality[1] += int(candidate_run["quality_basis_points"])
+        quality[2] += 1
 
     policy = _closed(
         request["policy"],
@@ -256,15 +320,22 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
 
     baseline = _aggregate(baseline_runs)
     candidate = _aggregate(candidate_runs)
+    quality_margin = int(policy["quality_noninferiority_margin_basis_points"])
     quality_noninferior = (
-        candidate["quality_basis_points"]
-        + int(policy["quality_noninferiority_margin_basis_points"])
-        >= baseline["quality_basis_points"]
+        _bounded_sum(int(run["quality_basis_points"]) for run in candidate_runs)
+        + quality_margin * len(pairs)
+        >= _bounded_sum(
+            int(run["quality_basis_points"]) for run in baseline_runs
+        )
+    )
+    task_quality_noninferior = all(
+        candidate_total + quality_margin * count >= baseline_total
+        for baseline_total, candidate_total, count in task_quality.values()
     )
     success_noninferior = (
-        candidate["success_rate_basis_points"]
-        + int(policy["success_noninferiority_margin_basis_points"])
-        >= baseline["success_rate_basis_points"]
+        candidate["success_count"] * 10_000
+        + int(policy["success_noninferiority_margin_basis_points"]) * len(pairs)
+        >= baseline["success_count"] * 10_000
     )
     output_regression = _basis_points_change(
         baseline["provider_output_tokens"], candidate["provider_output_tokens"]
@@ -310,52 +381,66 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
         blockers.append("success_rate_regressed")
     if not quality_noninferior:
         blockers.append("quality_regressed")
-    if cost_regression is None or cost_regression > int(
-        policy["maximum_cost_per_success_regression_basis_points"]
+    if not task_quality_noninferior:
+        blockers.append("task_quality_regressed")
+    if _cost_regression_exceeds(
+        baseline,
+        candidate,
+        int(policy["maximum_cost_per_success_regression_basis_points"]),
     ):
         blockers.append("cost_per_success_regressed")
-    if latency_regression is None or latency_regression > int(
-        policy["maximum_p95_wall_time_regression_basis_points"]
+    if _regression_exceeds(
+        baseline["p95_wall_time_ms"],
+        candidate["p95_wall_time_ms"],
+        int(policy["maximum_p95_wall_time_regression_basis_points"]),
     ):
         blockers.append("p95_wall_time_regressed")
-    if output_regression is None or output_regression > int(
-        policy["maximum_output_regression_basis_points"]
+    if _regression_exceeds(
+        baseline["provider_output_tokens"],
+        candidate["provider_output_tokens"],
+        int(policy["maximum_output_regression_basis_points"]),
     ):
         blockers.append("output_tokens_regressed")
-    if request_regression is None or request_regression > int(
-        policy["maximum_model_request_regression_basis_points"]
+    if _regression_exceeds(
+        baseline["model_requests"],
+        candidate["model_requests"],
+        int(policy["maximum_model_request_regression_basis_points"]),
     ):
         blockers.append("model_requests_regressed")
-    for regression, policy_field, reason in (
+    for policy_field, reason in (
         (
-            correction_regression,
             "maximum_correction_turn_regression_basis_points",
             "correction_turns_regressed",
         ),
         (
-            rehydration_regression,
             "maximum_rehydration_call_regression_basis_points",
             "rehydration_calls_regressed",
         ),
         (
-            tool_call_regression,
             "maximum_tool_call_regression_basis_points",
             "tool_calls_regressed",
         ),
         (
-            tool_yield_regression,
             "maximum_tool_yield_regression_basis_points",
             "tool_yields_regressed",
         ),
     ):
-        if regression is None or regression > int(policy[policy_field]):
+        metric = {
+            "maximum_correction_turn_regression_basis_points": "correction_turns",
+            "maximum_rehydration_call_regression_basis_points": "rehydration_calls",
+            "maximum_tool_call_regression_basis_points": "tool_calls",
+            "maximum_tool_yield_regression_basis_points": "tool_yields",
+        }[policy_field]
+        if _regression_exceeds(
+            baseline[metric], candidate[metric], int(policy[policy_field])
+        ):
             blockers.append(reason)
     minimum = int(policy["minimum_net_improvement_basis_points"])
     if not (
-        cost_improvement is not None
-        and cost_improvement >= minimum
-        or latency_improvement is not None
-        and latency_improvement >= minimum
+        _cost_improvement_at_least(baseline, candidate, minimum)
+        or _improvement_at_least(
+            baseline["p95_wall_time_ms"], candidate["p95_wall_time_ms"], minimum
+        )
     ):
         blockers.append("insufficient_net_improvement")
 
@@ -396,9 +481,14 @@ def evaluate_net_efficiency(envelope: object) -> dict[str, object]:
             "task_hmac_stored": False,
         },
         "quality": {
-            "noninferior": quality_noninferior and success_noninferior,
+            "noninferior": (
+                quality_noninferior
+                and task_quality_noninferior
+                and success_noninferior
+            ),
             "quality_noninferior": quality_noninferior,
             "success_noninferior": success_noninferior,
+            "task_quality_noninferior": task_quality_noninferior,
         },
         "schema_version": NET_EFFICIENCY_RESULT_VERSION,
     }
