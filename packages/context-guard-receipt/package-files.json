@@ -13,7 +13,7 @@
     {
       "mode": "0644",
       "path": "README.md",
-      "sha256": "86ec70091519d3e704564fa30fa1d086d62916286a881ca403e3daed743565bd"
+      "sha256": "fbdb1ce30cd764d3700d7d759aee88bc9fa317b8693aacce733f630e569a881a"
     },
     {
       "mode": "0755",
@@ -28,7 +28,7 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "d423f3a39932c9386a69647b2d90ac5bb76be4004afe416166b6fb6b8701757d"
+      "sha256": "3b2051225c6d99c375c2029b98e57546eeaa7bd5deefa8cb8b372cc4d0748b4c"
     },
     {
       "mode": "0644",
@@ -63,7 +63,7 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/cli.py",
-      "sha256": "5a256df7c338896d307d1b8e965dd4ae37ae264adeba71a45630c4f4404a7817"
+      "sha256": "3a47702025a276695236b59af60edb8c759d560b19461cc29f2aa3f2ac526e67"
     },
     {
       "mode": "0644",
@@ -123,12 +123,17 @@
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/mcp.py",
-      "sha256": "b53b2c9a4cec4ca18c505a067a5602a2aaf79eed68a289f7fada5a91165f2073"
+      "sha256": "3d2343edc58459fa972ab99c411b8bf865be4fd5af542c2a28887cb8bf82f45f"
     },
     {
       "mode": "0644",
       "path": "python/context_guard_receipt/merged_capture.py",
       "sha256": "a19c605a47b666f302b8b993d1e0973bfded46c1974022c2620c5ef5d598b7cf"
+    },
+    {
+      "mode": "0644",
+      "path": "python/context_guard_receipt/net_efficiency.py",
+      "sha256": "04a686d0e6edd6a11906e82fee341787ed414a758fe8315e69d05e280c3711e5"
     },
     {
       "mode": "0644",

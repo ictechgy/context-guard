@@ -467,6 +467,14 @@ context-guard-receipt evaluate full-wire --input full-wire-evaluation.json
 
 `context-guard-receipt evaluate calibration` joins HMAC-only preflight and observation rows after a declared sample floor, while `evaluate route-v2` applies the resulting integer total-cost policy as shadow-only advice. Neither command authorizes an automatic route or a savings claim.
 
+The Receipt companion also exposes provider-free `evaluate net-efficiency`,
+`fanout-plan`, `prefix-plan`, `prune-plan`, and `shadow-policy` contracts. They
+measure matched quality, full shifted cost, p95 latency, output/model rounds,
+distinct canary windows, fan-out shape, cache-prefix stability, and safe
+task-boundary pruning while remaining shadow-only. Its task-scoped
+`receipt_batch` MCP tool returns multiple already-authorized exact slices in
+one bounded read-only call; it adds no shell, provider, or network authority.
+
 `context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only. Hosted token or cost savings claims require matched successful tasks, non-inferior quality, and shifted-cost evidence.
 
 `context-guard cost advisory` is the zero-persistent-context WeightClass/router gate. It accepts only closed numeric and boolean capability signals, returns an empty provider context on every path, bypasses small or non-profitable work, and permits graph only for cached positive replacement evidence. See [WeightClass advisory mode](https://github.com/ictechgy/context-guard/blob/main/docs/weightclass-advisory-mode.md).
@@ -698,7 +706,7 @@ Do not rely on `PATH` lookup for generated hooks by default. The setup wizard re
 
 For explicit repeated file or log context, the bundled Receipt companion also
 provides `context-guard-receipt-mcp --root /absolute/repository`. Its
-`receipt_context` tool accepts an explicitly eligible relative path, returns a
+`receipt_context` accepts an explicitly eligible relative path, returns a
 compact exact reference when the byte-benefit router says deferral is useful,
 reuses that live reference for repeated reads, and retrieves exact slices of at
 most 65,536 bytes. Optional task scopes prevent cross-task reuse, explicit

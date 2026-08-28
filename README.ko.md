@@ -430,6 +430,14 @@ context-guard-receipt evaluate full-wire --input full-wire-evaluation.json
 
 `context-guard-receipt evaluate calibration`은 선언된 최소 표본 이후 HMAC-only preflight/observation row를 결합하고, `evaluate route-v2`는 그 integer 총비용 정책을 shadow-only 자문으로 평가합니다. 어느 명령도 자동 route나 절감 주장을 허가하지 않습니다.
 
+Receipt companion은 provider-free `evaluate net-efficiency`, `fanout-plan`,
+`prefix-plan`, `prune-plan`, `shadow-policy` 계약도 제공합니다. 이 계약은
+대응 quality, 전체 shifted cost, p95 latency, output/model round, 서로 다른
+canary window, fan-out 형태, cache-prefix 안정성, 안전한 task-boundary pruning을
+측정하지만 항상 shadow-only입니다. Task-scoped `receipt_batch` MCP 도구는
+이미 승인된 exact slice 여러 개를 하나의 제한된 read-only 호출로 반환하며
+shell, provider, network 권한을 추가하지 않습니다.
+
 `context-guard route-advisor`는 로컬 passive advisor입니다. caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽고 total-cost accounting, batchability blocker, batch API·prompt-cache prefix 보존·structured outputs·저비용 모델 평가 같은 route 후보를 출력합니다. queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오지 않으며, provider feature는 caller-supplied 또는 unknown/recheck-required로 표시합니다. 추천은 후보일 뿐입니다. hosted token/cost 절감을 주장하려면 matched successful task, 비열등 quality gate, shifted-cost evidence가 필요합니다.
 
 `context-guard cost advisory`는 WeightClass/router용 zero-persistent-context gate입니다. 닫힌 숫자·불리언 capability 신호만 받고, 모든 경로에서 provider context를 빈 값으로 유지하며, 작거나 순이익이 없는 작업을 bypass하고, cached positive replacement 근거가 있을 때만 graph를 허용합니다. 자세한 계약은 [WeightClass advisory mode](https://github.com/ictechgy/context-guard/blob/main/docs/weightclass-advisory-mode.md)를 참고하세요.

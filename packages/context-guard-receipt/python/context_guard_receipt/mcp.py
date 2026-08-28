@@ -87,6 +87,7 @@ MAX_ROOT_INVENTORY_ENTRIES: Final = 65_536
 MAX_ROOT_INVENTORY_DEPTH: Final = 64
 MAX_ROOT_INVENTORY_PATH_BYTES: Final = 4096
 MAX_CONTEXT_SLICE_BYTES: Final = 64 * 1024
+MAX_BATCH_QUERIES: Final = 16
 MAX_CONTEXT_DIAGNOSTIC_INPUT_BYTES: Final = 700_000
 
 _RESPONSE_JSON_LIMITS: Final = JSONLimits(
@@ -104,6 +105,7 @@ _CAPABILITY_ALPHABET: Final = frozenset(
 )
 _TOOL_NAMES: Final = (
     "receipt_assemble",
+    "receipt_batch",
     "receipt_context",
     "receipt_diagnose",
     "receipt_expand",
@@ -672,6 +674,54 @@ def _tool_definitions() -> list[dict[str, object]]:
                 "required": ["descriptor", "kind"],
             },
             "name": "receipt_assemble",
+        },
+        {
+            "annotations": {
+                **annotations,
+                "idempotentHint": True,
+                "readOnlyHint": True,
+            },
+            "description": (
+                "Read multiple bounded exact slices from task-scoped context "
+                "capabilities."
+            ),
+            "inputSchema": {
+                **closed,
+                "properties": {
+                    "queries": {
+                        "items": {
+                            **closed,
+                            "properties": {
+                                "capability": {
+                                    "pattern": "^cgr1m_[A-Za-z0-9_-]{43}$",
+                                    "type": "string",
+                                },
+                                "max_bytes": {
+                                    "maximum": MAX_CONTEXT_SLICE_BYTES,
+                                    "minimum": 1,
+                                    "type": "integer",
+                                },
+                                "offset": {
+                                    "maximum": MAX_ASSEMBLY_PAYLOAD_BYTES,
+                                    "minimum": 0,
+                                    "type": "integer",
+                                },
+                            },
+                            "required": ["capability", "max_bytes", "offset"],
+                        },
+                        "maxItems": MAX_BATCH_QUERIES,
+                        "minItems": 1,
+                        "type": "array",
+                    },
+                    "task_scope": {
+                        "maxLength": MAX_TASK_SCOPE_BYTES,
+                        "minLength": 1,
+                        "type": "string",
+                    },
+                },
+                "required": ["queries", "task_scope"],
+            },
+            "name": "receipt_batch",
         },
         {
             "annotations": annotations,
@@ -1361,6 +1411,99 @@ class MCPServer:
         if expanded.disposition is not ExpansionDisposition.EXACT:
             raise _InvalidInput
         return expanded.output_bytes
+
+    def _batch(self, arguments: object) -> dict[str, object]:
+        if type(arguments) is not dict or set(arguments) != {
+            "queries",
+            "task_scope",
+        }:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        queries = arguments.get("queries")
+        task_scope = arguments.get("task_scope")
+        if (
+            type(queries) is not list
+            or not queries
+            or len(queries) > MAX_BATCH_QUERIES
+            or type(task_scope) is not str
+        ):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        requested_bytes = 0
+        for query in queries:
+            if (
+                type(query) is not dict
+                or set(query) != {"capability", "max_bytes", "offset"}
+                or not _valid_handle(query.get("capability"), _EXTERNAL_PREFIX)
+                or type(query.get("max_bytes")) is not int
+                or not 1 <= query["max_bytes"] <= MAX_CONTEXT_SLICE_BYTES
+                or type(query.get("offset")) is not int
+                or not 0 <= query["offset"] <= MAX_ASSEMBLY_PAYLOAD_BYTES
+            ):
+                return _call_result(_tool_error("invalid_arguments"), is_error=True)
+            requested_bytes += query["max_bytes"]
+            if requested_bytes > MAX_CONTEXT_SLICE_BYTES:
+                return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        try:
+            task_scope_hmac = self._task_scope_hmac(task_scope)
+        except (_InvalidInput, UnicodeError):
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        if task_scope_hmac is None:
+            return _call_result(_tool_error("invalid_arguments"), is_error=True)
+        if any(
+            not self._lease_matches(query["capability"], task_scope)
+            for query in queries
+        ):
+            return _call_result(_tool_error("capability_rejected"), is_error=True)
+        try:
+            self._revalidate_root()
+            results: list[dict[str, object]] = []
+            total_returned = 0
+            total_source = 0
+            for query in queries:
+                output = self._context_artifact_bytes(
+                    query["capability"], task_scope
+                )
+                offset = int(query["offset"])
+                if offset > len(output):
+                    raise _InvalidInput
+                end = min(len(output), offset + int(query["max_bytes"]))
+                page = output[offset:end]
+                total_returned += len(page)
+                total_source += len(output)
+                results.append(
+                    {
+                        "capability": query["capability"],
+                        "complete": end == len(output),
+                        "end_byte": end,
+                        "output_b64u": _b64u(page),
+                        "start_byte": offset,
+                        "total_bytes": len(output),
+                    }
+                )
+            self._record_context_history(
+                action="batch_read",
+                disposition="exact",
+                reason="bounded_exact_slices",
+                task_scope_hmac_sha256=task_scope_hmac,
+                byte_length=total_returned,
+            )
+            self._revalidate_root()
+            return _call_result(
+                {
+                    "evidence_boundary": evidence_boundary(),
+                    "network_authority": False,
+                    "provider_claim_authority": False,
+                    "query_count": len(results),
+                    "results": results,
+                    "schema_version": "contextguard-receipt-mcp-batch/v1",
+                    "total_returned_bytes": total_returned,
+                    "total_source_bytes": total_source,
+                },
+                is_error=False,
+            )
+        except (StoreError, _InvalidInput, OSError, ValueError):
+            return _call_result(_tool_error("capability_rejected"), is_error=True)
+        except Exception:
+            return _call_result(_tool_error("operation_failed"), is_error=True)
 
     def _pack_capabilities(self, output: bytes) -> tuple[str, ...]:
         parsed = parse_canonical_json_bytes(output, limits=_RESPONSE_JSON_LIMITS)
@@ -2312,7 +2455,7 @@ class MCPServer:
                     "protocolVersion": version,
                     "serverInfo": {
                         "name": "context-guard-receipt",
-                        "version": "1.3.0",
+                        "version": "1.4.0",
                     },
                 },
             )
@@ -2371,6 +2514,8 @@ class MCPServer:
                 arguments = params.get("arguments", {})
                 if params["name"] == "receipt_assemble":
                     result = self._assemble(arguments)
+                elif params["name"] == "receipt_batch":
+                    result = self._batch(arguments)
                 elif params["name"] == "receipt_context":
                     result = self._context(arguments)
                 elif params["name"] == "receipt_diagnose":
