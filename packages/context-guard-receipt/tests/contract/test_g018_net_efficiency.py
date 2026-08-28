@@ -810,14 +810,18 @@ class ReadmeExampleTests(unittest.TestCase):
             "shadow-policy",
         )
         expectations = (
-            ("decision", "recommend"),
-            ("decision", "eligible"),
-            ("recommendation", "evaluate_native_deferred_loading"),
-            ("selected_indexes", [0]),
-            ("selected_lane", "fanout"),
+            ("decision", "recommend", "runtime_apply_allowed"),
+            ("decision", "eligible", "execution_authorized"),
+            (
+                "recommendation",
+                "evaluate_native_deferred_loading",
+                "request_mutation_allowed",
+            ),
+            ("selected_indexes", [0], "transcript_mutation_allowed"),
+            ("selected_lane", "fanout", "runtime_route_authorized"),
         )
         self.assertEqual(len(blocks), len(names))
-        for name, raw, (field, expected) in zip(
+        for name, raw, (field, expected, authority_field) in zip(
             names, blocks, expectations, strict=True
         ):
             with self.subTest(name=name):
@@ -833,7 +837,12 @@ class ReadmeExampleTests(unittest.TestCase):
                 )
                 result = run_evaluator(name, value)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout)[field], expected)
+                report = json.loads(result.stdout)
+                self.assertEqual(report[field], expected)
+                self.assertIs(report["authority"][authority_field], False)
+                self.assertIs(report["authority"]["provider_claim_authority"], False)
+                if name == "shadow-policy":
+                    self.assertIs(report["runtime_applied"], False)
 
 
 if __name__ == "__main__":
