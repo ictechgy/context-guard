@@ -4,6 +4,11 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-30
+
+- Added composable adapter capabilities and safe project MCP setup for Codex,
+  Gemini, Cursor, Copilot/VS Code, OpenCode, and ForgeCode through `--with-mcp`.
+
 - Added provider-free `net-efficiency`, `fanout-plan`, `prefix-plan`,
   `prune-plan`, and `shadow-policy` evaluators. They gate matched quality,
   fully loaded cost, p95 latency, output/model-round regressions, distinct
