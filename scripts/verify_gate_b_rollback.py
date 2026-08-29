@@ -98,6 +98,11 @@ GEN12_B1_SUBJECT = "proof: reapply Gate-B nudge component gen12 wrapper no-follo
 GEN12_B2_SUBJECT = "proof: reapply Gate-B usage component gen12 wrapper no-follow hardening"
 GEN12_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen12 wrapper no-follow hardening"
 
+GEN13_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen13 cross-vendor MCP setup"
+GEN13_B1_SUBJECT = "proof: reapply Gate-B nudge component gen13 cross-vendor MCP setup"
+GEN13_B2_SUBJECT = "proof: reapply Gate-B usage component gen13 cross-vendor MCP setup"
+GEN13_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen13 cross-vendor MCP setup"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -387,6 +392,19 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    Generation(
+        name="gen13",
+        bless_subject=GEN13_BLESS_SUBJECT,
+        b1_subject=GEN13_B1_SUBJECT,
+        b2_subject=GEN13_B2_SUBJECT,
+        shared_subject=GEN13_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -407,6 +425,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "f7a6ae820ba00ae823b2b1345500f55e7e47ea9c34da42859aed26967f99bbda",
     "af751929e8c0255b9908c2b0ff0305bd6a624ad9a1601a68388ce4d080d4e779",
     "c602b6333bf18b1c2eb43a2eba34604986fde5a6f7ae0208177e92c7ef0fd79f",
+    "f9a99a1cd68dcf6d19bd6e6f5187742a563b2b7266098fcd72edacc5972c57ed",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
