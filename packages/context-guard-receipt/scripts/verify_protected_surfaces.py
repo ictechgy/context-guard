@@ -67,18 +67,18 @@ SEMANTIC_RECORD_EXPECTATIONS = {
 }
 ENTRY_KEYS = {"file_type", "mode", "path", "sha256", "tracked"}
 POST_STAGE2_PROTECTED_SHA256 = {
-    ".claude-plugin/marketplace.json": "92bae55c9360414f695c1813e369befee45cd332edfee94436c4e9761904b85b",
+    ".claude-plugin/marketplace.json": "ccaaf6dbc166cf131202ea389a39b0764656cbc1dd6cab5d9c5fa72a299cd02f",
     "context-guard-kit/benchmark_runner.py": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
     "context-guard-kit/context_pack.py": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4",
     "context-guard-kit/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
     "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
-    "context-guard-kit/setup_wizard.py": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
-    "package.json": "d3b3992a2466644f854f48012cd57ce93d97d5ca5ff0c5f682e02162937f5a26",
-    "plugins/context-guard/.claude-plugin/plugin.json": "9760a90b2886f8f09d2d4de4193242c3f81eaee39326d31ab8d463f3389f1e61",
+    "context-guard-kit/setup_wizard.py": "5febfe4eda4a8ab4b86dfd70cbc17e3ed0a9743e9e7d3f9a68e302e2884e2967",
+    "package.json": "ce9ba20c8e8522d66ab93bfd190b7be9c1aa1f3de577fc1161a798282800afb2",
+    "plugins/context-guard/.claude-plugin/plugin.json": "c9fc508d0f1a3cf290645710fa1b8839cdd8f3fd303bc13695b69d9da2deb2c1",
     "plugins/context-guard/bin/context-guard-bench": "1743c6b53351d84394b4db15735b6dc0ea94f1bd16a6a8e45a277ae3fd014aea",
     "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
     "plugins/context-guard/bin/context-guard-pack": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4",
-    "plugins/context-guard/bin/context-guard-setup": "245d36ae063542859c77a03c6f207d142d29ffc24b61bea938e2ab7d5163c9a3",
+    "plugins/context-guard/bin/context-guard-setup": "5febfe4eda4a8ab4b86dfd70cbc17e3ed0a9743e9e7d3f9a68e302e2884e2967",
     "plugins/context-guard/lib/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
     "scripts/prepublish_check.py": "99d7414816a6880ad13f9d4b6265cb5e33eb8c43ccf83de1d0500df43acc9382",
     "scripts/release_smoke.py": "5c1862a4861e6999547e076b852a38f93e68f4ac7a6bc2c38776121f5b141deb",

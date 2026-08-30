@@ -12,8 +12,8 @@ ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스
 | 쓰는 도구 | 설치 | 활성화 |
 | --- | --- | --- |
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` 후 `/plugin install context-guard@context-guard` | 프로젝트에서 `/context-guard:setup` 실행 |
-| Codex CLI 또는 터미널 기반 에이전트 | `npm install -g @ictechgy/context-guard` 또는 일회성 `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan` 확인 후 `--yes`로 적용 |
-| Gemini/Cursor/Windsurf/Cline/Copilot | 위 npm/npx 설치 경로 사용 | 원하는 에이전트만 `context-guard setup --agent ... --scope project --with-init --plan`으로 확인 후 적용 |
+| Codex CLI 또는 터미널 기반 에이전트 | `npm install -g @ictechgy/context-guard` 또는 일회성 `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan` 확인 후 `--yes`로 적용 |
+| Gemini/Cursor/Windsurf/Cline/Copilot | 위 npm/npx 설치 경로 사용 | `--with-init`을 사용하고 Gemini/Cursor/Copilot/OpenCode/ForgeCode에는 `--with-mcp`를 추가 |
 | macOS/Homebrew 사용자 | 배포 경로: `brew install ictechgy/tap/context-guard` | 설치 후 같은 `context-guard setup ...` 명령 사용 |
 
 자주 쓰는 명령은 다음과 같습니다.
@@ -22,7 +22,7 @@ ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스
 npm install -g @ictechgy/context-guard
 npx @ictechgy/context-guard --version
 context-guard doctor --root . --json              # 읽기 전용 상태 점검; 변경 없음
-context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan
 context-guard setup --agent claude --scope user --verify --json  # 읽기 전용 사용자 범위 점검
 context-guard setup --agent claude --scope user --plan
 ```
@@ -46,13 +46,15 @@ Claude Code 사용자는 플러그인으로 시작하는 것이 가장 빠릅니
 | 에이전트 또는 도구 | ContextGuard 적용 방식 |
 | --- | --- |
 | Claude Code | 프로젝트 로컬 훅, deny 규칙, 상태표시줄 설정을 적용하는 네이티브 플러그인 설정. |
-| OpenAI Codex CLI | 안내용 `AGENTS.md` 규칙 블록과 선택형 `.agents/skills/context-guard/SKILL.md` 프로젝트 스킬. |
-| Gemini CLI | 안내용 `GEMINI.md` 규칙 블록. |
-| Cursor | 보통 `.cursorrules`에 들어가는 안내용 프로젝트 규칙 블록. |
+| OpenAI Codex CLI | 안내용 `AGENTS.md`와 선택형 프로젝트 skill 및 `.codex/config.toml` stdio MCP 설정. |
+| Gemini CLI | 안내용 `GEMINI.md`와 선택형 `.gemini/settings.json` MCP. |
+| Cursor | 안내용 `.cursorrules`와 선택형 `.cursor/mcp.json`. |
 | Windsurf | 안내용 `.windsurf/rules/contextguard.md` 규칙 블록. |
 | Cline | 파일·디렉터리 패턴을 다루는 안내용 `.clinerules` 규칙 블록. |
-| GitHub Copilot Coding Agent | 안내용 `.github/copilot-instructions.md` 규칙 블록. |
-| OpenCode, ForgeCode, 알 수 없는 에이전트 | 자동 훅 없이 로컬 셸 헬퍼와 로컬 증거를 수동으로 사용. |
+| GitHub Copilot Coding Agent | 안내용 `.github/copilot-instructions.md`와 선택형 `.vscode/mcp.json`. |
+| OpenCode | 기존 프로젝트 skill과 선택형 `opencode.json` MCP. |
+| ForgeCode | 선택형 프로젝트 `.mcp.json`; 나머지는 셸 헬퍼 사용. |
+| Windsurf, Cline, 기타 | 규칙 파일 또는 셸 사용; project MCP 자동 쓰기 없음. |
 
 ## ContextGuard가 토큰 낭비를 줄이는 방식
 
@@ -207,19 +209,23 @@ npm 패키지는 단일 `context-guard` 명령과 `context-guard-*` 헬퍼 명�
 npm install -g @ictechgy/context-guard
 context-guard --version
 context-guard doctor --root . --json
-context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan
 context-guard setup --agent codex --scope project --brief-mode standard --plan
 ```
 
 전역 설치 없이 한 번만 실행하려면 다음처럼 사용할 수 있습니다.
 
 ```bash
-npx @ictechgy/context-guard setup --agent codex --scope project --with-init --with-skill --plan
+npx @ictechgy/context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan
 npx @ictechgy/context-guard setup --agent codex --scope project --brief-mode standard --plan
 npm exec @ictechgy/context-guard -- --version
 ```
 
 `--scope project`는 `AGENTS.md`, `.agents/skills/...`처럼 저장소 안 파일에 적용합니다. `--scope user`는 전체 사용자 환경에 적용하려는 경우에만 의도적으로 사용하세요. 실제 적용에는 `--yes`와 명시적인 `--agent`가 필요하며, 지원되는 쓰기는 되돌리기 기록을 남깁니다.
+
+`--with-mcp`는 Codex와 검증된 JSON project 설정을 충돌 없이 백업·병합합니다.
+Windsurf와 Cline의 MCP는 문서상 사용자/IDE 범위여서 자동 쓰지 않습니다.
+[공식 Codex MCP 문서](https://learn.chatgpt.com/docs/extend/mcp)를 참고하세요.
 
 ### Claude Code용 선택적 Bash reference
 
@@ -230,7 +236,7 @@ plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 referenc
 사용할 수 없다고 알립니다.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.8.0
+npm install --save-exact @ictechgy/context-guard@0.9.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```

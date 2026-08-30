@@ -14,8 +14,8 @@ Installation and activation are deliberately separate. Installing ContextGuard o
 | If you use... | Install | Activate |
 | --- | --- | --- |
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` then `/plugin install context-guard@context-guard` | Run `/context-guard:setup` inside the project. |
-| Codex CLI or any terminal-first agent | `npm install -g @ictechgy/context-guard` or one-shot `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan`, then rerun with `--yes`. |
-| Other rule-file agents | Use the npm/npx install path above. | `context-guard setup --agent gemini,cursor,windsurf,cline,copilot --scope project --with-init --plan`, then apply only the agents you want. |
+| Codex CLI or any terminal-first agent | `npm install -g @ictechgy/context-guard` or one-shot `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan`, then rerun with `--yes`. |
+| Other rule-file agents | Use the npm/npx install path above. | Use `--with-init`; add `--with-mcp` for Gemini, Cursor, Copilot, OpenCode, or ForgeCode. |
 | macOS/Homebrew users | Release path: `brew install ictechgy/tap/context-guard` | Same `context-guard setup ...` commands after install. |
 
 Common commands:
@@ -24,7 +24,7 @@ Common commands:
 npm install -g @ictechgy/context-guard
 npx @ictechgy/context-guard --version
 context-guard doctor --root . --json              # read-only health check; no changes made
-context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan
 context-guard setup --agent claude --scope user --verify --json  # read-only user-scope check
 context-guard setup --agent claude --scope user --plan
 ```
@@ -48,13 +48,15 @@ Current setup surfaces:
 | Agent or tool | ContextGuard surface |
 | --- | --- |
 | Claude Code | Native plugin setup for project-local hooks, deny rules, and statusline configuration. |
-| OpenAI Codex CLI | Advisory `AGENTS.md` rule block plus optional project skill at `.agents/skills/context-guard/SKILL.md`. |
-| Gemini CLI | Advisory `GEMINI.md` rule block. |
-| Cursor | Advisory project-rule block, usually `.cursorrules`. |
+| OpenAI Codex CLI | Advisory `AGENTS.md` plus optional project skill and `.codex/config.toml` stdio MCP setup. |
+| Gemini CLI | Advisory `GEMINI.md` plus optional `.gemini/settings.json` MCP. |
+| Cursor | Advisory `.cursorrules` plus optional `.cursor/mcp.json`. |
 | Windsurf | Advisory `.windsurf/rules/contextguard.md` rule block. |
 | Cline | Advisory `.clinerules` rule block, with file/directory handling. |
-| GitHub Copilot Coding Agent | Advisory `.github/copilot-instructions.md` rule block. |
-| OpenCode, ForgeCode, or unknown agents | Manual shell-helper usage with local evidence; no automatic hooks. |
+| GitHub Copilot Coding Agent | Advisory `.github/copilot-instructions.md` plus optional `.vscode/mcp.json`. |
+| OpenCode | Existing project skill plus optional `opencode.json` MCP. |
+| ForgeCode | Optional project `.mcp.json`; helpers remain shell-driven. |
+| Windsurf, Cline, or unknown agents | Rule-file or shell usage; no automatic project MCP write. |
 
 ## How ContextGuard reduces token waste
 
@@ -220,19 +222,24 @@ The npm package exposes a canonical `context-guard` command plus `context-guard-
 npm install -g @ictechgy/context-guard
 context-guard --version
 context-guard doctor --root . --json
-context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan
 context-guard setup --agent codex --scope project --brief-mode standard --plan
 ```
 
 For a one-off run without global installation:
 
 ```bash
-npx @ictechgy/context-guard setup --agent codex --scope project --with-init --with-skill --plan
+npx @ictechgy/context-guard setup --agent codex --scope project --with-init --with-skill --with-mcp --plan
 npx @ictechgy/context-guard setup --agent codex --scope project --brief-mode standard --plan
 npm exec @ictechgy/context-guard -- --version
 ```
 
 Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skills/...`. Use `--scope user` only when you intentionally want a user-level path; applying user scope requires `--yes` plus an explicit `--agent`, and supported writes record rollback metadata.
+
+`--with-mcp` safely manages one backed-up Codex project stdio block; other
+verified project targets use the same conflict-safe JSON merge. Windsurf and
+Cline remain report-only for MCP because their documented settings are user or
+IDE scoped. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
 
 ### Opt-in Bash references for Claude Code
 
@@ -243,7 +250,7 @@ keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.8.0
+npm install --save-exact @ictechgy/context-guard@0.9.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```

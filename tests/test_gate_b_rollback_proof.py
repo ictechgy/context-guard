@@ -1171,8 +1171,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen12(self) -> None:
-        """운영 레코드는 gen2~gen12를 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen14(self) -> None:
+        """운영 레코드는 gen2~gen14를 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1188,9 +1188,11 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen10",
                 "gen11",
                 "gen12",
+                "gen13",
+                "gen14",
             ),
         )
-        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11, gen12 = (
+        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11, gen12, gen13, gen14 = (
             rollback_proof.GENERATIONS
         )
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
@@ -1617,6 +1619,74 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen12.shared_subject,
             ),
             gen12_subjects,
+        )
+
+        self.assertEqual(gen13.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen13.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen13.shared_paths,
+            rollback_proof.SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(gen13.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen13.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(gen13.residual_edits, frozenset())
+        gen13_subjects = (
+            rollback_proof.GEN13_BLESS_SUBJECT,
+            rollback_proof.GEN13_B1_SUBJECT,
+            rollback_proof.GEN13_B2_SUBJECT,
+            rollback_proof.GEN13_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen13_subjects,
+            (
+                "proof: establish Gate-B-free residual gen13 cross-vendor MCP setup",
+                "proof: reapply Gate-B nudge component gen13 cross-vendor MCP setup",
+                "proof: reapply Gate-B usage component gen13 cross-vendor MCP setup",
+                "proof: reapply Gate-B integration component gen13 cross-vendor MCP setup",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen13.bless_subject,
+                gen13.b1_subject,
+                gen13.b2_subject,
+                gen13.shared_subject,
+            ),
+            gen13_subjects,
+        )
+
+        self.assertEqual(gen14.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen14.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen14.shared_paths,
+            rollback_proof.SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(gen14.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen14.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(gen14.residual_edits, frozenset())
+        gen14_subjects = (
+            rollback_proof.GEN14_BLESS_SUBJECT,
+            rollback_proof.GEN14_B1_SUBJECT,
+            rollback_proof.GEN14_B2_SUBJECT,
+            rollback_proof.GEN14_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen14_subjects,
+            (
+                "proof: establish Gate-B-free residual gen14 OpenCode MCP schema",
+                "proof: reapply Gate-B nudge component gen14 OpenCode MCP schema",
+                "proof: reapply Gate-B usage component gen14 OpenCode MCP schema",
+                "proof: reapply Gate-B integration component gen14 OpenCode MCP schema",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen14.bless_subject,
+                gen14.b1_subject,
+                gen14.b2_subject,
+                gen14.shared_subject,
+            ),
+            gen14_subjects,
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:
