@@ -929,10 +929,12 @@ def distribution() -> None:
             or mcp_tools
             != [
                 "receipt_assemble",
+                "receipt_batch",
                 "receipt_context",
                 "receipt_diagnose",
                 "receipt_expand",
                 "receipt_inspect",
+                "receipt_pack",
                 "receipt_tool_select",
                 "receipt_twin",
             ]
