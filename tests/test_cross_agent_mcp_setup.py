@@ -222,7 +222,7 @@ class CrossAgentMcpSetupTests(unittest.TestCase):
             "gemini": (Path(".gemini/settings.json"), ("mcpServers",), "command-args"),
             "cursor": (Path(".cursor/mcp.json"), ("mcpServers",), "command-args"),
             "copilot": (Path(".vscode/mcp.json"), ("servers",), "vscode"),
-            "opencode": (Path("opencode.json"), ("mcp", "servers"), "opencode"),
+            "opencode": (Path("opencode.json"), ("mcp",), "opencode"),
             "forgecode": (Path(".mcp.json"), ("mcpServers",), "command-args"),
         }
         for script in SETUP_SCRIPTS:

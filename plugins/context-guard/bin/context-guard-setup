@@ -579,7 +579,7 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         capabilities=("native-skill", "project-mcp", "project-skill", "shell-cli"),
         project_skill_rel=CODEX_SKILL_REL,
         mcp_config_rel="opencode.json",
-        mcp_key_path=("mcp", "servers"),
+        mcp_key_path=("mcp",),
         mcp_style="opencode",
         detect=("opencode.json", ".opencode"),
     ),
