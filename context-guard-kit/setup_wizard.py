@@ -30,11 +30,6 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import tomllib
-except ImportError:  # pragma: no cover - existing TOML is refused on older Python.
-    tomllib = None
-
-try:
     import fcntl
 except ImportError:  # pragma: no cover - setup already requires POSIX no-follow file ops.
     fcntl = None
@@ -220,17 +215,10 @@ LEGACY_ADAPTER_RULE_BLOCK_END = "<!-- contextguard:end -->"
 ADAPTER_RULE_BLOCK_BEGIN = "<!-- BEGIN context-guard:repo-rules version=1 -->"
 ADAPTER_RULE_BLOCK_END = "<!-- END context-guard:repo-rules -->"
 CODEX_SKILL_REL = ".agents/skills/context-guard/SKILL.md"
-CODEX_MCP_CONFIG_REL = ".codex/config.toml"
-CODEX_MCP_SERVER_NAME = "context_guard"
-CODEX_MCP_NAMESPACE = "codex-context-guard"
-MAX_CODEX_MCP_CONFIG_BYTES = 512 * 1024
-MAX_JSON_MCP_CONFIG_BYTES = 512 * 1024
 LEGACY_CODEX_SKILL_MARKER_BEGIN = "<!-- contextguard:codex-skill:begin -->"
 LEGACY_CODEX_SKILL_MARKER_END = "<!-- contextguard:codex-skill:end -->"
 CODEX_SKILL_MARKER_BEGIN = "<!-- BEGIN context-guard:codex-skill version=1 -->"
 CODEX_SKILL_MARKER_END = "<!-- END context-guard:codex-skill -->"
-CODEX_MCP_MARKER_BEGIN = "# BEGIN context-guard:codex-mcp version=1"
-CODEX_MCP_MARKER_END = "# END context-guard:codex-mcp"
 BRIEF_MODE_LEVELS = ("lite", "standard", "ultra")
 BRIEF_MODE_OFF = "off"
 BRIEF_MODE_CHOICES = (*BRIEF_MODE_LEVELS, BRIEF_MODE_OFF)
@@ -256,8 +244,6 @@ LEGACY_CODEX_SKILL_MARKER_V0_BEGIN = LEGACY_CODEX_SKILL_MARKER_BEGIN.encode("asc
 LEGACY_CODEX_SKILL_MARKER_V0_END = LEGACY_CODEX_SKILL_MARKER_END.encode("ascii")
 CODEX_SKILL_MARKER_V1_BEGIN = CODEX_SKILL_MARKER_BEGIN.encode("ascii")
 CODEX_SKILL_MARKER_V1_END = CODEX_SKILL_MARKER_END.encode("ascii")
-CODEX_MCP_MARKER_V1_BEGIN = CODEX_MCP_MARKER_BEGIN.encode("ascii")
-CODEX_MCP_MARKER_V1_END = CODEX_MCP_MARKER_END.encode("ascii")
 BRIEF_MODE_MARKER_END = BRIEF_MODE_BLOCK_END.encode("ascii")
 NARRATION_MODE_MARKER_BEGIN = b"<!-- BEGIN context-guard:narration-mode mode=quiet version=1 -->"
 NARRATION_MODE_MARKER_END = b"<!-- END context-guard:narration-mode -->"
@@ -298,12 +284,6 @@ MANAGED_MARKERS = (
         1,
         CODEX_SKILL_MARKER_V1_BEGIN,
         CODEX_SKILL_MARKER_V1_END,
-    ),
-    ManagedMarker(
-        "codex-mcp",
-        1,
-        CODEX_MCP_MARKER_V1_BEGIN,
-        CODEX_MCP_MARKER_V1_END,
     ),
     *(
         ManagedMarker(
@@ -390,15 +370,11 @@ def _fence_close(content: bytes, fence: tuple[int, int]) -> bool:
 
 def _looks_like_contextguard_marker(content: bytes) -> bool:
     lowered = content.lstrip(b" \t").lower()
-    html_marker = (
+    return (
         lowered.startswith(b"<!--")
         and b"-->" in lowered
         and (b"contextguard:" in lowered or b"context-guard:" in lowered)
     )
-    toml_marker = lowered.startswith(
-        (b"# begin context-guard:", b"# end context-guard:")
-    )
-    return html_marker or toml_marker
 
 
 def _scan_managed_spans(data: bytes) -> ManagedParseResult:
@@ -486,13 +462,9 @@ class AgentAdapter:
     display_name: str
     capability: str
     summary: str
-    capabilities: tuple[str, ...] = ()
     settings_rel: str | None = None
     rule_file: str | None = None
     project_skill_rel: str | None = None
-    mcp_config_rel: str | None = None
-    mcp_key_path: tuple[str, ...] = ()
-    mcp_style: str | None = None
     detect: tuple[str, ...] = ()
 
 
@@ -502,7 +474,6 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         display_name="Claude Code",
         capability=CapabilityClass.NATIVE_PLUGIN,
         summary="Installs project-local hooks, denies, and statusline in .claude/settings.json.",
-        capabilities=("native-hooks", "repo-rule", "shell-cli"),
         settings_rel=str(SETTINGS_REL),
         rule_file="CLAUDE.md",
         detect=(".claude",),
@@ -511,8 +482,7 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         key="codex",
         display_name="OpenAI Codex CLI",
         capability=CapabilityClass.REPO_RULE,
-        summary="Reads AGENTS.md and supports an optional project skill and project-scoped stdio MCP configuration.",
-        capabilities=("project-mcp", "project-skill", "repo-rule", "shell-cli"),
+        summary="Reads AGENTS.md; add an advisory ContextGuard rule block with --with-init and optional project skill with --with-skill.",
         rule_file="AGENTS.md",
         project_skill_rel=CODEX_SKILL_REL,
         detect=("AGENTS.md", ".codex"),
@@ -521,24 +491,16 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         key="gemini",
         display_name="Gemini CLI",
         capability=CapabilityClass.REPO_RULE,
-        summary="Reads GEMINI.md and supports project .gemini/settings.json MCP setup.",
-        capabilities=("project-mcp", "repo-rule", "shell-cli"),
+        summary="Reads GEMINI.md; add an advisory ContextGuard rule block with --with-init.",
         rule_file="GEMINI.md",
-        mcp_config_rel=".gemini/settings.json",
-        mcp_key_path=("mcpServers",),
-        mcp_style="command-args",
         detect=("GEMINI.md", ".gemini"),
     ),
     AgentAdapter(
         key="cursor",
         display_name="Cursor",
         capability=CapabilityClass.REPO_RULE,
-        summary="Reads project rules and supports project .cursor/mcp.json setup.",
-        capabilities=("project-mcp", "repo-rule", "shell-cli"),
+        summary="Reads project rules; add an advisory ContextGuard block with --with-init.",
         rule_file=".cursorrules",
-        mcp_config_rel=".cursor/mcp.json",
-        mcp_key_path=("mcpServers",),
-        mcp_style="command-args",
         detect=(".cursor", ".cursorrules"),
     ),
     AgentAdapter(
@@ -546,7 +508,6 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         display_name="Windsurf",
         capability=CapabilityClass.REPO_RULE,
         summary="Reads project rules; add an advisory ContextGuard block with --with-init.",
-        capabilities=("repo-rule", "shell-cli"),
         rule_file=".windsurf/rules/contextguard.md",
         detect=(".windsurf", ".windsurfrules"),
     ),
@@ -555,7 +516,6 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         display_name="Cline",
         capability=CapabilityClass.REPO_RULE,
         summary="Reads project rules; add an advisory ContextGuard block with --with-init.",
-        capabilities=("repo-rule", "shell-cli"),
         rule_file=".clinerules",
         detect=(".clinerules", ".cline"),
     ),
@@ -563,43 +523,29 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         key="copilot",
         display_name="GitHub Copilot Coding Agent",
         capability=CapabilityClass.REPO_RULE,
-        summary="Reads repository instructions and supports project .vscode/mcp.json setup.",
-        capabilities=("project-mcp", "repo-rule", "shell-cli"),
+        summary="Reads repository instructions; add an advisory ContextGuard block with --with-init.",
         rule_file=".github/copilot-instructions.md",
-        mcp_config_rel=".vscode/mcp.json",
-        mcp_key_path=("servers",),
-        mcp_style="vscode",
-        detect=(".github/copilot-instructions.md", ".vscode/mcp.json"),
+        detect=(".github/copilot-instructions.md",),
     ),
     AgentAdapter(
         key="opencode",
         display_name="OpenCode",
         capability=CapabilityClass.NATIVE_SKILL,
-        summary="Supports a project skill and project opencode.json MCP setup; no hooks are auto-written.",
-        capabilities=("native-skill", "project-mcp", "project-skill", "shell-cli"),
-        project_skill_rel=CODEX_SKILL_REL,
-        mcp_config_rel="opencode.json",
-        mcp_key_path=("mcp",),
-        mcp_style="opencode",
+        summary="Expose ContextGuard helpers as OpenCode commands/rules manually; no hooks are auto-written.",
         detect=("opencode.json", ".opencode"),
     ),
     AgentAdapter(
         key="forgecode",
         display_name="ForgeCode",
         capability=CapabilityClass.REPORT_ONLY,
-        summary="Supports project-local .mcp.json setup; other helpers remain shell-driven.",
-        capabilities=("project-mcp", "shell-cli"),
-        mcp_config_rel=".mcp.json",
-        mcp_key_path=("mcpServers",),
-        mcp_style="command-args",
-        detect=(".forgecode", "forgecode.json", ".mcp.json"),
+        summary="No automated setup surface yet; run ContextGuard helpers from the shell and keep evidence local.",
+        detect=(".forgecode", "forgecode.json"),
     ),
     AgentAdapter(
         key="generic",
         display_name="Other / unknown agent",
         capability=CapabilityClass.REPORT_ONLY,
         summary="No automated setup surface; run ContextGuard helpers from the shell as needed.",
-        capabilities=("shell-cli",),
     ),
 )
 
@@ -616,14 +562,10 @@ def adapter_registry_payload() -> list[dict[str, Any]]:
             "key": adapter.key,
             "display_name": adapter.display_name,
             "capability": adapter.capability,
-            "capabilities": list(adapter.capabilities),
             "summary": adapter.summary,
             "settings_rel": adapter.settings_rel,
             "rule_file": adapter.rule_file,
             "project_skill_rel": adapter.project_skill_rel,
-            "mcp_config_rel": adapter.mcp_config_rel,
-            "mcp_key_path": list(adapter.mcp_key_path),
-            "mcp_style": adapter.mcp_style,
             "detect": list(adapter.detect),
         }
         for adapter in AGENT_ADAPTERS
@@ -699,7 +641,7 @@ def _render_codex_skill_with_markers(begin: str, end: str) -> str:
         "---",
         "",
         begin,
-        "# ContextGuard for Codex and OpenCode",
+        "# ContextGuard for Codex",
         "",
         "Use this skill when a task would otherwise paste large files, long logs, or repeated setup context into Codex.",
         "",
@@ -711,7 +653,6 @@ def _render_codex_skill_with_markers(begin: str, end: str) -> str:
         "",
         "## Setup",
         "- Project activation: `context-guard setup --agent codex --scope project --with-init --with-skill --yes`.",
-        "- OpenCode activation: `context-guard setup --agent opencode --scope project --with-skill --with-mcp --yes`.",
         "- Plan first: `context-guard setup --agent codex --scope project --with-init --with-skill --plan`.",
         "- If `context-guard` is not on PATH, install it explicitly or run via `npx @ictechgy/context-guard`.",
         "",
@@ -1301,296 +1242,6 @@ def write_codex_project_skill(path: Path) -> dict[str, Any]:
     return result
 
 
-def codex_mcp_launch_argv(
-    root: Path,
-    *,
-    allow_path_fallback: bool = False,
-) -> list[str]:
-    return [
-        *automatic_helper_argv(
-            "context-guard-mcp",
-            "context_guard_mcp.py",
-            allow_path_fallback=allow_path_fallback,
-        ),
-        "--root",
-        str(root),
-        "--namespace",
-        CODEX_MCP_NAMESPACE,
-    ]
-
-
-def adapter_mcp_launch_argv(
-    root: Path,
-    adapter_key: str,
-    *,
-    allow_path_fallback: bool = False,
-) -> list[str]:
-    launch = codex_mcp_launch_argv(
-        root,
-        allow_path_fallback=allow_path_fallback,
-    )
-    launch[-1] = f"{adapter_key}-context-guard"
-    return launch
-
-
-def _toml_basic_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=True)
-
-
-def render_codex_mcp_block(launch_argv: list[str]) -> bytes:
-    if not launch_argv or any(type(item) is not str or not item or "\x00" in item for item in launch_argv):
-        raise ValueError("Codex MCP launch argv is invalid")
-    args = ", ".join(_toml_basic_string(item) for item in launch_argv[1:])
-    return _managed_block_bytes("\n".join([
-        CODEX_MCP_MARKER_BEGIN,
-        f"[mcp_servers.{CODEX_MCP_SERVER_NAME}]",
-        f"command = {_toml_basic_string(launch_argv[0])}",
-        f"args = [{args}]",
-        CODEX_MCP_MARKER_END,
-    ]))
-
-
-def _parse_codex_config(data: bytes) -> dict[str, Any]:
-    if len(data) > MAX_CODEX_MCP_CONFIG_BYTES:
-        raise ValueError("Codex config exceeds the setup audit limit")
-    if b'"""' in data or b"'''" in data:
-        raise ValueError(
-            "Codex config contains multiline TOML strings that managed setup cannot edit safely"
-        )
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Codex config is not valid UTF-8") from exc
-    if not text.strip():
-        return {}
-    if tomllib is None:
-        raise ValueError("Python 3.11+ is required to verify an existing Codex TOML config")
-    try:
-        parsed = tomllib.loads(text)
-    except ValueError as exc:
-        raise ValueError("Codex config is not valid TOML") from exc
-    if type(parsed) is not dict:
-        raise ValueError("Codex config root is invalid")
-    return parsed
-
-
-def _codex_mcp_entry_present(parsed: dict[str, Any]) -> bool:
-    servers = parsed.get("mcp_servers")
-    return isinstance(servers, dict) and CODEX_MCP_SERVER_NAME in servers
-
-
-def codex_mcp_config_status(path: Path, desired_block: bytes) -> tuple[str, str | None]:
-    state = _rule_file_state(path)
-    if state["status"] == "missing":
-        return "missing", None
-    if state["status"] != "file":
-        return "unsafe", state.get("reason") or "Codex config target is unsafe"
-    data = bytes(state.get("bytes") or b"")
-    try:
-        parsed = _parse_codex_config(data)
-        owned = parse_managed_bytes(data, kind="codex-mcp")
-    except ValueError as exc:
-        return "unsafe", str(exc)
-    if owned.status not in {"absent", "valid"}:
-        return "unsafe", owned.reason or f"managed Codex MCP state is {owned.status}"
-    if owned.status == "absent":
-        if _codex_mcp_entry_present(parsed):
-            return "conflict", (
-                f"refused to replace user-owned mcp_servers.{CODEX_MCP_SERVER_NAME}"
-            )
-        return "missing", None
-    span = owned.spans[0]
-    current_block = data[span.start : span.end]
-    return ("exists", None) if current_block == desired_block else ("update-needed", None)
-
-
-def write_codex_mcp_config(path: Path, desired_block: bytes) -> dict[str, Any]:
-    state = _rule_file_state(path)
-    if state["status"] not in {"missing", "file"}:
-        return {
-            "status": "skipped",
-            "reason": state.get("reason") or "Codex config target is unsafe",
-        }
-    status, reason = codex_mcp_config_status(path, desired_block)
-    if status == "exists":
-        return {"status": "exists"}
-    if status in {"unsafe", "conflict"}:
-        return {"status": "skipped", "reason": reason or status}
-    existing = bytes(state.get("bytes") or b"")
-    try:
-        span = _managed_span_for_kind(existing, "codex-mcp")
-        desired = (
-            _append_managed_block_bytes(existing, desired_block)
-            if span is None
-            else _replace_managed_span(existing, span, desired_block)
-        )
-        parsed_desired = _parse_codex_config(desired)
-        if not _codex_mcp_entry_present(parsed_desired):
-            raise ValueError("rendered Codex MCP config is missing its server table")
-    except ValueError as exc:
-        return {"status": "skipped", "reason": str(exc)}
-    result = write_managed_file(
-        path,
-        expected=state["snapshot"],
-        desired=desired,
-        mode=0o644,
-        dir_mode=0o755,
-    )
-    if result["status"] == "applied" and status == "update-needed":
-        result["status"] = "updated"
-    elif result["status"] == "applied-durability-uncertain":
-        result["change_kind"] = "updated" if status == "update-needed" else "applied"
-    return result
-
-
-def _json_no_duplicate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON key")
-        result[key] = value
-    return result
-
-
-def _parse_json_mcp_config(data: bytes) -> dict[str, Any]:
-    if len(data) > MAX_JSON_MCP_CONFIG_BYTES:
-        raise ValueError("MCP config exceeds the setup audit limit")
-    if not data.strip():
-        return {}
-    try:
-        parsed = json.loads(
-            data.decode("utf-8"),
-            object_pairs_hook=_json_no_duplicate_object,
-            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise ValueError("MCP config is not strict duplicate-free JSON") from exc
-    if type(parsed) is not dict:
-        raise ValueError("MCP config root must be an object")
-    return parsed
-
-
-def _json_mcp_servers(
-    document: dict[str, Any],
-    key_path: tuple[str, ...],
-    *,
-    create: bool,
-) -> dict[str, Any]:
-    current = document
-    for key in key_path:
-        value = current.get(key)
-        if value is None:
-            if not create:
-                return {}
-            value = {}
-            current[key] = value
-        if type(value) is not dict:
-            raise ValueError("MCP server container is not an object")
-        current = value
-    return current
-
-
-def render_json_mcp_entry(style: str, launch_argv: list[str]) -> dict[str, Any]:
-    if style == "opencode":
-        return {"command": launch_argv, "type": "local"}
-    entry: dict[str, Any] = {
-        "args": launch_argv[1:],
-        "command": launch_argv[0],
-    }
-    if style == "vscode":
-        entry["type"] = "stdio"
-    elif style != "command-args":
-        raise ValueError("unsupported JSON MCP style")
-    return entry
-
-
-def _json_mcp_entry_argv(entry: object, style: str) -> list[str] | None:
-    if type(entry) is not dict:
-        return None
-    if style == "opencode":
-        command = entry.get("command")
-        return list(command) if entry.get("type") == "local" and type(command) is list else None
-    command = entry.get("command")
-    args = entry.get("args", [])
-    if type(command) is not str or type(args) is not list:
-        return None
-    return [command, *args]
-
-
-def _json_mcp_entry_owned(entry: object, style: str, adapter_key: str) -> bool:
-    argv = _json_mcp_entry_argv(entry, style)
-    if not argv or any(type(item) is not str for item in argv):
-        return False
-    try:
-        namespace_index = argv.index("--namespace")
-        root_index = argv.index("--root")
-    except ValueError:
-        return False
-    return (
-        namespace_index + 1 < len(argv)
-        and root_index + 1 < len(argv)
-        and argv[namespace_index + 1] == f"{adapter_key}-context-guard"
-        and any(Path(item).name == "context-guard-mcp" for item in argv)
-    )
-
-
-def json_mcp_config_status(
-    path: Path,
-    adapter: AgentAdapter,
-    desired_entry: dict[str, Any],
-) -> tuple[str, str | None, ManagedFileSnapshot | None, dict[str, Any] | None]:
-    state = _rule_file_state(path)
-    if state["status"] == "missing":
-        return "missing", None, state["snapshot"], {}
-    if state["status"] != "file":
-        return "unsafe", state.get("reason"), state.get("snapshot"), None
-    try:
-        document = _parse_json_mcp_config(bytes(state.get("bytes") or b""))
-        servers = _json_mcp_servers(document, adapter.mcp_key_path, create=False)
-    except ValueError as exc:
-        return "unsafe", str(exc), state.get("snapshot"), None
-    existing = servers.get(CODEX_MCP_SERVER_NAME)
-    if existing is None:
-        return "missing", None, state["snapshot"], document
-    if existing == desired_entry:
-        return "exists", None, state["snapshot"], document
-    if _json_mcp_entry_owned(existing, str(adapter.mcp_style), adapter.key):
-        return "update-needed", None, state["snapshot"], document
-    return "conflict", "refused to replace user-owned ContextGuard MCP entry", state["snapshot"], document
-
-
-def write_json_mcp_config(
-    path: Path,
-    adapter: AgentAdapter,
-    desired_entry: dict[str, Any],
-) -> dict[str, Any]:
-    status, reason, snapshot, document = json_mcp_config_status(
-        path, adapter, desired_entry
-    )
-    if status == "exists":
-        return {"status": "exists"}
-    if status in {"unsafe", "conflict"} or snapshot is None or document is None:
-        return {"status": "skipped", "reason": reason or status}
-    try:
-        servers = _json_mcp_servers(document, adapter.mcp_key_path, create=True)
-        servers[CODEX_MCP_SERVER_NAME] = desired_entry
-        desired = (
-            json.dumps(document, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-        ).encode("ascii")
-    except (TypeError, ValueError) as exc:
-        return {"status": "skipped", "reason": f"could not render MCP config: {exc}"}
-    result = write_managed_file(
-        path,
-        expected=snapshot,
-        desired=desired,
-        mode=0o644,
-        dir_mode=0o755,
-    )
-    if result["status"] == "applied" and status == "update-needed":
-        result["status"] = "updated"
-    return result
-
-
 def adapter_rule_path(root: Path, adapter: AgentAdapter) -> Path | None:
     """Resolve a repo-rule adapter's write target.
 
@@ -1622,16 +1273,13 @@ def build_adapter_plan(
     with_skill: bool,
     applied: bool,
     brief_mode: str | None = None,
-    with_mcp: bool = False,
-    allow_path_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     """Render a per-adapter plan, performing safe repo-rule writes when applied.
 
     Repo-rule adapters write when ``applied`` is set and either ``with_init`` or
-    project-scope ``brief_mode`` requested a managed rule-file block. Codex can
-    additionally receive a project-scoped stdio MCP block with ``with_mcp``.
-    Native-plugin entries mirror the Claude settings result; native-skill and
-    report-only entries are advisory and never write.
+    project-scope ``brief_mode`` requested a managed rule-file block. Native-plugin
+    entries mirror the Claude settings result; native-skill and report-only entries
+    are advisory and never write.
     """
     detected = set(detect_agents(root))
     plan: list[dict[str, Any]] = []
@@ -1643,11 +1291,7 @@ def build_adapter_plan(
             "scope": scope,
             "detected": adapter.key in detected,
             "summary": adapter.summary,
-            "capabilities": list(adapter.capabilities),
-            "writable": bool(
-                {"native-hooks", "project-mcp", "project-skill", "repo-rule"}
-                & set(adapter.capabilities)
-            ),
+            "writable": False,
             "status": "report-only",
             "planned_actions": [],
             "applied_actions": [],
@@ -1671,9 +1315,6 @@ def build_adapter_plan(
             entry["planned_actions"] = [entry["unsupported_reason"]]
             if brief_mode:
                 entry["brief_mode_reason"] = entry["unsupported_reason"]
-            if with_mcp:
-                entry["mcp_status"] = "unsupported"
-                entry["mcp_reason"] = entry["unsupported_reason"]
             plan.append(entry)
             continue
         if adapter.capability == CapabilityClass.NATIVE_PLUGIN:
@@ -1829,175 +1470,6 @@ def build_adapter_plan(
                 entry["brief_mode_status"] = "unsupported"
                 entry["brief_mode_reason"] = "adapter has no managed rule-file target"
                 entry["planned_actions"].append(entry["brief_mode_reason"])
-        if adapter.key != "codex" and adapter.project_skill_rel:
-            skill_path = root / adapter.project_skill_rel
-            entry["project_skill_file"] = adapter.project_skill_rel
-            skill_state = codex_skill_status(skill_path)
-            entry["project_skill_status"] = skill_state
-            if skill_state == "exists":
-                if entry["status"] == "report-only":
-                    entry["status"] = "exists"
-                entry["planned_actions"].append(
-                    f"project skill already present in {adapter.project_skill_rel}"
-                )
-            elif skill_state == "unsafe":
-                entry["planned_actions"].append("refused unsafe project skill target")
-            elif not with_skill:
-                entry["planned_actions"].append(
-                    f"run with --with-skill to generate {adapter.project_skill_rel}"
-                )
-            elif not applied:
-                entry["project_skill_status"] = "planned"
-                entry["planned_actions"].append(
-                    f"would generate project skill at {adapter.project_skill_rel}"
-                )
-            else:
-                skill_result = write_codex_project_skill(skill_path)
-                entry["project_skill_status"] = skill_result["status"]
-                if skill_result["status"] in {
-                    "applied",
-                    "updated",
-                    "applied-durability-uncertain",
-                }:
-                    action = f"wrote project skill to {adapter.project_skill_rel}"
-                    entry["applied_actions"].append(action)
-                    entry["planned_actions"].append(action)
-                    entry["status"] = skill_result["status"]
-                elif skill_result["status"] != "exists":
-                    entry["planned_actions"].append(
-                        skill_result.get("reason", "skipped project skill write")
-                    )
-        if with_mcp:
-            entry["mcp_config_file"] = None
-            entry["mcp_backup_path"] = None
-            entry["mcp_reason"] = None
-            if "project-mcp" not in adapter.capabilities:
-                entry["mcp_status"] = "unsupported"
-                entry["mcp_reason"] = (
-                    f"project MCP auto-configuration for {adapter.display_name} "
-                    "is not implemented/verified"
-                )
-                entry["planned_actions"].append(entry["mcp_reason"])
-            elif scope != "project":
-                entry["mcp_status"] = "unsupported"
-                entry["mcp_reason"] = "project MCP configuration requires --scope project"
-                entry["planned_actions"].append(entry["mcp_reason"])
-            else:
-                mcp_rel = (
-                    CODEX_MCP_CONFIG_REL
-                    if adapter.key == "codex"
-                    else adapter.mcp_config_rel
-                )
-                if mcp_rel is None:
-                    entry["mcp_status"] = "unsupported"
-                    entry["mcp_reason"] = "adapter has no verified project MCP path"
-                    entry["planned_actions"].append(entry["mcp_reason"])
-                    plan.append(entry)
-                    continue
-                mcp_path = root / mcp_rel
-                entry["mcp_config_file"] = mcp_rel
-                try:
-                    launch_argv = adapter_mcp_launch_argv(
-                        root,
-                        adapter.key,
-                        allow_path_fallback=allow_path_fallback,
-                    )
-                    if adapter.key == "codex":
-                        desired_mcp: object = render_codex_mcp_block(launch_argv)
-                        mcp_status, mcp_reason = codex_mcp_config_status(
-                            mcp_path,
-                            desired_mcp,
-                        )
-                    elif (
-                        adapter.key == "opencode"
-                        and _path_exists_no_follow(root / "opencode.jsonc")
-                    ):
-                        desired_mcp = None
-                        mcp_status, mcp_reason = (
-                            "unsupported",
-                            "refused split OpenCode config while opencode.jsonc exists",
-                        )
-                    else:
-                        desired_mcp = render_json_mcp_entry(
-                            str(adapter.mcp_style),
-                            launch_argv,
-                        )
-                        mcp_status, mcp_reason, _snapshot, _document = (
-                            json_mcp_config_status(
-                                mcp_path,
-                                adapter,
-                                desired_mcp,
-                            )
-                        )
-                except (OSError, SystemExit, ValueError) as exc:
-                    mcp_status, mcp_reason = "unsupported", str(exc)
-                entry["mcp_status"] = mcp_status
-                entry["mcp_reason"] = mcp_reason
-                if mcp_status == "exists":
-                    if entry["status"] == "report-only":
-                        entry["status"] = "exists"
-                    entry["planned_actions"].append(
-                        f"project {adapter.display_name} MCP already present in {mcp_rel}"
-                    )
-                elif mcp_status in {"unsafe", "conflict", "unsupported"}:
-                    entry["planned_actions"].append(
-                        mcp_reason or "refused unsafe project MCP configuration"
-                    )
-                elif not applied:
-                    action = (
-                        "would refresh" if mcp_status == "update-needed" else "would add"
-                    )
-                    entry["planned_actions"].append(
-                        f"{action} project {adapter.display_name} MCP in {mcp_rel}"
-                    )
-                    entry["mcp_status"] = "planned"
-                elif entry["status"] == "applied-durability-uncertain":
-                    entry["mcp_status"] = "blocked-durability-uncertain"
-                    entry["mcp_reason"] = (
-                        "blocked project Codex MCP write because a preceding managed-file "
-                        "commit has uncertain directory durability"
-                    )
-                    entry["planned_actions"].append(entry["mcp_reason"])
-                else:
-                    if adapter.key == "codex":
-                        mcp_result = write_codex_mcp_config(
-                            mcp_path, desired_mcp  # type: ignore[arg-type]
-                        )
-                    else:
-                        mcp_result = write_json_mcp_config(
-                            mcp_path,
-                            adapter,
-                            desired_mcp,  # type: ignore[arg-type]
-                        )
-                    entry["mcp_status"] = mcp_result["status"]
-                    entry["mcp_reason"] = mcp_result.get("reason")
-                    entry["mcp_backup_path"] = mcp_result.get("backup_path")
-                    if mcp_result["status"] in {
-                        "applied",
-                        "updated",
-                        "applied-durability-uncertain",
-                    }:
-                        action = f"wrote project {adapter.display_name} MCP to {mcp_rel}"
-                        entry["applied_actions"].append(action)
-                        entry["planned_actions"].append(action)
-                        if mcp_result["status"] == "applied-durability-uncertain":
-                            entry["status"] = "applied-durability-uncertain"
-                            entry["reason"] = mcp_result.get("reason")
-                        elif entry["status"] in {
-                            "planned",
-                            "exists",
-                            "unchanged",
-                            "report-only",
-                        }:
-                            entry["status"] = "applied"
-                    elif mcp_result["status"] == "exists":
-                        entry["planned_actions"].append(
-                            f"project {adapter.display_name} MCP already present in {mcp_rel}"
-                        )
-                    else:
-                        entry["planned_actions"].append(
-                            mcp_result.get("reason", "skipped project MCP write")
-                        )
         plan.append(entry)
     return plan
 
@@ -3416,16 +2888,6 @@ def ensure_post_tool_hook(settings: dict[str, Any], hook: dict[str, Any], comman
     _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUse")
 
 
-def ensure_post_tool_failure_hook(
-    settings: dict[str, Any],
-    hook: dict[str, Any],
-    command: str,
-    label: str,
-    actions: list[str],
-) -> None:
-    _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUseFailure")
-
-
 def _ensure_tool_hook(
     settings: dict[str, Any],
     hook: dict[str, Any],
@@ -3582,8 +3044,6 @@ def _setup_command(
         parts.append("--with-init")
     if getattr(args, "with_skill", False):
         parts.append("--with-skill")
-    if getattr(args, "with_mcp", False):
-        parts.append("--with-mcp")
     brief_mode = getattr(args, "brief_mode", None)
     if brief_mode:
         parts.extend(["--brief-mode", str(brief_mode)])
@@ -3654,15 +3114,7 @@ def _adapter_warning_detail(entry: dict[str, Any]) -> dict[str, Any]:
         "planned_actions": entry.get("planned_actions", []),
         "unsupported_reason": entry.get("unsupported_reason"),
     }
-    for key in (
-        "brief_mode",
-        "brief_mode_status",
-        "brief_mode_reason",
-        "brief_mode_file",
-        "mcp_status",
-        "mcp_reason",
-        "mcp_config_file",
-    ):
+    for key in ("brief_mode", "brief_mode_status", "brief_mode_reason", "brief_mode_file"):
         if key in entry:
             detail[key] = entry.get(key)
     return detail
@@ -3823,24 +3275,11 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         with_skill=bool(getattr(args, "with_skill", False)),
         applied=False,
         brief_mode=getattr(args, "brief_mode", None),
-        with_mcp=bool(getattr(args, "with_mcp", False)),
-        allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)),
     )
     adapter_warnings = [
         _adapter_warning_detail(entry)
         for entry in adapter_plan
-        if (
-            entry.get("status") in {"planned", "unsupported", "skipped"}
-            or entry.get("mcp_status")
-            in {
-                "planned",
-                "unsupported",
-                "unsafe",
-                "conflict",
-                "skipped",
-                "blocked-durability-uncertain",
-            }
-        )
+        if entry.get("status") in {"planned", "unsupported", "skipped"}
     ]
     if adapter_warnings:
         checks.append(doctor_check(
@@ -4009,13 +3448,6 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
         nudge_hook = failed_nudge_setting(allow_path_fallback=allow_path_fallback)
         nudge_command = nudge_hook["hooks"][0]["command"]
         ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt /clear nudge", actions)
-        ensure_post_tool_failure_hook(
-            settings,
-            nudge_hook,
-            nudge_command,
-            "failed-attempt /clear nudge",
-            actions,
-        )
     return actions
 
 
@@ -4400,7 +3832,7 @@ def interactive_choices(defaults: Choices) -> Choices:
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
-            "Enable failed-attempt /clear nudge? (Bash terminal-event hooks; recommended default)",
+            "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; recommended default)",
             defaults.failed_attempt_nudge,
         ),
     )
@@ -4519,7 +3951,6 @@ def validate_rules_only_args(parser: argparse.ArgumentParser, args: argparse.Nam
             ("allow_path_helper_fallback", "--allow-path-helper-fallback"),
             ("with_init", "--with-init"),
             ("with_skill", "--with-skill"),
-            ("with_mcp", "--with-mcp"),
             ("brief_mode", "--brief-mode"),
             ("list_adapters", "--list-adapters"),
         )
@@ -4829,8 +4260,6 @@ def run(args: argparse.Namespace) -> SetupResult:
         with_skill=bool(getattr(args, "with_skill", False)),
         applied=apply_requested,
         brief_mode=getattr(args, "brief_mode", None),
-        with_mcp=bool(getattr(args, "with_mcp", False)),
-        allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)),
     )
     # Surface any repo-rule writes in the top-level actions for visibility. Claude
     # actions are already in ``actions``; only adapter-side writes are appended.
@@ -4941,12 +4370,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="also generate optional project-local skill files where supported, currently Codex .agents/skills/context-guard/SKILL.md.",
     )
     parser.add_argument(
-        "--with-mcp",
-        dest="with_mcp",
-        action="store_true",
-        help="also configure a verified project-scoped stdio MCP server for Codex, Gemini, Cursor, Copilot/VS Code, OpenCode, or ForgeCode.",
-    )
-    parser.add_argument(
         "--brief-mode",
         choices=BRIEF_MODE_CHOICES,
         default=None,
@@ -4964,7 +4387,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="failed_attempt_nudge",
         action="store_true",
         default=None,
-        help="enable Bash terminal-event hooks that suggest /clear when the same command fails twice in a row (recommended default)",
+        help="enable PostToolUse Bash hook that suggests /clear when the same command fails twice in a row (recommended default)",
     )
     nudge_group.add_argument(
         "--no-failed-attempt-nudge",
