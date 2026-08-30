@@ -1522,6 +1522,21 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         (project / "smoke-pack-copy.txt").write_text(sketch_variant, encoding="utf-8")
         mcp_project = Path(td) / "mcp-project"
         mcp_project.mkdir()
+        (project / "release-smoke.jsonl").write_text(
+            json.dumps(
+                {
+                    "session_id": "release-smoke",
+                    "timestamp": "2026-07-23T00:00:00Z",
+                    "message": {
+                        "id": "release-smoke-response",
+                        "model": "claude-release-smoke",
+                        "usage": {"input_tokens": 1},
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         env = smoke_environment(smoke_home, smoke_tmp)
         run_mcp_namespace_smoke(
             command_path(plugin_bin, "context-guard-mcp"), project=mcp_project, env=env,
