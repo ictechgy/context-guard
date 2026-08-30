@@ -314,7 +314,8 @@ read-only cleanup plan, review its counts and hash, and confirm the same plan:
 ```
 
 The cleanup command accepts no arbitrary state path and fails closed on links,
-non-private entries, hard links, tree drift, or a mismatched plan. Handles are
+non-private entries, hard links, filesystem-boundary crossings, tree drift, or
+a mismatched plan. Handles are
 49-byte bearer strings matching `^cgr1p_[A-Za-z0-9_-]{43}$`, bound to the same
 physical root, and valid for at most seven days.
 

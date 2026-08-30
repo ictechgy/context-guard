@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -128,6 +129,43 @@ class CleanupContractTests(unittest.TestCase):
                     else:
                         child.unlink()
                 state.rmdir()
+
+    def test_cross_device_entry_fails_closed(self) -> None:
+        state = self._populate()
+        descriptor = os.open(state, cleanup._directory_flags())
+        expected_device = os.fstat(descriptor).st_dev
+        real_stat = os.stat
+
+        def cross_device_stat(path: object, *args: object, **kwargs: object) -> object:
+            status = real_stat(path, *args, **kwargs)
+            if path != "payload.bin":
+                return status
+            return SimpleNamespace(
+                st_dev=expected_device + 1,
+                st_ino=status.st_ino,
+                st_mode=status.st_mode,
+                st_mtime_ns=status.st_mtime_ns,
+                st_nlink=status.st_nlink,
+                st_size=status.st_size,
+                st_uid=status.st_uid,
+            )
+
+        try:
+            with mock.patch.object(cleanup.os, "stat", side_effect=cross_device_stat):
+                with self.assertRaises(cleanup.CleanupError) as caught:
+                    cleanup._scan_directory(
+                        descriptor,
+                        ".",
+                        0,
+                        [],
+                        [0],
+                        expected_device,
+                    )
+        finally:
+            os.close(descriptor)
+
+        self.assertEqual(caught.exception.code, cleanup.CleanupErrorCode.STATE_UNSAFE)
+        self.assertTrue((state / "store-v1" / "payload.bin").is_file())
 
     def test_partial_delete_is_reported_and_quarantine_is_preserved(self) -> None:
         state = self._populate()

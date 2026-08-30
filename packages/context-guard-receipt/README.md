@@ -267,7 +267,8 @@ operation. The cleanup CLI handles only the deterministic Bash-reference
 sibling derived from one normalized physical root: first inspect its bounded,
 content-free plan, then provide the exact `plan_sha256` with `--yes`. It accepts
 no arbitrary state directory, rejects links, non-private entries, hard-linked
-files, drift, and oversized trees, and preserves a private quarantine sibling
+files, filesystem-boundary crossings, drift, and oversized trees, and preserves
+a private quarantine sibling
 with an incomplete result if deletion cannot be confirmed. Ordinary assembly, command
 capture, diagnostics, twin, and unregistered expansion flows do not create
 reference-expiry state.

@@ -226,6 +226,7 @@ def _scan_directory(
     depth: int,
     entries: list[_Entry],
     totals: list[int],
+    expected_device: int,
 ) -> None:
     if depth > _MAX_DEPTH:
         _raise(CleanupErrorCode.STATE_TOO_LARGE)
@@ -233,7 +234,10 @@ def _scan_directory(
         directory_status = os.fstat(descriptor)
     except OSError:
         _raise(CleanupErrorCode.STATE_UNSAFE)
-    if not _private_directory(directory_status):
+    if (
+        not _private_directory(directory_status)
+        or directory_status.st_dev != expected_device
+    ):
         _raise(CleanupErrorCode.STATE_UNSAFE)
     entries.append(_entry(relative, "directory", directory_status))
     if len(entries) > _MAX_ENTRIES:
@@ -251,6 +255,8 @@ def _scan_directory(
             status = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
         except OSError:
             _raise(CleanupErrorCode.STATE_UNSAFE)
+        if status.st_dev != expected_device:
+            _raise(CleanupErrorCode.STATE_UNSAFE)
         if stat.S_ISDIR(status.st_mode):
             if not _private_directory(status):
                 _raise(CleanupErrorCode.STATE_UNSAFE)
@@ -267,7 +273,14 @@ def _scan_directory(
                 os.close(child_fd)
                 _raise(CleanupErrorCode.STATE_UNSAFE)
             try:
-                _scan_directory(child_fd, child_relative, depth + 1, entries, totals)
+                _scan_directory(
+                    child_fd,
+                    child_relative,
+                    depth + 1,
+                    entries,
+                    totals,
+                    expected_device,
+                )
             finally:
                 os.close(child_fd)
             continue
@@ -310,7 +323,11 @@ def _snapshot(repository_root: str) -> _Snapshot:
             )
         except OSError:
             _raise(CleanupErrorCode.STATE_UNSAFE)
-        if not _private_directory(target_status):
+        parent_device = os.fstat(parent_fd).st_dev
+        if (
+            not _private_directory(target_status)
+            or target_status.st_dev != parent_device
+        ):
             _raise(CleanupErrorCode.STATE_UNSAFE)
         try:
             target_fd = os.open(target_name, _directory_flags(), dir_fd=parent_fd)
@@ -327,7 +344,7 @@ def _snapshot(repository_root: str) -> _Snapshot:
         entries: list[_Entry] = []
         totals = [0]
         try:
-            _scan_directory(target_fd, ".", 0, entries, totals)
+            _scan_directory(target_fd, ".", 0, entries, totals, parent_device)
         except Exception:
             os.close(target_fd)
             raise
@@ -534,7 +551,14 @@ def apply_cleanup(repository_root: str, confirmation_sha256: str) -> dict[str, o
             _raise(CleanupErrorCode.STATE_UNSAFE)
         rescan_entries: list[_Entry] = []
         rescan_totals = [0]
-        _scan_directory(snapshot.target_fd, ".", 0, rescan_entries, rescan_totals)
+        _scan_directory(
+            snapshot.target_fd,
+            ".",
+            0,
+            rescan_entries,
+            rescan_totals,
+            os.fstat(snapshot.parent_fd).st_dev,
+        )
         rescan = _Snapshot(
             parent_fd=snapshot.parent_fd,
             target_fd=snapshot.target_fd,

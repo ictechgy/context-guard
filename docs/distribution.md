@@ -121,8 +121,9 @@ apply that exact snapshot explicitly:
 
 Cleanup accepts no arbitrary state directory. It derives only the
 `.context-guard-receipt-state-<64-lowercase-hex>` sibling bound to the root,
-rejects links, non-private entries, hard-linked files, drift, oversized trees,
-and mismatched plans, and never traverses another target. A failure after
+rejects links, non-private entries, hard-linked files, filesystem-boundary
+crossings, drift, oversized trees, and mismatched plans, and never traverses
+another target. A failure after
 deletion begins can leave a private
 `.context-guard-receipt-cleanup-<selector>-<nonce>` quarantine sibling for
 manual inspection; it is never silently treated as success.
