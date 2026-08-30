@@ -6041,8 +6041,12 @@ class CrossAgentAdapterTests(unittest.TestCase):
         self.assertNotRegex(workflow, r"(?m)^\s*(?:run:\s*)?npm pack\b")
         self.assertLess(
             workflow.index("Verify Receipt candidate manifest and digest"),
-            workflow.index("Publish exact Receipt candidate with trusted publishing"),
+            workflow.index(
+                "Publish exact Receipt candidate directly to latest with trusted publishing"
+            ),
         )
+        self.assertNotIn("--tag next", workflow)
+        self.assertNotIn("npm dist-tag", workflow)
 
     def test_user_scope_existing_claude_settings_rejects_no_backup(self):
         for script in SETUP_SCRIPTS:

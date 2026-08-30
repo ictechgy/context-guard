@@ -97,7 +97,7 @@ Artifact deletion is not automated; it requires a separate, explicit
 user-authorized retention decision. `--bash-reference-v1` and
 `--artifact-receipt` are mutually exclusive.
 
-## npm candidate, publication, and promotion gates
+## npm candidate and direct-latest publication gates
 
 `.github/workflows/npm-candidate.yml` checks out one exact commit, runs both
 package gates, packs each package exactly once offline, exercises the paired
@@ -111,21 +111,20 @@ commit so the later source and signer attestation digests bind the same revision
 artifact ID, revalidates the manifest and tarball, verifies GitHub build
 provenance for both the candidate manifest and tarball against the candidate
 source commit plus the exact trusted signer workflow revision, and publishes
-only that tarball to `next`. Publishing the root also
-requires the npm registry's Receipt `dist.integrity` to equal the Receipt bytes
-bound in the same candidate manifest. Publication remains a manual,
-environment-protected operation and is not performed by CI automatically.
+only that tarball directly to `latest` with npm trusted publishing/OIDC. The two
+package jobs share one concurrency group so their install-facing mutations
+cannot overlap. Publish Receipt first; publishing the root requires both the
+Receipt `latest` tag and its registry `dist.integrity` to equal the exact Receipt
+record bound in the same candidate manifest. Each job then waits for bounded
+registry readback of its own `latest` version and integrity. Publication remains
+a manual, environment-protected operation and is not performed by CI
+automatically.
 
-`.github/workflows/npm-promote.yml` is a separate manual gate. Before changing
-`latest`, it proves both requested versions are the current reviewed `next`
-pair, verifies the root's exact Receipt dependency, and records the previous
-tags for rollback. One manually approved `npm-pair-promote` environment exposes
-the two package-scoped credentials only to the pair-mutation step. That same
-shell moves Receipt then root and, on failure or ordinary cancellation, attempts
-both compensating tag restores before it exits; no second environment approval
-is needed for compensation. A force-cancel, unavailable npm registry, or
-unavailable promotion credential can still prevent restoration; in that case
-rerun the preflight and restore the recorded previous tags explicitly.
+There is no token-authenticated npm promotion workflow. If root publication
+fails after Receipt succeeds, the old root remains installable because its
+Receipt dependency is exact; fix the root failure and dispatch only the root
+publication again. Do not try to republish Receipt or move tags with an
+automation token.
 
 ## Runtime requirements
 

@@ -76,34 +76,30 @@ Before publishing a versioned artifact, verify:
 npm publishing uses trusted publishing/OIDC through `.github/workflows/npm-publish.yml`.
 The npm trusted-publisher records must use repository `ictechgy/context-guard`,
 workflow filename `npm-publish.yml`, and the exact protected environment for
-the package (`npm-receipt-next` or `npm-root-next`). The workflow preflights
-OIDC availability and registry reachability before downloading candidates, then
-publishes only attested build-once tarballs with `id-token: write` and without
+the package (`npm-receipt-next` or `npm-root-next`). Those environment names are
+retained as trusted-publisher compatibility identifiers even though publication
+now targets `latest` directly. The workflow preflights OIDC availability and
+registry reachability before downloading candidates, then publishes only
+attested build-once tarballs with `id-token: write` and without
 `NODE_AUTH_TOKEN` or `NPM_TOKEN`.
 
-## npm-promote token deprecation risk
+## Direct latest publication and pair ordering
 
-`.github/workflows/npm-promote.yml` (moves the `next` dist-tag to `latest` after
-`npm-publish.yml` has published under `next`) still authenticates with classic
-npm automation tokens (`NPM_RECEIPT_PROMOTION_TOKEN` / `NPM_ROOT_PROMOTION_TOKEN`,
-environment `npm-pair-promote`), because npm's OIDC trusted publishing currently
-covers only `npm publish`, not `npm dist-tag add`.
+Publish Receipt first and wait for the workflow's bounded registry readback to
+prove both `latest` and `dist.integrity`. Publish root only afterward. The root
+job independently requires Receipt `latest`, Receipt integrity, and the root's
+exact Receipt dependency to match the candidate manifest before it mutates npm.
+Both jobs use the same non-cancelling concurrency group so publication attempts
+cannot overlap.
 
-Per npm's bypass2FA deprecation
-(<https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/>):
-- **~2026-08**: bypass2FA tokens can no longer perform account-management
-  operations (token/2FA/package-access changes).
-- **~2027-01**: bypass2FA tokens can no longer publish directly at all;
-  publication must go through a human 2FA approval.
+There is no `.github/workflows/npm-promote.yml`, `npm dist-tag add`, or
+long-lived npm write token. The bypass-2FA granular-token deprecation therefore
+does not affect this publication path; OIDC authenticates each direct publish.
 
-`dist-tag add` mutates what `npm install` resolves to, the same way `publish`
-does, so treat it as covered by the 2027-01 cutoff — do not provision a fresh
-bypass2FA automation token for `npm-pair-promote` expecting it to last; it is a
-bridge measure only, not a durable fix. Before relying on one, check npm's
-current docs for whether trusted publishing (OIDC) has been extended to cover
-dist-tag operations. If not, redesign `npm-promote.yml` around npm's other
-recommended path — staged publishing with a human 2FA approval at promote
-time — rather than re-provisioning a token that will stop working.
+If root publication fails after Receipt succeeds, do not republish Receipt: the
+old root still installs its exact old Receipt dependency. Fix the root blocker
+and dispatch only the root job again. Any emergency tag rollback remains a
+separate interactive maintainer action with 2FA, not CI authority.
 
 ## Clean-install smoke coverage
 
