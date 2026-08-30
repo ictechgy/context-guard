@@ -4938,7 +4938,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--with-skill",
         dest="with_skill",
         action="store_true",
-        help="also generate optional project-local skill files where supported, currently Codex .agents/skills/context-guard/SKILL.md.",
+        help="also generate optional project-local skill files where supported, currently Codex and OpenCode .agents/skills/context-guard/SKILL.md.",
     )
     parser.add_argument(
         "--with-mcp",
