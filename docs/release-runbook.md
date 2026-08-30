@@ -167,20 +167,17 @@ The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_
 
 **Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
 
-The active `gen12` record re-blesses the wrapper no-follow hardening test
-fixture while preserving the context-efficiency command manifest from
-`gen11`, effective doctor scope from `gen10`, strict user-settings
-permissions from `gen9`, the home-settings compatibility fix from `gen8`, the
-privileged hook-runtime residual from `gen6`, and the approved-Python
-statusline fixtures from `gen7`. It carries every earlier Gate-B marker and
-path set. Its declared residual edits are empty: `gen12`'s bless content is
-byte-identical to `gen11`'s bless for every component path (the wrapper
-no-follow fix lives entirely in the shared-integration reapplication, not in
-the residual baseline), so B1, B2, and the five unchanged shared paths are
-restored unmodified and only `tests/test_context_guard_kit.py`'s live
-content changes.
+The active `gen15` record re-blesses the setup flag help correction while
+preserving the OpenCode MCP schema from `gen14`, cross-vendor MCP setup from
+`gen13`, wrapper no-follow hardening from `gen12`, and every earlier residual.
+It carries every earlier Gate-B marker and path set. Its declared residual
+edits are exactly `context-guard-kit/setup_wizard.py` and the packaged
+`plugins/context-guard/bin/context-guard-setup` mirror; the `gen14`-to-`gen15`
+bless diff changes only the `--with-skill` help from Codex-only wording to
+Codex and OpenCode. B1 and B2 are restored unchanged, and shared integration
+then restores the complete live setup implementation and tests.
 
-The next routine re-bless must append `gen13` rather than rewriting or reusing
+The next routine re-bless must append `gen16` rather than rewriting or reusing
 an existing generation.
 
 Re-blessing procedure:
