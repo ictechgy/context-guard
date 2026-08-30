@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: "Package to publish to the next dist-tag"
+        description: "Package to publish directly to the latest dist-tag"
         required: true
         type: choice
         options:
@@ -35,7 +35,7 @@ on:
         required: true
         type: string
       confirm_publish:
-        description: "Confirm publication of this exact candidate to next"
+        description: "Confirm publication of this exact candidate to latest"
         required: true
         type: boolean
         default: false
@@ -43,7 +43,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: npm-publish-${{ github.event.inputs.package }}-${{ github.event.inputs.version }}
+  group: npm-publish-latest
   cancel-in-progress: false
 
 jobs:
@@ -321,6 +321,7 @@ jobs:
               raise SystemExit("candidate package identity mismatch")
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
               output.write(f"CANDIDATE_TARBALL={tarball}\n")
+              output.write(f"EXPECTED_PUBLISHED_INTEGRITY={integrity}\n")
           PY
 
       - name: Verify Receipt GitHub build provenance
@@ -335,10 +336,27 @@ jobs:
           --deny-self-hosted-runners
 
       - name: Preview exact Receipt candidate
-        run: npm publish "$CANDIDATE_TARBALL" --dry-run --access public --tag next
+        run: npm publish "$CANDIDATE_TARBALL" --dry-run --access public --tag latest
 
-      - name: Publish exact Receipt candidate with trusted publishing
-        run: npm publish "$CANDIDATE_TARBALL" --access public --tag next
+      - name: Publish exact Receipt candidate directly to latest with trusted publishing
+        run: npm publish "$CANDIDATE_TARBALL" --access public --tag latest
+
+      - name: Verify published Receipt latest binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ((attempt = 1; attempt <= 30; attempt++)); do
+            observed_version="$(npm view "$EXPECTED_PACKAGE" dist-tags.latest --json 2>/dev/null || true)"
+            observed_integrity="$(npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" dist.integrity --json 2>/dev/null || true)"
+            if [ "$observed_version" = "\"$EXPECTED_VERSION\"" ] && [ "$observed_integrity" = "\"$EXPECTED_PUBLISHED_INTEGRITY\"" ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 30 ]; then
+              sleep 5
+            fi
+          done
+          echo "::error::published Receipt latest binding did not converge" >&2
+          exit 1
 
   publish-root:
     needs: publish-receipt
@@ -638,15 +656,18 @@ jobs:
               raise SystemExit("candidate Receipt exact-asset binding mismatch")
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
               output.write(f"CANDIDATE_TARBALL={tarball}\n")
+              output.write(f"EXPECTED_PUBLISHED_INTEGRITY={integrity}\n")
               output.write(f"EXPECTED_RECEIPT_INTEGRITY={receipt_integrity}\n")
           PY
 
-      - name: Verify exact published Receipt bytes
+      - name: Verify exact published Receipt latest binding
         shell: bash
         run: |
           set -euo pipefail
-          observed="$(npm view "@ictechgy/context-guard-receipt@$EXPECTED_RECEIPT_VERSION" dist.integrity --json)"
-          test "$observed" = "\"$EXPECTED_RECEIPT_INTEGRITY\""
+          observed_version="$(npm view "@ictechgy/context-guard-receipt" dist-tags.latest --json)"
+          observed_integrity="$(npm view "@ictechgy/context-guard-receipt@$EXPECTED_RECEIPT_VERSION" dist.integrity --json)"
+          test "$observed_version" = "\"$EXPECTED_RECEIPT_VERSION\""
+          test "$observed_integrity" = "\"$EXPECTED_RECEIPT_INTEGRITY\""
 
       - name: Verify root GitHub build provenance
         env:
@@ -660,7 +681,24 @@ jobs:
           --deny-self-hosted-runners
 
       - name: Preview exact root candidate
-        run: npm publish "$CANDIDATE_TARBALL" --dry-run --access public --tag next
+        run: npm publish "$CANDIDATE_TARBALL" --dry-run --access public --tag latest
 
-      - name: Publish exact root candidate with trusted publishing
-        run: npm publish "$CANDIDATE_TARBALL" --access public --tag next
+      - name: Publish exact root candidate directly to latest with trusted publishing
+        run: npm publish "$CANDIDATE_TARBALL" --access public --tag latest
+
+      - name: Verify published root latest binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ((attempt = 1; attempt <= 30; attempt++)); do
+            observed_version="$(npm view "$EXPECTED_PACKAGE" dist-tags.latest --json 2>/dev/null || true)"
+            observed_integrity="$(npm view "$EXPECTED_PACKAGE@$EXPECTED_VERSION" dist.integrity --json 2>/dev/null || true)"
+            if [ "$observed_version" = "\"$EXPECTED_VERSION\"" ] && [ "$observed_integrity" = "\"$EXPECTED_PUBLISHED_INTEGRITY\"" ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 30 ]; then
+              sleep 5
+            fi
+          done
+          echo "::error::published root latest binding did not converge" >&2
+          exit 1

@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import re
 import subprocess
-import tempfile
-import textwrap
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -124,7 +121,6 @@ class WorkflowSecurityTests(unittest.TestCase):
     def test_release_workflows_preflight_trust_before_expensive_or_mutating_steps(self):
         candidate = read(".github/workflows/npm-candidate.yml")
         publish = read(".github/workflows/npm-publish.yml")
-        promote = read(".github/workflows/npm-promote.yml")
 
         self.assertLess(
             candidate.index("Preflight GitHub OIDC and attestation trust"),
@@ -135,11 +131,6 @@ class WorkflowSecurityTests(unittest.TestCase):
             publish.index("actions/download-artifact@"),
         )
         self.assertEqual(publish.count("npm ping --registry=https://registry.npmjs.org"), 2)
-        self.assertLess(
-            promote.index("Preflight both package-scoped promotion credentials"),
-            promote.index("Preflight exact next pair and capture rollback tags"),
-        )
-        self.assertIn("npm whoami", promote)
 
     def test_github_release_and_homebrew_reuse_exact_release_provenance(self):
         release = read(".github/workflows/github-release.yml")
@@ -280,7 +271,6 @@ class WorkflowSecurityTests(unittest.TestCase):
             read(".github/workflows/ci.yml"),
             read(".github/workflows/npm-candidate.yml"),
             read(".github/workflows/npm-publish.yml"),
-            read(".github/workflows/npm-promote.yml"),
             read(".github/workflows/github-release.yml"),
             read(".github/workflows/homebrew.yml"),
         ]
@@ -440,8 +430,30 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertNotIn("json.load(member)", workflow)
         self.assertNotIn("hashlib.sha256(tarball.read_bytes())", workflow)
         self.assertNotIn("hashlib.sha512(tarball.read_bytes())", workflow)
-        self.assertIn('npm publish "$CANDIDATE_TARBALL" --dry-run --access public --tag next', workflow)
-        self.assertIn('npm publish "$CANDIDATE_TARBALL" --access public --tag next', workflow)
+        self.assertEqual(
+            workflow.count(
+                'npm publish "$CANDIDATE_TARBALL" --dry-run --access public --tag latest'
+            ),
+            2,
+        )
+        self.assertEqual(
+            workflow.count(
+                'npm publish "$CANDIDATE_TARBALL" --access public --tag latest'
+            ),
+            2,
+        )
+        self.assertNotIn("--tag next", workflow)
+        self.assertNotIn("npm dist-tag", workflow)
+        self.assertNotIn("NODE_AUTH_TOKEN", workflow)
+        self.assertNotIn("NPM_TOKEN", workflow)
+        self.assertIn("group: npm-publish-latest", workflow)
+        self.assertIn("Verify published Receipt latest binding", workflow)
+        self.assertIn("Verify published root latest binding", workflow)
+        self.assertIn("dist-tags.latest", workflow)
+        self.assertEqual(
+            workflow.count("for ((attempt = 1; attempt <= 30; attempt++)); do"),
+            2,
+        )
         self.assertIn("confirm_publish=true", workflow)
         self.assertEqual(set(jobs), {"publish-receipt", "publish-root"})
         self.assertIn("environment: npm-receipt-next", jobs["publish-receipt"])
@@ -453,120 +465,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("EXPECTED_RECEIPT_INTEGRITY", jobs["publish-root"])
         self.assertLess(
             jobs["publish-root"].index("Verify root candidate manifest, dependency, and digest"),
-            jobs["publish-root"].index("Verify exact published Receipt bytes"),
+            jobs["publish-root"].index("Verify exact published Receipt latest binding"),
         )
 
-    def test_npm_promotion_is_separate_and_never_repacks(self):
-        workflow = read(".github/workflows/npm-promote.yml")
-        jobs = workflow_job_blocks(workflow)
-
-        self.assertIn("name: Promote exact npm versions", workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertEqual(set(jobs), {"preflight", "promote-pair"})
-        self.assertIn("environment: npm-pair-promote", jobs["promote-pair"])
-        self.assertIn("npm dist-tag add", workflow)
-        self.assertNotIn("npm pack", workflow)
-        self.assertNotIn("npm publish", workflow)
-        self.assertNotIn("actions/checkout@", workflow)
-        self.assertIn("confirm_promote=true", workflow)
-        self.assertNotIn("id-token: write", workflow)
-        self.assertIn("secrets.NPM_RECEIPT_PROMOTION_TOKEN", workflow)
-        self.assertIn("secrets.NPM_ROOT_PROMOTION_TOKEN", workflow)
-        self.assertIn("  preflight:", workflow)
-        self.assertIn('npm view "@ictechgy/context-guard-receipt" dist-tags.next', workflow)
-        self.assertIn('npm view "@ictechgy/context-guard@$ROOT_VERSION" dependencies --json', workflow)
-        self.assertIn("exact Receipt dependency mismatch", workflow)
-        self.assertLess(workflow.index("  preflight:"), workflow.index("npm dist-tag add"))
-        self.assertIn("needs: preflight", workflow)
-        self.assertIn("previous_receipt_latest", workflow)
-        self.assertIn("previous_root_latest", workflow)
-        pair_job = jobs["promote-pair"]
-        self.assertIn("trap compensate EXIT", pair_job)
-        self.assertIn("trap 'exit 130' INT", pair_job)
-        self.assertIn("trap 'exit 143' TERM", pair_job)
-        self.assertIn("trap - EXIT INT TERM", pair_job)
-        self.assertIn("receipt_maybe_changed=true", pair_job)
-        self.assertIn("root_maybe_changed=true", pair_job)
-        self.assertIn("previous_receipt_latest", pair_job)
-        self.assertIn("previous_root_latest", pair_job)
-        self.assertIn("secrets.NPM_RECEIPT_PROMOTION_TOKEN", pair_job)
-        self.assertIn("secrets.NPM_ROOT_PROMOTION_TOKEN", pair_job)
-        setup_prefix = pair_job.split(
-            "- name: Promote the exact pair with in-process compensation", 1
-        )[0]
-        self.assertNotIn("NPM_RECEIPT_PROMOTION_TOKEN", setup_prefix)
-        self.assertNotIn("NPM_ROOT_PROMOTION_TOKEN", setup_prefix)
-        self.assertNotIn("rollback-root:", workflow)
-        self.assertNotIn("rollback-receipt:", workflow)
-        self.assertLess(
-            pair_job.index('"@ictechgy/context-guard-receipt@$RECEIPT_VERSION"'),
-            pair_job.index('"@ictechgy/context-guard@$ROOT_VERSION"'),
-        )
-
-    def test_pair_promotion_compensates_both_tags_in_the_same_approved_step(self):
-        workflow = read(".github/workflows/npm-promote.yml")
-        step_marker = "      - name: Promote the exact pair with in-process compensation\n"
-        step = workflow.split(step_marker, 1)[1]
-        script_lines = step.split("        run: |\n", 1)[1].splitlines()
-        script = textwrap.dedent("\n".join(script_lines)) + "\n"
-
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            binary_dir = root / "bin"
-            binary_dir.mkdir()
-            log_path = root / "npm.log"
-            npm = binary_dir / "npm"
-            npm.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' \"$*\" >> \"$NPM_LOG\"\n"
-                "if [ \"$1\" = dist-tag ] && [ \"$2\" = add ] "
-                "&& [ \"$3\" = '@ictechgy/context-guard@0.5.0' ]; then\n"
-                "  exit 42\n"
-                "fi\n"
-                "exit 0\n",
-                encoding="utf-8",
-            )
-            npm.chmod(0o755)
-            timeout = binary_dir / "timeout"
-            timeout.write_text(
-                "#!/bin/sh\nshift\nexec \"$@\"\n",
-                encoding="utf-8",
-            )
-            timeout.chmod(0o755)
-            environment = {
-                "DIST_TAG": "latest",
-                "LANG": "C",
-                "LC_ALL": "C",
-                "NPM_LOG": str(log_path),
-                "PATH": f"{binary_dir}{os.pathsep}{os.defpath}",
-                "PREVIOUS_RECEIPT_VERSION": "0.1.9",
-                "PREVIOUS_ROOT_VERSION": "0.4.16",
-                "RECEIPT_AUTH_TOKEN": "fixture-receipt-credential",
-                "RECEIPT_VERSION": "0.2.0",
-                "ROOT_AUTH_TOKEN": "fixture-root-credential",
-                "ROOT_VERSION": "0.5.0",
-            }
-            completed = subprocess.run(
-                ["/bin/bash", "-c", script],
-                cwd=root,
-                env=environment,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=15,
-                check=False,
-            )
-
-            self.assertEqual(completed.returncode, 42, completed.stderr)
-            self.assertEqual(
-                log_path.read_text(encoding="utf-8").splitlines(),
-                [
-                    "dist-tag add @ictechgy/context-guard-receipt@0.2.0 latest",
-                    "dist-tag add @ictechgy/context-guard@0.5.0 latest",
-                    "dist-tag add @ictechgy/context-guard@0.4.16 latest",
-                    "dist-tag add @ictechgy/context-guard-receipt@0.1.9 latest",
-                ],
-            )
+    def test_token_authenticated_npm_promotion_workflow_is_retired(self):
+        self.assertFalse((ROOT / ".github/workflows/npm-promote.yml").exists())
 
     def test_npm_publish_attestations_bind_source_commit_and_signer_revision(self):
         workflow = read(".github/workflows/npm-publish.yml")

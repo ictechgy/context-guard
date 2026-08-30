@@ -4,6 +4,11 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Changed npm release publication to send attested Receipt and root candidates
+  directly to `latest` with trusted publishing/OIDC, serialized the two publish
+  jobs, added bounded registry readback, and retired the token-authenticated
+  `npm dist-tag` promotion workflow.
+
 ## [0.9.0] - 2026-08-30
 
 - Added composable adapter capabilities and safe project MCP setup for Codex,
