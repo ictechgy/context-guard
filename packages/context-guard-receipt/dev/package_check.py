@@ -38,6 +38,7 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/canonical.py",
     "python/context_guard_receipt/cli.py",
     "python/context_guard_receipt/cli_io.py",
+    "python/context_guard_receipt/cleanup.py",
     "python/context_guard_receipt/contracts.py",
     "python/context_guard_receipt/cost_optimization.py",
     "python/context_guard_receipt/diagnostic_ledger.py",

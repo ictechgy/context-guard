@@ -58,6 +58,10 @@ Current setup surfaces:
 | ForgeCode | Optional project `.mcp.json`; helpers remain shell-driven. |
 | Windsurf, Cline, or unknown agents | Rule-file or shell usage; no automatic project MCP write. |
 
+The generated [setup capability and flag reference](docs/setup-reference.md)
+is derived from the adapter registry and CLI parser and is checked for drift by
+the prepublish gate.
+
 ## How ContextGuard reduces token waste
 
 ContextGuard does not change model prices. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether the change helped.
@@ -244,13 +248,13 @@ IDE scoped. See the [official Codex MCP documentation](https://learn.chatgpt.com
 ### Opt-in Bash references for Claude Code
 
 The `bash_reference_v1` route is available only from an exact, project-local npm
-installation. The root package pins `@ictechgy/context-guard-receipt@0.3.0`; a
+installation. The root package pins `@ictechgy/context-guard-receipt@0.4.0`; a
 global, `npx`, source-checkout, Homebrew, or Claude marketplace-plugin layout
 keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.9.0
+npm install --save-exact @ictechgy/context-guard@0.10.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -300,6 +304,20 @@ uninstall` removes the verified package-local code and
 the exact project-local pair is reinstalled. This mechanism can reduce
 transcript input for large Bash output, but it does not guarantee a fixed
 provider-token or cost reduction.
+
+To remove that retained state, stop agents using the repository, run a
+read-only cleanup plan, review its counts and hash, and confirm the same plan:
+
+```bash
+./node_modules/.bin/context-guard-receipt cleanup --bash-reference-v1 --root "$(pwd -P)" --plan
+./node_modules/.bin/context-guard-receipt cleanup --bash-reference-v1 --root "$(pwd -P)" --yes --confirm-plan-sha256 <64-lowercase-hex>
+```
+
+The cleanup command accepts no arbitrary state path and fails closed on links,
+non-private entries, hard links, filesystem-boundary crossings, tree drift, or
+a mismatched plan. Handles are
+49-byte bearer strings matching `^cgr1p_[A-Za-z0-9_-]{43}$`, bound to the same
+physical root, and valid for at most seven days.
 
 ## Homebrew release path
 

@@ -230,13 +230,13 @@ Windsurf와 Cline의 MCP는 문서상 사용자/IDE 범위여서 자동 쓰지 �
 ### Claude Code용 선택적 Bash reference
 
 `bash_reference_v1` 경로는 정확한 프로젝트 로컬 npm 설치에서만 사용할 수
-있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.3.0`을 정확히
+있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.4.0`을 정확히
 고정합니다. global npm, `npx`, 소스 체크아웃, Homebrew, Claude marketplace
 plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 reference 경로를
 사용할 수 없다고 알립니다.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.9.0
+npm install --save-exact @ictechgy/context-guard@0.10.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```

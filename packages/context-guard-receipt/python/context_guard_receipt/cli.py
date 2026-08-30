@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import secrets
 import sys
 import time
@@ -79,6 +80,8 @@ Commands:
   inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]
   inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>
   inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]
+  cleanup --bash-reference-v1 --root <absolute> --plan
+  cleanup --bash-reference-v1 --root <absolute> --yes --confirm-plan-sha256 <64hex>
   inspect <receipt|lease|state> [options]
 
 Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Merged-capture import accepts only a completed private canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.
@@ -1684,6 +1687,59 @@ def _evaluate_net_efficiency(arguments: Sequence[str]) -> int:
     return 0
 
 
+def _cleanup_bash_reference_state(arguments: Sequence[str]) -> int:
+    operation = "cleanup_bash_reference_state"
+    plan_mode = (
+        len(arguments) == 4
+        and arguments[0] == "--bash-reference-v1"
+        and arguments[1] == "--root"
+        and _is_absolute(arguments[2])
+        and arguments[3] == "--plan"
+    )
+    apply_mode = (
+        len(arguments) == 6
+        and arguments[0] == "--bash-reference-v1"
+        and arguments[1] == "--root"
+        and _is_absolute(arguments[2])
+        and arguments[3] == "--yes"
+        and arguments[4] == "--confirm-plan-sha256"
+        and re.fullmatch(r"[0-9a-f]{64}", arguments[5]) is not None
+    )
+    if not plan_mode and not apply_mode:
+        return emit_error(operation, "error", "cleanup_input_rejected", 65)
+    try:
+        from .cleanup import CleanupError, CleanupErrorCode, apply_cleanup, plan_cleanup
+    except Exception:
+        return emit_error(operation, "error", "cleanup_internal_failure", 70)
+    try:
+        payload = (
+            plan_cleanup(arguments[2])
+            if plan_mode
+            else apply_cleanup(arguments[2], arguments[5])
+        )
+    except CleanupError as error:
+        if error.code is CleanupErrorCode.FILESYSTEM_UNSUPPORTED:
+            return emit_error(operation, "unavailable", "cleanup_filesystem_unsupported", 69)
+        if error.code is CleanupErrorCode.CLEANUP_INCOMPLETE:
+            return emit_error(operation, "error", "cleanup_incomplete", 74)
+        reason = {
+            CleanupErrorCode.ROOT_REJECTED: "cleanup_root_rejected",
+            CleanupErrorCode.STATE_UNSAFE: "cleanup_state_unsafe",
+            CleanupErrorCode.STATE_TOO_LARGE: "cleanup_state_too_large",
+            CleanupErrorCode.PLAN_MISMATCH: "cleanup_plan_mismatch",
+        }.get(error.code, "cleanup_rejected")
+        return emit_error(operation, "error", reason, 65)
+    except Exception:
+        return emit_error(operation, "error", "cleanup_internal_failure", 70)
+    try:
+        write_stdout(canonical_json(payload).encode("ascii"))
+    except CliIOError:
+        return emit_error(operation, "error", "cleanup_delivery_failed", 74)
+    except Exception:
+        return emit_error(operation, "error", "cleanup_internal_failure", 70)
+    return 0
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments and arguments[0] == "--private-bash-reference-broker-v1":
@@ -1722,6 +1778,8 @@ def receipt_main(arguments: Sequence[str]) -> int:
         return _import_merged_capture(arguments[1:], recovery=False)
     if arguments and arguments[0] == "recover" and _valid_recover(arguments[1:]):
         return _import_merged_capture(arguments[1:], recovery=True)
+    if arguments and arguments[0] == "cleanup":
+        return _cleanup_bash_reference_state(arguments[1:])
     if arguments and arguments[0] == "inspect" and _valid_inspect(arguments[1:]):
         if arguments[1] in {"diagnostics", "firewall"}:
             options = _option_values(arguments[2:], flags=frozenset())

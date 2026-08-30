@@ -4,6 +4,18 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-31
+
+- Added an explicit, plan-hash-confirmed cleanup command for the deterministic
+  Bash-reference state sibling. It rejects arbitrary targets, symlinks,
+  non-private or hard-linked entries, tree drift, and oversized trees, and
+  reports incomplete quarantine deletion without claiming success.
+- Added a generated agent capability matrix and complete setup flag reference,
+  enforced by the prepublish gate, and clarified install-status terminology.
+- Documented Bash-reference handle shape, root binding and retention behavior,
+  plus the six-role context-pack captured/semantic identity oracle.
+- Bumped the independent Receipt companion to 0.4.0 and updated the exact root
+  dependency and package trust manifest for the cleanup surface.
 - Changed npm release publication to send attested Receipt and root candidates
   directly to `latest` with trusted publishing/OIDC, serialized the two publish
   jobs, added bounded registry readback, and retired the token-authenticated

@@ -183,6 +183,71 @@ def distribution() -> None:
         expected = {"evidence_boundary": EXPECTED_BOUNDARY, "operation": "inspect_boundary", "schema_version": "contextguard-receipt-cli-response/v1", "status": "ok"}
         if response.returncode != 0 or response.stdout != canonical_json(expected) or response.stderr or sentinel.exists():
             raise RuntimeError("installed receipt command failed its closed-boundary smoke test")
+        cleanup_repository = root / "cleanup-repository"
+        cleanup_repository.mkdir(mode=0o700)
+        cleanup_plan_command = [
+            str(Path(node).resolve()),
+            str(receipt_bin),
+            "cleanup",
+            "--bash-reference-v1",
+            "--root",
+            str(cleanup_repository.resolve()),
+            "--plan",
+        ]
+        absent_cleanup = run(
+            cleanup_plan_command,
+            cwd=install_directory,
+            environment=environment,
+        )
+        try:
+            absent_plan = json.loads(absent_cleanup.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("installed cleanup plan was not JSON") from exc
+        if (
+            absent_cleanup.returncode != 0
+            or absent_cleanup.stderr
+            or absent_plan.get("status") != "absent"
+            or absent_plan.get("requires_confirmation") is not False
+        ):
+            raise RuntimeError("installed cleanup failed its absent-state smoke test")
+        cleanup_state = cleanup_repository.parent / absent_plan["target_name"]
+        cleanup_state.mkdir(mode=0o700)
+        cleanup_payload = cleanup_state / "payload.bin"
+        cleanup_payload.write_bytes(b"packaged-cleanup-smoke")
+        cleanup_payload.chmod(0o600)
+        ready_cleanup = run(
+            cleanup_plan_command,
+            cwd=install_directory,
+            environment=environment,
+        )
+        ready_plan = json.loads(ready_cleanup.stdout)
+        applied_cleanup = run(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "cleanup",
+                "--bash-reference-v1",
+                "--root",
+                str(cleanup_repository.resolve()),
+                "--yes",
+                "--confirm-plan-sha256",
+                ready_plan["plan_sha256"],
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        applied_result = json.loads(applied_cleanup.stdout)
+        if (
+            ready_cleanup.returncode != 0
+            or ready_cleanup.stderr
+            or ready_plan.get("status") != "ready"
+            or applied_cleanup.returncode != 0
+            or applied_cleanup.stderr
+            or applied_result.get("status") != "deleted"
+            or applied_result.get("artifact_cleanup_performed") is not True
+            or cleanup_state.exists()
+        ):
+            raise RuntimeError("installed cleanup failed its explicit deletion smoke test")
         evaluated = run_binary(
             [
                 str(Path(node).resolve()),

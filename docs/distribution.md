@@ -15,6 +15,12 @@ ContextGuard separates **install** from **activation**.
 | npx/npm exec | added | `npx @ictechgy/context-guard --version` | One-off usage; activation still requires explicit setup. |
 | Homebrew | shipped | `brew install ictechgy/tap/context-guard` | Formula is published in `ictechgy/homebrew-tap`; update it from a tagged release tarball SHA. |
 
+`shipped` means the install path is publicly released and exercised by its
+release checks. `added` means the public package exposes the path, while
+activation remains an explicit follow-up. `report-only` in setup output means
+ContextGuard found no verified write adapter for that scope and changed
+nothing; it is not a partial installation.
+
 ## Activation examples
 
 ```bash
@@ -31,14 +37,14 @@ Project scope is the default. `context-guard doctor` and `context-guard setup --
 
 `bash_reference_v1` is a narrower distribution than the ordinary CLI/plugin.
 It accepts only an exact project-local npm topology: root
-`@ictechgy/context-guard@0.9.0` declares
-`@ictechgy/context-guard-receipt: 0.3.0`, and the installed Receipt inventory
+`@ictechgy/context-guard@0.10.0` declares
+`@ictechgy/context-guard-receipt: 0.4.0`, and the installed Receipt inventory
 must match the SHA-256 trust anchor embedded in the root policy. Hoisted and
 nested npm dependency layouts are supported; global npm, `npx`, Homebrew,
 source-checkout, arbitrary `PATH`, and marketplace-plugin layouts are refused.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.9.0
+npm install --save-exact @ictechgy/context-guard@0.10.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -96,6 +102,47 @@ npm uninstall @ictechgy/context-guard
 Artifact deletion is not automated; it requires a separate, explicit
 user-authorized retention decision. `--bash-reference-v1` and
 `--artifact-receipt` are mutually exclusive.
+
+### Explicit Bash-reference state cleanup
+
+Stop ContextGuard agents using the repository, then create a read-only plan
+from the same physical root:
+
+```bash
+./node_modules/.bin/context-guard-receipt cleanup --bash-reference-v1 --root "$(pwd -P)" --plan
+```
+
+Review the target basename, entry counts, total bytes, and `plan_sha256`, then
+apply that exact snapshot explicitly:
+
+```bash
+./node_modules/.bin/context-guard-receipt cleanup --bash-reference-v1 --root "$(pwd -P)" --yes --confirm-plan-sha256 <64-lowercase-hex>
+```
+
+Cleanup accepts no arbitrary state directory. It derives only the
+`.context-guard-receipt-state-<64-lowercase-hex>` sibling bound to the root,
+rejects links, non-private entries, hard-linked files, filesystem-boundary
+crossings, drift, oversized trees, and mismatched plans, and never traverses
+another target. A failure after
+deletion begins can leave a private
+`.context-guard-receipt-cleanup-<selector>-<nonce>` quarantine sibling for
+manual inspection; it is never silently treated as success.
+
+Provider-visible handles have the closed form
+`^cgr1p_[A-Za-z0-9_-]{43}$` (49 ASCII bytes), are bearer material, remain bound
+to the same physical root, and expire after seven days. `ABORT` can still
+initialize state axes, so an apparently below-threshold command is not proof
+that no retained state exists.
+
+## Context-pack module identity
+
+The ordinary context-pack implementation is split into six roles:
+`entrypoint`, `git-boundary`, `receipts`, `rendering`, `scanning`, and
+`selection`. Each canonical module and packaged plugin mirror has a
+path-and-byte captured identity plus a role-and-output semantic identity. The
+prepublish suite checks exact mirror bytes and runs the semantic oracle for both
+entry points; a byte rewrite may retain semantic identity only when the oracle
+output is unchanged.
 
 ## npm candidate and direct-latest publication gates
 

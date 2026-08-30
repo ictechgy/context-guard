@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import base64
 import importlib.util
+import importlib
 import hashlib
 import io
 import json
@@ -55,7 +56,28 @@ def load_script(path: Path, name: str):
     return module
 
 
+def load_receipt_cleanup():
+    receipt_python = ROOT / "packages" / "context-guard-receipt" / "python"
+    sys.path.insert(0, str(receipt_python))
+    try:
+        return importlib.import_module("context_guard_receipt.cleanup")
+    finally:
+        sys.path.remove(str(receipt_python))
+
+
 class BashReferenceV1Tests(unittest.TestCase):
+    def test_cleanup_target_matches_the_bash_reference_state_selector(self):
+        policy = load_policy()
+        cleanup = load_receipt_cleanup()
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve() / "repository"
+            repository.mkdir(mode=0o700)
+            plan = cleanup.plan_cleanup(str(repository))
+            self.assertEqual(
+                plan["target_name"],
+                policy.receipt_state_directory(repository).name,
+            )
+
     def test_root_policy_pin_matches_the_frozen_receipt_package_manifest(self):
         """The shipped root trust anchor must match the exact paired candidate."""
         policy = load_policy()
@@ -674,8 +696,8 @@ class BashReferenceV1Tests(unittest.TestCase):
             rewrite.chmod(0o700)
             (package / "package.json").write_text(json.dumps({
                 "name": "@ictechgy/context-guard",
-                "version": "0.9.0",
-                "dependencies": {"@ictechgy/context-guard-receipt": "0.3.0"},
+                "version": "0.10.0",
+                "dependencies": {"@ictechgy/context-guard-receipt": "0.4.0"},
             }), encoding="utf-8")
             receipt = root / "node_modules" / "@ictechgy" / "context-guard-receipt"
             (receipt / "bin").mkdir(parents=True)

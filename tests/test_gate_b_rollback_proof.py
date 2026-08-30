@@ -42,6 +42,38 @@ def commit_paths_for_test(repo: Path, contents: dict[str, str], subject: str) ->
 
 
 class GateBRollbackProofTests(unittest.TestCase):
+    def test_run_git_disables_background_repository_maintenance(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=("git", "status"),
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with mock.patch.object(
+            rollback_proof.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            rollback_proof.run_git(Path("/tmp/synthetic-proof"), "status")
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
+                "-C",
+                "/tmp/synthetic-proof",
+                "status",
+            ],
+        )
+
     def make_snapshot_repo(self, root: Path) -> Path:
         repo = root / "snapshot"
         repo.mkdir()
@@ -1171,8 +1203,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen14(self) -> None:
-        """운영 레코드는 gen2~gen14를 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen15(self) -> None:
+        """운영 레코드는 gen2~gen15를 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1190,9 +1222,10 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen12",
                 "gen13",
                 "gen14",
+                "gen15",
             ),
         )
-        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11, gen12, gen13, gen14 = (
+        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11, gen12, gen13, gen14, gen15 = (
             rollback_proof.GENERATIONS
         )
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
@@ -1687,6 +1720,48 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen14.shared_subject,
             ),
             gen14_subjects,
+        )
+
+        self.assertEqual(gen15.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen15.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen15.shared_paths,
+            rollback_proof.SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(gen15.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen15.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(
+            gen15.residual_edits,
+            frozenset(
+                {
+                    "context-guard-kit/setup_wizard.py",
+                    "plugins/context-guard/bin/context-guard-setup",
+                }
+            ),
+        )
+        gen15_subjects = (
+            rollback_proof.GEN15_BLESS_SUBJECT,
+            rollback_proof.GEN15_B1_SUBJECT,
+            rollback_proof.GEN15_B2_SUBJECT,
+            rollback_proof.GEN15_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen15_subjects,
+            (
+                "proof: establish Gate-B-free residual gen15 setup reference",
+                "proof: reapply Gate-B nudge component gen15 setup reference",
+                "proof: reapply Gate-B usage component gen15 setup reference",
+                "proof: reapply Gate-B integration component gen15 setup reference",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen15.bless_subject,
+                gen15.b1_subject,
+                gen15.b2_subject,
+                gen15.shared_subject,
+            ),
+            gen15_subjects,
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:
