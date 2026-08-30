@@ -42,6 +42,38 @@ def commit_paths_for_test(repo: Path, contents: dict[str, str], subject: str) ->
 
 
 class GateBRollbackProofTests(unittest.TestCase):
+    def test_run_git_disables_background_repository_maintenance(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=("git", "status"),
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with mock.patch.object(
+            rollback_proof.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            rollback_proof.run_git(Path("/tmp/synthetic-proof"), "status")
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
+                "-C",
+                "/tmp/synthetic-proof",
+                "status",
+            ],
+        )
+
     def make_snapshot_repo(self, root: Path) -> Path:
         repo = root / "snapshot"
         repo.mkdir()
