@@ -13,7 +13,7 @@
     {
       "mode": "0644",
       "path": "README.md",
-      "sha256": "da0e8f997aa80274335b8fbfe0f0483a127bf7bcf633a4f2883f0cbcca58acad"
+      "sha256": "bd598143ad96a744b9b67772c4197a14aee6fe4003d9804666af2b4f33dcb5a4"
     },
     {
       "mode": "0755",
@@ -28,12 +28,12 @@
     {
       "mode": "0644",
       "path": "bin/launcher.cjs",
-      "sha256": "f3c707e2062015ad09c989f199943954f6e10ed6472681e07027c1b92f312372"
+      "sha256": "c6fb5d86e841d307e85b54acb888879fb1ddccb11d98e02b1bcd7b9432263996"
     },
     {
       "mode": "0644",
       "path": "package.json",
-      "sha256": "0986e17db75ca6f66be57eb34e4a9f568d762291aaf8963d2e44f3462520168c"
+      "sha256": "36349b3f8dbab6be52788afdfa033b06863292540e0ada51fab1886f34474c5d"
     },
     {
       "mode": "0644",
@@ -62,8 +62,13 @@
     },
     {
       "mode": "0644",
+      "path": "python/context_guard_receipt/cleanup.py",
+      "sha256": "092d245e3f8534a40431997ed006a1e801a34d323aed9c54d921c3072e495ea2"
+    },
+    {
+      "mode": "0644",
       "path": "python/context_guard_receipt/cli.py",
-      "sha256": "6039d2bf34cd91913add151e4c467a087ffe2e0465f1e5d7cb2bf564a03ba19b"
+      "sha256": "8375084fc2c8d5099982e1cd28bed36745cacbe006b6fdbed1148b6dae3d0335"
     },
     {
       "mode": "0644",

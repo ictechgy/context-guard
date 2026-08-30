@@ -98,7 +98,7 @@ EXPECTED_MCP_HELP = (
 )
 EXPECTED_PACKAGE = {
     "name": "@ictechgy/context-guard-receipt",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
     "license": "Apache-2.0",
     "type": "commonjs",
@@ -151,6 +151,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/canonical.py": 0o644,
     "python/context_guard_receipt/cli.py": 0o644,
     "python/context_guard_receipt/cli_io.py": 0o644,
+    "python/context_guard_receipt/cleanup.py": 0o644,
     "python/context_guard_receipt/contracts.py": 0o644,
     "python/context_guard_receipt/cost_optimization.py": 0o644,
     "python/context_guard_receipt/diagnostic_ledger.py": 0o644,

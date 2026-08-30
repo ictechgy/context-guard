@@ -29,6 +29,8 @@ MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
 CHANGELOG = ROOT / "CHANGELOG.md"
 NPM_PACKAGE = ROOT / "package.json"
 HOMEBREW_TEMPLATE = ROOT / "packaging" / "homebrew" / "context-guard.rb.template"
+SETUP_REFERENCE_GENERATOR = ROOT / "scripts" / "generate_setup_reference.py"
+SETUP_REFERENCE = ROOT / "docs" / "setup-reference.md"
 TESTS_DIR = ROOT / "tests"
 PROVIDER_LIVE_TESTS_DIR = TESTS_DIR / "provider-live-roadmap"
 BRIEF_MODE_SNIPPET_TEST = TESTS_DIR / "test_brief_mode_snippets.py"
@@ -270,6 +272,7 @@ BASE_EXPECTED_NPM_PACK_FILES = {
     "README.ko.md",
     "README.md",
     "docs/distribution.md",
+    "docs/setup-reference.md",
     "docs/cache-diagnostics-schema.md",
     "docs/cache-diagnostics.schema.json",
     "docs/cache-diagnostics.example.json",
@@ -891,6 +894,22 @@ def check_python_compiles() -> None:
                 fail(f"python compile failed for {safe_path_label(path)}: {compact_label_text(exc.msg, 160)}")
 
 
+def check_setup_reference() -> None:
+    if not SETUP_REFERENCE_GENERATOR.is_file() or not SETUP_REFERENCE.is_file():
+        fail("generated setup reference surface is missing")
+    completed = subprocess.run(
+        [sys.executable, str(SETUP_REFERENCE_GENERATOR), "--check"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        check=False,
+    )
+    if completed.returncode != 0:
+        fail("generated setup reference is stale")
+
+
 def discoverable_test_paths() -> list[Path]:
     if not TESTS_DIR.is_dir():
         fail(f"missing tests directory: {safe_path_label(TESTS_DIR)}")
@@ -1025,6 +1044,7 @@ def main() -> int:
     check_korean_copy_terms()
     check_python_compiles()
     check_shell_syntax()
+    check_setup_reference()
     if not args.skip_tests:
         run_tests()
         remove_generated_plugin_bin_python_caches()

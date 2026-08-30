@@ -31,6 +31,8 @@ context-guard-receipt inspect reference-expiry --experimental-reference-expiry -
 context-guard-receipt import merged-capture --spool <absolute> --transaction-id <64-lowercase-hex> --root <absolute> --state-dir <absolute> [--disclosure-days 7]
 context-guard-receipt recover merged-capture --transaction-id <64-lowercase-hex> --root <absolute> --state-dir <absolute>
 context-guard-receipt inspect merged-capture-import --root <absolute> --state-dir <absolute>
+context-guard-receipt cleanup --bash-reference-v1 --root <absolute> --plan
+context-guard-receipt cleanup --bash-reference-v1 --root <absolute> --yes --confirm-plan-sha256 <64-lowercase-hex>
 ```
 
 Package and entry-point discovery are explicit and local. For a separate local
@@ -39,7 +41,7 @@ project, then invoke the two installed binaries directly:
 
 ```text
 npm pack --ignore-scripts
-npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.3.0.tgz
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.4.0.tgz
 ./node_modules/.bin/context-guard-receipt --help
 ./node_modules/.bin/context-guard-receipt-mcp --help
 ./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
@@ -48,7 +50,7 @@ npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.3.0.tgz
 
 Any downgrade to an earlier release is an external package-manager/release gate
 requiring an independently retained immutable published artifact. This package
-does not simulate or reconstruct an older release from the `0.3.0` runtime tree.
+does not simulate or reconstruct an older release from the `0.4.0` runtime tree.
 
 The ordinary CLI and the stdio MCP binary are the only entry points. Neither
 installs a hook, reads or writes host settings, registers an MCP server, or
@@ -261,7 +263,12 @@ automatically, and no source, `store-v1` artifact, diagnostic-ledger row, or
 twin event is deleted. Administrative inspection returns bounded counts and
 keyed hashes plus the constant compartment name, never the absolute state or
 artifact location. Artifact cleanup remains a separate, user-authorized
-operation that this package does not implement. Ordinary assembly, command
+operation. The cleanup CLI handles only the deterministic Bash-reference
+sibling derived from one normalized physical root: first inspect its bounded,
+content-free plan, then provide the exact `plan_sha256` with `--yes`. It accepts
+no arbitrary state directory, rejects links, non-private entries, hard-linked
+files, drift, and oversized trees, and preserves a private quarantine sibling
+with an incomplete result if deletion cannot be confirmed. Ordinary assembly, command
 capture, diagnostics, twin, and unregistered expansion flows do not create
 reference-expiry state.
 
