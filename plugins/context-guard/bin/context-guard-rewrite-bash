@@ -11,6 +11,7 @@ import copy
 from dataclasses import dataclass
 import json
 import os
+import shlex
 import re
 import shutil
 import stat
@@ -127,6 +128,12 @@ CGW1_COMMAND_SEARCH_DIFF = "command_search_diff"
 BASH_REFERENCE_FLAG = "--bash-reference-v1"
 BASH_REFERENCE_PUBLIC_COMMAND = "./node_modules/.bin/context-guard"
 BASH_REFERENCE_HANDLE_RE = re.compile(r"^cgr1p_[A-Za-z0-9_-]{43}$", re.ASCII)
+# 사용자의 탈출구. 이 훅은 실행을 막지 않지만 여전히 명령을 재작성하며,
+# 재작성은 신중한 워크플로에는 눈에 보이는 거부보다 오히려 더 침습적이다
+# (trim 이 `git log --pretty=…` 를 망가뜨리거나, 하위 스크립트가 감싸인 출력을
+# 읽거나, 종료 코드가 어긋나는 경우). 이 변수가 설정되면 분류 이전에 개입을
+# 포기한다.
+DISABLE_ENV = "CONTEXT_GUARD_DISABLE"
 FAIL_OPEN_ENV = "CONTEXT_GUARD_SANITIZER_FAIL_OPEN"
 LEGACY_FAIL_OPEN_ENV = "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"
 FAIL_OPEN_VALUES = {"1", "true", "yes", "on"}
@@ -265,6 +272,10 @@ class CommandDecision:
     reason_code: str | None = None
     route_code: str | None = None
     policy_version: str = MINISHELL_ROUTE_POLICY_VERSION
+    # 훅이 래핑을 포기한 이유. `action == "noop"` 이면서 이 값이 있으면 "조용한
+    # 통과"가 아니라 "래핑 불가로 판단해 원본 그대로 통과"를 뜻한다. 실행을
+    # 막지 않으므로 사용자에게는 보이지 않고, 진단 표면에서만 읽는다.
+    decline_reason: str | None = None
 
 
 class HookInputError(ValueError):
@@ -373,27 +384,48 @@ def print_deny_response(reason: str) -> None:
     }, ensure_ascii=False))
 
 
-def deny_invalid_hook_input(reason_code: str) -> None:
-    reason = f"Invalid Bash hook input ({reason_code})."
-    print(f"context-guard-rewrite-bash: {reason}", file=sys.stderr)
-    print_deny_response(reason)
+def print_ask_response(reason: str) -> None:
+    """실행 여부를 사람에게 넘긴다. 훅은 거부하지 않는다."""
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": reason,
+        }
+    }, ensure_ascii=False))
 
 
-def deny(reason: str) -> None:
-    print(f"context-guard-rewrite-bash: {reason}", file=sys.stderr)
-    fail_open_env = fail_open_source_env()
-    if fail_open_env is not None:
-        print(
-            f"context-guard-rewrite-bash: {fail_open_env}=1 active; leaving command unchanged intentionally",
-            file=sys.stderr,
-        )
-        print_noop()
-        return
-    print_deny_response(reason)
+def decline_invalid_hook_input(reason_code: str) -> None:
+    """훅이 자기 stdin 을 읽지 못했을 때 개입을 포기한다.
+
+    여기서 실행을 막으면 호스트 페이로드 스키마가 조금만 바뀌어도 모든
+    사용자의 Bash 가 조용히 전면 중단된다. 훅은 명령이 실행되지 못하는 이유가
+    되어서는 안 된다.
+    """
+    print(
+        f"context-guard-rewrite-bash: could not read hook input ({reason_code}); "
+        "leaving the command unchanged",
+        file=sys.stderr,
+    )
+    print_noop()
 
 
-def deny_boundary(reason: str) -> None:
-    """Hard-deny invalid shell structure without consulting fail-open state."""
+def decline_missing_wrapper(wrapper_name: str, effect: str) -> None:
+    """래퍼가 설치돼 있지 않으면 감싸지 않고 통과시킨다."""
+    print(
+        f"context-guard-rewrite-bash: {wrapper_name} is not installed next to "
+        f"context-guard-rewrite-bash; running this command {effect}. Reinstall "
+        "ContextGuard to restore output guarding.",
+        file=sys.stderr,
+    )
+    print_noop()
+
+
+def deny_self_protection(reason: str) -> None:
+    """훅 자신의 실행 봉투 재진입/위조만 거부한다.
+
+    사용자 명령에 대한 정책이 아니므로 fail-open 상태를 참조하지 않는다.
+    """
     print(f"context-guard-rewrite-bash: {reason}", file=sys.stderr)
     print_deny_response(reason)
 
@@ -470,6 +502,116 @@ def _annotate_word_tildes(word: MiniShellWord) -> MiniShellWord:
         barriers=word.barriers,
         assignment_index=word.assignment_index,
         active_tilde_sites=tuple(start for start, _end in sorted(set(sites))),
+    )
+
+
+def _expand_active_tildes(word: MiniShellWord) -> str:
+    """라우팅 판정용으로만 활성 `~` 접두사를 실제 경로로 펼친다.
+
+    훅이 내보내는 명령 문자열에는 이 결과가 절대 섞이지 않는다. `cat
+    ~/.ssh/id_rsa` 처럼 인식 가능한 경로를 가진 명령이 오직 `~` 때문에 라우팅
+    표를 벗어나, 비밀값을 가려 주는 래퍼 없이 그대로 흘러가는 일을 막기 위한
+    판정 보정이다. 펼칠 수 없는 `~unknownuser` 는 원본을 그대로 돌려주므로
+    라우팅 표에서 자연히 탈락한다.
+    """
+    if not word.active_tilde_sites:
+        return word.value
+    source = word.source_value
+    pieces: list[str] = []
+    cursor = 0
+    for start in word.active_tilde_sites:
+        if start < cursor:
+            continue
+        assignment_site = (
+            word.assignment_index is not None and start > word.assignment_index
+        )
+        end = _tilde_prefix_end(word, start, assignment_site=assignment_site)
+        if end is None:
+            continue
+        prefix = source[start:end]
+        expanded = os.path.expanduser(prefix)
+        if expanded == prefix:
+            continue
+        pieces.append(source[cursor:start])
+        pieces.append(expanded)
+        cursor = end
+    if not pieces:
+        return word.value
+    pieces.append(source[cursor:])
+    return "".join(pieces)
+
+
+_FIND_SIDE_EFFECT_ACTIONS = frozenset({
+    "-delete",
+    "-exec",
+    "-execdir",
+    "-fls",
+    "-fprint",
+    "-fprint0",
+    "-fprintf",
+    "-ok",
+    "-okdir",
+})
+
+
+def _raw_command_is_side_effecting_find(command: str) -> bool:
+    """파싱 성공 여부와 무관하게 파괴적인 `find` 형태를 알아본다.
+
+    `find . -exec rm {} \\;` 는 `{}` 때문에 MiniShell 문법을 통과하지 못하고
+    파싱 단계에서 탈락한다. 예전에는 그 파싱 실패가 우연히 제동 역할을 했다.
+    이제 파싱 실패는 통과를 뜻하므로, 되돌릴 수 없는 삭제만큼은 파싱과 무관하게
+    알아보고 사람에게 물어야 한다.
+
+    오탐 비용은 확인 키 한 번뿐이므로 보수적으로 넓게 잡는다. 거부가 아니라
+    질문이기 때문에 감당할 수 있는 판정이다.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for index, token in enumerate(tokens):
+        if os.path.basename(token) != "find":
+            continue
+        if any(
+            follower in _FIND_SIDE_EFFECT_ACTIONS
+            for follower in tokens[index + 1:]
+        ):
+            return True
+    return False
+
+
+def _side_effecting_find_ask(parsed: MiniShellParse) -> CommandDecision:
+    return CommandDecision(
+        action="ask",
+        parsed=parsed,
+        reason=(
+            "ContextGuard: this find command modifies or deletes files. "
+            "ContextGuard does not block it; confirm if you intended it. "
+            "Set CONTEXT_GUARD_DISABLE=1 to disable ContextGuard's Bash hook "
+            "entirely."
+        ),
+        reason_code="side_effecting_find_ask",
+        route_code="ask",
+    )
+
+
+def _decline(parsed: MiniShellParse, reason_code: str) -> CommandDecision:
+    """래핑을 포기하고 원본 명령을 그대로 통과시킨다.
+
+    ContextGuard 는 실행을 중재하지 않는다. 인식하지 못했거나 의미를 보존한 채
+    감쌀 수 없는 명령은 거부 대상이 아니라 손대지 않는 대상이며, 결과는
+    ContextGuard 가 설치되지 않았을 때와 동일하다. `reason_code` 는 진단용으로만
+    남고 사용자에게 노출되지 않는다.
+    """
+    # `reason_code` 는 그대로 둔다. 원인은 결과와 무관하게 원인이며, 기존
+    # 진단·오라클이 고정해 온 것도 결과가 아니라 원인이다. 바뀐 것은 그
+    # 원인이 실행 차단으로 이어지지 않는다는 점뿐이다.
+    return CommandDecision(
+        action="noop",
+        parsed=parsed,
+        reason_code=reason_code,
+        route_code="noop",
+        decline_reason=reason_code,
     )
 
 
@@ -2698,20 +2840,15 @@ def _reference_route_argv(parsed: MiniShellParse) -> tuple[str, ...] | None:
 def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecision:
     """Make a side-effect-free shell-boundary and routing decision."""
     parsed = parse_minishell(command)
+    # 파싱 결과보다 먼저 본다. `-exec` 형태는 `{}` 때문에 문법을 통과하지
+    # 못하므로, 파싱 이후에 검사하면 되돌릴 수 없는 삭제가 그대로 지나간다.
+    if _raw_command_is_side_effecting_find(command):
+        return _side_effecting_find_ask(parsed)
     if parsed.denial_reason is not None:
-        return CommandDecision(
-            action="deny",
-            parsed=parsed,
-            reason=f"MiniShell-v1 rejected command ({parsed.denial_reason}).",
-            reason_code=parsed.denial_reason,
-        )
-    if any(word.active_tilde_sites for word in parsed.words):
-        return CommandDecision(
-            action="deny",
-            parsed=parsed,
-            reason="MiniShell-v1 denied active shell expansion (active_shell_expansion_denied).",
-            reason_code="active_shell_expansion_denied",
-        )
+        # 문법을 끝까지 소비하지 못했다는 것은 "이 명령이 위험하다"가 아니라
+        # "우리가 안전하게 감쌀 만큼 이해하지 못했다"는 뜻이다. 원본을 그대로
+        # 통과시킨다.
+        return _decline(parsed, parsed.denial_reason)
 
     if _reference_route_argv(parsed) is not None:
         return CommandDecision(
@@ -2723,31 +2860,29 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
     wrapper = classify_incoming_wrapper(parsed)
     if wrapper is not None:
         wrapper_status, _wrapper_kind_name, _payload = wrapper
+        # 남은 단 하나의 거부. 사용자 명령에 대한 정책이 아니라 훅이 자기
+        # 실행 봉투가 재진입/위조되는 것을 막는 자기 보호다.
         return CommandDecision(
             action="deny",
             parsed=parsed,
-            reason=f"Incoming ContextGuard execution wrapper denied ({wrapper_status}).",
+            reason=(
+                "ContextGuard refused a command carrying its own execution "
+                "wrapper. This is ContextGuard's recursion guard, not a policy "
+                "about your command. If you did not construct this command "
+                f"yourself, please report it. ({wrapper_status})"
+            ),
             reason_code=wrapper_status,
         )
 
     segment_routes: list[str] = []
     for segment_index, segment in enumerate(parsed.segments):
-        segment_argv = tuple(word.value for word in segment)
+        # 활성 `~` 는 라우팅 판정에서만 펼친다. 내보내는 명령은 원본 그대로다.
+        segment_argv = tuple(_expand_active_tildes(word) for word in segment)
         route_start = _routing_start(segment, segment_argv)
         if route_start == -2:
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="MiniShell-v1 denied an unsafe environment prefix name (unsafe_env_name_denied).",
-                reason_code="unsafe_env_name_denied",
-            )
+            return _decline(parsed, "unsafe_env_name_denied")
         if route_start < 0:
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Restricted env prefix denied (restricted_env_denied).",
-                reason_code="restricted_env_denied",
-            )
+            return _decline(parsed, "restricted_env_denied")
         if route_start < len(segment):
             command_word = segment[route_start]
             if (
@@ -2755,27 +2890,14 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
                 and all(command_word.active)
                 and not command_word.barriers
             ):
-                return CommandDecision(
-                    action="deny",
-                    parsed=parsed,
-                    reason="MiniShell-v1 rejected an active shell reserved word.",
-                    reason_code="reserved_word_denied",
-                )
+                return _decline(parsed, "reserved_word_denied")
         route_argv = segment_argv[route_start:]
         if not route_argv:
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Assignment-only input denied (assignment_only_denied).",
-                reason_code="assignment_only_denied",
-            )
+            return _decline(parsed, "assignment_only_denied")
         if _forbidden_command_basename(route_argv):
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Forbidden command denied (forbidden_command_denied).",
-                reason_code="forbidden_command_denied",
-            )
+            # 네트워크/실행 계열 basename 목록은 실제 공격자를 막지 못하면서
+            # 정상 작업만 막아 왔다. 통과시키되 감싸지는 않는다.
+            return _decline(parsed, "forbidden_command_denied")
         if (
             command_basename(route_argv[0]) != route_argv[0]
             and not (
@@ -2783,40 +2905,23 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
                 and _is_expected_direct_wrapper_path(route_argv)
             )
         ):
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Non-bare command identity denied (command_identity_denied).",
-                reason_code="command_identity_denied",
-            )
+            return _decline(parsed, "command_identity_denied")
         if parsed.heredoc_delimiter is not None and (
             len(parsed.segments) != 1
             or command_basename(route_argv[0])
             not in MINISHELL_HEREDOC_STDIN_CONSUMERS
         ):
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Quoted heredoc consumer denied (heredoc_consumer_denied).",
-                reason_code="heredoc_consumer_denied",
-            )
+            return _decline(parsed, "heredoc_consumer_denied")
         if (
             len(parsed.segments) > 1
             and _prefix_overrides_path(segment, route_start)
         ):
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Pipeline PATH overrides are outside the immutable MiniShell-v1 route allowlist.",
-                reason_code="route_operand_denied",
-            )
+            return _decline(parsed, "route_operand_denied")
         if _find_command_is_side_effecting(route_argv):
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Side-effecting find actions are outside the MiniShell-v1 read-only boundary.",
-                reason_code="route_operand_denied",
-            )
+            # 되돌릴 수 없는 로컬 변경이고 오탐 비용이 거의 없는 유일한 행이다.
+            # 거부는 ContextGuard 의 권한이 아니지만, 마지막 제동을 말없이
+            # 걷어내는 것도 아니다 — 사람에게 넘긴다.
+            return _side_effecting_find_ask(parsed)
         role = (
             "standalone"
             if len(parsed.segments) == 1
@@ -2824,12 +2929,10 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
         )
         route = command_search_diff(route_argv, role=role)
         if route == "deny":
-            return CommandDecision(
-                action="deny",
-                parsed=parsed,
-                reason="Command is outside the immutable MiniShell-v1 route allowlist.",
-                reason_code="route_policy_denied",
-            )
+            # 라우팅 표에 없다는 것은 출력 형태를 모른다는 뜻일 뿐이다. 감싸지
+            # 않고 통과시킨다 — 미지의 명령을 trim 으로 감싸면 대화형/stdin
+            # 명령이 워치독까지 멈춘다.
+            return _decline(parsed, "route_policy_denied")
         segment_routes.append(route)
 
     if len(parsed.segments) == 1:
@@ -3066,7 +3169,31 @@ def print_updated_command(wrapped: str, tool_input: dict[str, object]) -> None:
     print(json.dumps(response, ensure_ascii=False))
 
 
+def hook_is_disabled() -> bool:
+    return os.environ.get(DISABLE_ENV) == "1"
+
+
 def main() -> int:
+    try:
+        return _main()
+    except SystemExit:
+        raise
+    except BaseException:  # noqa: BLE001 - crash-open 은 의도된 계약이다
+        # 훅의 버그가 사용자의 Bash 를 멈추게 해서는 안 된다. 예외를 삼키고
+        # 개입을 포기한다.
+        try:
+            print(
+                "context-guard-rewrite-bash: internal error; leaving the command "
+                "unchanged",
+                file=sys.stderr,
+            )
+            print_noop()
+        except Exception:  # noqa: BLE001 - 여기서 더 할 수 있는 일은 없다
+            pass
+        return 0
+
+
+def _main() -> int:
     if sys.argv[1:3] == [_GIT_GUARD_MODE, "--"]:
         return run_guarded_git(tuple(sys.argv[3:]))
     if _GIT_GUARD_MODE in sys.argv[1:]:
@@ -3075,59 +3202,61 @@ def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-rewrite-bash")
         return 0
+    if hook_is_disabled():
+        print_noop()
+        return 0
     bash_reference_v1 = BASH_REFERENCE_FLAG in sys.argv[1:]
     try:
         payload = load_hook_payload()
         tool_input = select_tool_input(payload)
     except HookInputError as exc:
-        deny_invalid_hook_input(exc.reason_code)
+        decline_invalid_hook_input(exc.reason_code)
         return 0
     except RecursionError:
-        deny_invalid_hook_input("payload_nesting_too_deep")
+        decline_invalid_hook_input("payload_nesting_too_deep")
         return 0
     except OSError:
-        deny_invalid_hook_input("input_read_failed")
+        decline_invalid_hook_input("input_read_failed")
         return 0
     command = tool_input["command"]
     assert isinstance(command, str)
 
     decision = classify_command(command)
     if decision.action == "deny":
-        deny_boundary(decision.reason or "MiniShell-v1 rejected command.")
+        deny_self_protection(
+            decision.reason
+            or "ContextGuard refused a command carrying its own execution wrapper."
+        )
+        return 0
+    if decision.action == "ask":
+        print_ask_response(
+            decision.reason or "ContextGuard asks you to confirm this command."
+        )
         return 0
     if decision.action == "noop":
         print_noop()
         return 0
 
+    # 래퍼가 없다는 것은 ContextGuard 설치가 불완전하다는 뜻이지 명령이
+    # 위험하다는 뜻이 아니다. 예전에는 이 경우에도 실행을 막았다 — 부분 설치
+    # 하나로 시끄러운 명령이 전부 차단됐다. 이제는 경고만 남기고 통과시킨다.
     if decision.action == "trim":
         wrapper = find_wrapper("trim")
         if wrapper is None:
-            deny(
-                "Noisy command blocked because context-guard-trim-output is not installed next to "
-                "context-guard-rewrite-bash. Install the trim wrapper or set "
-                f"{FAIL_OPEN_ENV}=1 to run untrimmed intentionally."
-            )
+            decline_missing_wrapper("context-guard-trim-output", "untrimmed")
             return 0
         wrapped = build_wrapped_command(wrapper, command, bash_reference_v1=bash_reference_v1)
     elif decision.action == "sanitize":
         wrapper = find_wrapper("sanitize")
         if wrapper is None:
-            reason = (
-                "Search/diff command blocked because context-guard-sanitize-output is not installed next to "
-                "context-guard-rewrite-bash. Install the sanitizer or set "
-                f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
-            )
-            deny(reason)
+            decline_missing_wrapper("context-guard-sanitize-output", "unsanitized")
             return 0
         guarded_command = neutralize_git_config_execution(command, decision.parsed)
         wrapped = build_sanitized_command(wrapper, guarded_command)
     elif decision.action == "reference":
         wrapper = find_wrapper("trim")
         if wrapper is None:
-            deny(
-                "Reference expansion blocked because the package-local trim helper "
-                "is unavailable. Reinstall ContextGuard."
-            )
+            decline_missing_wrapper("context-guard-trim-output", "unexpanded")
             return 0
         reference_argv = _reference_route_argv(decision.parsed)
         if reference_argv is None:
@@ -3142,7 +3271,7 @@ def main() -> int:
     try:
         print_updated_command(wrapped, tool_input)
     except RecursionError:
-        deny_invalid_hook_input("payload_copy_too_deep")
+        decline_invalid_hook_input("payload_copy_too_deep")
     return 0
 
 

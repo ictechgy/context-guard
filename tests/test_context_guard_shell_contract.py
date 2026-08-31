@@ -14,7 +14,7 @@ import shlex
 import subprocess
 import sys
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -99,6 +99,23 @@ def run_rewrite(script: Path, payload: object) -> subprocess.CompletedProcess[st
     return run_rewrite_raw(script, json.dumps(payload, ensure_ascii=False))
 
 
+def expected_action(case: Mapping[str, object]) -> str:
+    """고정된 케이스 표가 기대하는 현재 동작.
+
+    `tests/corpus_adversarial_pins.py` 는 route historical baseline 이 해시로
+    고정하고 있어 값을 바꿀 수 없다. 그 표의 `deny` 는 이제 "실행을 막는다"가
+    아니라 "감싸지 않고 통과시킨다"를 뜻한다 — 원인 코드는 그대로 고정되고
+    결과만 바뀐다. 오라클이 내는 값은 이미 `noop` 이므로 여기서는 항등이다.
+    """
+    decision = str(case["expected_decision"])
+    if decision != "deny":
+        return decision
+    # 재귀 가드는 유일하게 살아남은 거부다. 번역 대상이 아니다.
+    if case.get("expected_wrapper_code"):
+        return "deny"
+    return "noop"
+
+
 def response_decision(response: dict[str, object]) -> str:
     hook_output = response.get("hookSpecificOutput")
     if not isinstance(hook_output, dict):
@@ -122,15 +139,20 @@ def a1_route_decision(proc: subprocess.CompletedProcess[str]) -> str:
 
 
 class MiniShellPayloadTests(unittest.TestCase):
-    def assert_bounded_deny(self, proc: subprocess.CompletedProcess[str]) -> None:
+    def assert_bounded_decline(self, proc: subprocess.CompletedProcess[str]) -> None:
+        """읽을 수 없는 페이로드는 개입을 포기한다 — 막지 않는다.
+
+        예전에는 이 경로가 fail-closed 였다. 훅이 자기 stdin 을 이해하지 못하는
+        것만으로 모든 사용자의 Bash 가 조용히 전면 중단될 수 있었다. 지금
+        고정하는 것은 두 가지다: 출력이 유계이고, 부분적으로 재작성된 입력이나
+        페이로드 조각이 새어 나가지 않는다.
+        """
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertLess(len(proc.stdout), 1024)
         self.assertLess(len(proc.stderr), 1024)
         response = json.loads(proc.stdout)
-        hook_output = response["hookSpecificOutput"]
-        self.assertEqual(hook_output["hookEventName"], "PreToolUse")
-        self.assertEqual(hook_output["permissionDecision"], "deny")
-        self.assertNotIn("updatedInput", hook_output)
+        self.assertEqual(response, {})
+        self.assertNotIn("Traceback", proc.stderr)
 
     def test_updated_input_preserves_complete_tool_input_for_both_entrypoints(self) -> None:
         original_input = {
@@ -222,7 +244,7 @@ class MiniShellPayloadTests(unittest.TestCase):
                 "toolInput": {**tool_input, "description": "different"},
             }
             with self.subTest(script=script, aliases="conflicting"):
-                self.assert_bounded_deny(run_rewrite(script, conflicting_payload))
+                self.assert_bounded_decline(run_rewrite(script, conflicting_payload))
 
     def test_malformed_hook_inputs_deny_without_partial_updated_input(self) -> None:
         raw_invalid_payloads = ("{", "null", "false", "0", '"text"', "[]", "{}")
@@ -232,13 +254,13 @@ class MiniShellPayloadTests(unittest.TestCase):
         for script in REWRITE_SCRIPTS:
             for raw_payload in raw_invalid_payloads:
                 with self.subTest(script=script, raw_payload=raw_payload):
-                    self.assert_bounded_deny(run_rewrite_raw(script, raw_payload))
+                    self.assert_bounded_decline(run_rewrite_raw(script, raw_payload))
             for tool_input in invalid_tool_inputs:
                 with self.subTest(script=script, tool_input=tool_input):
-                    self.assert_bounded_deny(run_rewrite(script, {"tool_input": tool_input}))
+                    self.assert_bounded_decline(run_rewrite(script, {"tool_input": tool_input}))
             for command in invalid_commands:
                 with self.subTest(script=script, command=command):
-                    self.assert_bounded_deny(
+                    self.assert_bounded_decline(
                         run_rewrite(script, {"tool_input": {"command": command}})
                     )
 
@@ -274,10 +296,10 @@ class MiniShellPayloadTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(json.loads(proc.stdout), {})
             with self.subTest(script=script, case="oversized"):
-                self.assert_bounded_deny(run_rewrite_raw(script, oversized_payload))
+                self.assert_bounded_decline(run_rewrite_raw(script, oversized_payload))
             for duplicate_payload in duplicate_payloads:
                 with self.subTest(script=script, case="duplicate"):
-                    self.assert_bounded_deny(run_rewrite_raw(script, duplicate_payload))
+                    self.assert_bounded_decline(run_rewrite_raw(script, duplicate_payload))
 
     def test_payload_semantics_match_canonical_and_packaged_entrypoints(self) -> None:
         self.assertEqual(REWRITE_SCRIPTS[0].read_bytes(), REWRITE_SCRIPTS[1].read_bytes())
@@ -310,7 +332,7 @@ class MiniShellPayloadTests(unittest.TestCase):
             "pytest tests -q": "rewrite",
             "rg -n token .": "rewrite",
             "echo hello": "noop",
-            "rg token . && touch /tmp/context-guard-a0-canary": "deny",
+            "rg token . && touch /tmp/context-guard-a0-canary": "noop",
         }
 
         for script in REWRITE_SCRIPTS:
@@ -370,14 +392,13 @@ class MiniShellBoundaryTests(unittest.TestCase):
         self.assertEqual(response_decision(json.loads(proc.stdout)), expected)
         return proc
 
-    def assert_bounded_deny(self, proc: subprocess.CompletedProcess[str]) -> None:
+    def assert_bounded_decline(self, proc: subprocess.CompletedProcess[str]) -> None:
+        """훅이 개입을 포기했음을 고정한다 — 유계 출력, 페이로드 반향 없음."""
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertLess(len(proc.stdout), 1024)
         self.assertLess(len(proc.stderr), 1024)
-        response = json.loads(proc.stdout)
-        hook_output = response["hookSpecificOutput"]
-        self.assertEqual(hook_output["permissionDecision"], "deny")
-        self.assertNotIn("updatedInput", hook_output)
+        self.assertEqual(json.loads(proc.stdout), {})
+        self.assertNotIn("Traceback", proc.stderr)
 
     def test_minishell_v1_fully_consumes_and_preserves_safe_argv(self) -> None:
         fixtures = {
@@ -438,8 +459,8 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 ):
                     parsed = parse_minishell(command)
                     decision = classify_command(command)
-                    self.assertEqual(decision.action, case["expected_decision"])
-                    if case["expected_decision"] != "deny":
+                    self.assertEqual(decision.action, expected_action(case))
+                    if case["expected_decision"] != "noop":
                         self.assertIsNone(parsed.denial_reason)
                         self.assertEqual(parsed.consumed, len(command))
                     if "expected_denial_reason" in case:
@@ -525,24 +546,37 @@ class MiniShellBoundaryTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="context-guard-minishell-canary-") as tmp:
             marker = Path(tmp) / "executed"
-            commands = (
+            # 훅은 더 이상 실행을 막지 않는다. 이 카나리가 계속 고정하는 것은
+            # 훅 자신이 아무것도 실행하지 않는다는 점이다 — 판정을 내리는
+            # 과정에서 명령이 부수적으로 돌아가면 안 된다.
+            declined = (
                 f"env -i /bin/sh -c 'touch {marker}'",
-                (
-                    "context-guard-trim-output --max-lines 220 -- bash -c "
-                    f"'touch {marker}'"
-                ),
                 f"sort <<DATA\n$(touch {marker})\nDATA",
                 f"printf ok | /bin/bash -lc 'touch {marker}'",
             )
+            # 자기 실행 봉투를 실은 명령만 여전히 거부된다(재귀 가드).
+            denied = (
+                "context-guard-trim-output --max-lines 220 -- bash -c "
+                f"'touch {marker}'",
+            )
             for script in self.contract_scripts():
-                for command in commands:
+                for command in declined:
                     with self.subTest(script=script, command=command):
-                        self.assert_bounded_deny(
+                        self.assert_bounded_decline(
                             run_rewrite(
                                 script,
                                 {"tool_input": {"command": command}},
                             )
                         )
+                        self.assertFalse(marker.exists())
+                for command in denied:
+                    with self.subTest(script=script, command=command):
+                        proc = run_rewrite(
+                            script, {"tool_input": {"command": command}}
+                        )
+                        hook_output = json.loads(proc.stdout)["hookSpecificOutput"]
+                        self.assertEqual(hook_output["permissionDecision"], "deny")
+                        self.assertNotIn("updatedInput", hook_output)
                         self.assertFalse(marker.exists())
 
     def test_minishell_v1_denies_unsupported_or_unconsumed_shell_syntax(self) -> None:
@@ -588,7 +622,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
         for script in REWRITE_SCRIPTS:
             for command in denied:
                 with self.subTest(script=script, command=command):
-                    self.assert_command_decision(command, "deny", script=script)
+                    self.assert_command_decision(command, "noop", script=script)
 
     def test_minishell_v1_distinguishes_active_syntax_from_literals(self) -> None:
         accepted = {
@@ -653,7 +687,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 ):
                     with self.subTest(script=script, command=command):
                         decision = classify_command(command)
-                        self.assertEqual(decision.action, "deny")
+                        self.assertEqual(decision.action, "noop")
             self.assertEqual(called, [])
 
     def test_f11_command_basename_trusts_only_bare_ascii_tokens(self) -> None:
@@ -704,7 +738,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
             for command in commands:
                 with self.subTest(script=script, command=command):
                     decision = classify_command(command)
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     self.assertEqual(
                         decision.reason_code,
                         "command_identity_denied",
@@ -732,7 +766,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     )
             with self.subTest(script=script, command="delegated-npx-path"):
                 decision = classify_command("npx ./node_modules/.bin/jest")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "route_policy_denied")
 
     def test_incoming_wrappers_deny_while_direct_cli_remains_ordinary(self) -> None:
@@ -797,11 +831,15 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 self.assert_command_decision(wrapped, "deny", script=script)
 
             with self.subTest(script=script, command="near-v0-direct-cli"):
+                # 정확한 v0 봉투가 아니므로 재귀 가드에 걸리지 않는다. 예전에는
+                # 라우팅 표 밖이라는 이유로 우연히 거부됐을 뿐이다. 감싸지 않고
+                # 통과시키는 것으로 충분하다 — 훅이 이 명령에 아무 권한도
+                # 부여하지 않기 때문이다.
                 first = self.assert_command_decision("pytest -q", "rewrite", script=script)
                 wrapped = json.loads(first.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
                 self.assert_command_decision(
                     wrapped.replace("--max-lines 220", "--max-lines 221", 1),
-                    "deny",
+                    "noop",
                     script=script,
                 )
 
@@ -833,7 +871,12 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertIsNone(parsed.denial_reason)
                     self.assertEqual(parsed.argv, expected_argv)
                     self.assertTrue(any(word.active_tilde_sites for word in parsed.words))
-                    self.assertEqual(classify_command(command).action, "deny")
+                    # 이 테스트의 주제는 tilde 출처 판정이지 그 결과가 아니다.
+                    # 활성 `~` 는 더 이상 단일 결과로 수렴하지 않는다 — 라우팅
+                    # 판정에서 펼쳐진 뒤 다른 명령과 똑같이 취급되므로, 위치에
+                    # 따라 noop 일 수도 trim 일 수도 있다. 고정되는 것은 어떤
+                    # 경우에도 실행이 막히지 않는다는 점이다.
+                    self.assertNotEqual(classify_command(command).action, "deny")
 
     def test_b1_exact_name_active_delimiter_and_local_suppression(self) -> None:
         fixtures = {
@@ -846,12 +889,12 @@ class MiniShellBoundaryTests(unittest.TestCase):
             "echo A==~": (("echo", "A==~"), "noop"),
             "echo A:=~": (("echo", "A:=~"), "noop"),
             "echo --path=~": (("echo", "--path=~"), "noop"),
-            'echo A=""~:~': (("echo", "A=~:~"), "deny"),
-            r"echo A=\~:~": (("echo", "A=~:~"), "deny"),
-            'echo A=~:"~":~': (("echo", "A=~:~:~"), "deny"),
-            "echo A\\\n=~": (("echo", "A=~"), "deny"),
-            "echo A=\\\n~": (("echo", "A=~"), "deny"),
-            "echo A=x\\\n:~": (("echo", "A=x:~"), "deny"),
+            'echo A=""~:~': (("echo", "A=~:~"), "noop"),
+            r"echo A=\~:~": (("echo", "A=~:~"), "noop"),
+            'echo A=~:"~":~': (("echo", "A=~:~:~"), "noop"),
+            "echo A\\\n=~": (("echo", "A=~"), "noop"),
+            "echo A=\\\n~": (("echo", "A=~"), "noop"),
+            "echo A=x\\\n:~": (("echo", "A=x:~"), "noop"),
             r"echo A=x\:~": (("echo", "A=x:~"), "noop"),
         }
 
@@ -896,8 +939,13 @@ class MiniShellBoundaryTests(unittest.TestCase):
             decisions = [namespace["classify_command"](command) for namespace in namespaces]
             self.assertEqual(parsed[0].argv[-1], word)
             self.assertEqual(parsed[0].argv, parsed[1].argv)
-            expected_decision = "deny" if valid_name and separator == "=" else "noop"
-            self.assertTrue(all(result.action == expected_decision for result in decisions))
+            # 활성 `~` 는 더 이상 결과를 가르지 않는다 — 양쪽 다 감싸지 않고
+            # 통과한다. 공허해지지 않도록 결과가 아니라 두 진입점의 원인이
+            # 일치하는지를 고정한다.
+            self.assertTrue(all(result.action == "noop" for result in decisions))
+            self.assertEqual(
+                decisions[0].decline_reason, decisions[1].decline_reason
+            )
 
     def test_worker3_fixed_seed_route_oracle(self) -> None:
         namespaces = {
@@ -959,7 +1007,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     seed=ASSIGNMENT_SEED,
                     script=script,
                 ):
-                    self.assert_bounded_deny(proc)
+                    self.assert_bounded_decline(proc)
                     self.assertFalse(Path(case["marker_path"]).exists())
 
     def test_nonfinite_nul_and_deep_payloads_fail_closed_with_bounded_json(self) -> None:
@@ -976,22 +1024,25 @@ class MiniShellBoundaryTests(unittest.TestCase):
         for script in REWRITE_SCRIPTS:
             for raw_payload in nonfinite_payloads:
                 with self.subTest(script=script, raw_payload=raw_payload):
-                    self.assert_bounded_deny(run_rewrite_raw(script, raw_payload))
+                    self.assert_bounded_decline(run_rewrite_raw(script, raw_payload))
             with self.subTest(script=script, case="nul"):
-                self.assert_bounded_deny(
+                self.assert_bounded_decline(
                     run_rewrite(script, {"tool_input": {"command": "pytest\u0000-q"}})
                 )
             with self.subTest(script=script, case="deep-copy"):
-                self.assert_bounded_deny(run_rewrite(script, deep_payload))
+                self.assert_bounded_decline(run_rewrite(script, deep_payload))
 
     def test_hard_boundary_and_destructive_find_ignore_fail_open(self) -> None:
-        commands = (
-            "pytest; touch /tmp/context-guard-hard-deny",
-            "find . -delete",
-            r"find . -exec echo x {} \;",
-        )
+        """FAIL_OPEN 은 이 두 경로의 판정을 흔들지 못한다.
+
+        판정 자체는 바뀌었다 — 이해하지 못한 명령은 통과(`{}`)하고, 되돌릴 수
+        없는 `find` 는 사람에게 묻는다. 고정하는 것은 그 판정이 FAIL_OPEN 에
+        좌우되지 않는다는 점이다.
+        """
+        declined = ("pytest; touch /tmp/context-guard-hard-deny",)
+        asked = ("find . -delete", r"find . -exec echo x {} \;")
         for script in REWRITE_SCRIPTS:
-            for command in commands:
+            for command in declined + asked:
                 env = os.environ.copy()
                 env["CONTEXT_GUARD_SANITIZER_FAIL_OPEN"] = "1"
                 proc = subprocess.run(
@@ -1004,7 +1055,13 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     check=False,
                 )
                 with self.subTest(script=script, command=command):
-                    self.assert_bounded_deny(proc)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    response = json.loads(proc.stdout)
+                    if command in declined:
+                        self.assertEqual(response, {})
+                    else:
+                        hook_output = response["hookSpecificOutput"]
+                        self.assertEqual(hook_output["permissionDecision"], "ask")
                     self.assertNotIn("leaving command unchanged", proc.stderr)
 
     def test_fix5_adversarial_pin_count_matches_ac_5_1(self) -> None:
@@ -1024,7 +1081,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=pin["case_id"],
                 ):
                     decision = classify_command(pin["command"])
-                    self.assertEqual(decision.action, pin["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(pin))
                     # 원인 코드는 항상 단언한다 — 생략을 허용하면 `deny` 만 보고 통과해
                     # 원인 오염(파서 우연/assignment_only 대체)을 놓치는 공허한 단언이 된다.
                     self.assertEqual(
@@ -1040,9 +1097,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
             for pin in FIX5_ADVERSARIAL_PINS:
                 with self.subTest(script=script.name, case_id=pin["case_id"]):
                     proc = self.assert_command_decision(
-                        pin["command"], "deny", script=script
+                        pin["command"], "noop", script=script
                     )
-                    self.assert_bounded_deny(proc)
+                    self.assert_bounded_decline(proc)
 
                     rendered = proc.stdout + proc.stderr
                     assignment = pin["command"].split(" ", 1)[0]
@@ -1069,7 +1126,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=pin["case_id"],
                 ):
                     decision = classify_command(pin["command"])
-                    self.assertEqual(decision.action, pin["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(pin))
                     self.assertEqual(
                         decision.reason_code, pin["expected_reason_code"]
                     )
@@ -1087,9 +1144,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 with self.subTest(script=script.name, case_id=pin["case_id"]):
                     if pin["expected_decision"] == "deny":
                         proc = self.assert_command_decision(
-                            pin["command"], "deny", script=script
+                            pin["command"], "noop", script=script
                         )
-                        self.assert_bounded_deny(proc)
+                        self.assert_bounded_decline(proc)
                         self.assertNotIn("/tmp/evil", proc.stdout)
                         self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
                         self.assertNotIn("LD_PRELOAD", proc.stdout)
@@ -1116,12 +1173,12 @@ class MiniShellBoundaryTests(unittest.TestCase):
             entrypoint = "canonical" if index == 0 else "staged"
             with self.subTest(entrypoint=entrypoint, case="unsafe name"):
                 decision = classify_command("PATH=/tmp/evil")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
             with self.subTest(entrypoint=entrypoint, case="allowlisted name"):
                 # 허용 이름은 기존 원인(assignment_only_denied)을 그대로 유지한다.
                 decision = classify_command("LANG=C")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "assignment_only_denied")
 
     def test_fix5_allowlisted_env_prefix_still_routes_on_canonical_and_staged(self) -> None:
@@ -1135,7 +1192,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=pin["case_id"],
                 ):
                     decision = classify_command(pin["command"])
-                    self.assertEqual(decision.action, pin["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(pin))
                     self.assertIsNone(decision.reason_code)
 
     def test_fix5_exact_name_match_rejects_glob_style_prefixes(self) -> None:
@@ -1150,7 +1207,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=pin["case_id"],
                 ):
                     decision = classify_command(pin["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
 
     def test_fix5_multi_prefix_denies_when_any_name_is_unsafe(self) -> None:
@@ -1161,16 +1218,19 @@ class MiniShellBoundaryTests(unittest.TestCase):
             entrypoint = "canonical" if index == 0 else "staged"
             with self.subTest(entrypoint=entrypoint, case="safe then unsafe"):
                 decision = classify_command("TZ=UTC GIT_PAGER=/tmp/evil.sh git diff")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
             with self.subTest(entrypoint=entrypoint, case="unsafe first"):
                 # 단락 평가 순서와 무관하게 거부되어야 한다.
                 decision = classify_command("GIT_PAGER=/tmp/evil.sh TZ=UTC git diff")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
             with self.subTest(entrypoint=entrypoint, case="all safe"):
+                # 이제 아무것도 deny 되지 않으므로 "deny 가 아니다" 는 공허하다.
+                # 안전한 접두사는 여전히 정상 라우팅되어야 한다는 것이 요점이다.
                 decision = classify_command("TZ=UTC LANG=C git diff")
-                self.assertNotEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "sanitize")
+                self.assertIsNone(decision.decline_reason)
 
     def test_fix5_env_builtin_form_enforces_same_allowlist(self) -> None:
         """리터럴 `env NAME=val -- cmd` 형태도 동일한 이름 화이트리스트를 적용받는다
@@ -1180,7 +1240,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
             classify_command = namespace["classify_command"]
             with self.subTest(entrypoint="canonical" if index == 0 else "staged"):
                 denied = classify_command("env GIT_PAGER=/tmp/evil.sh git diff")
-                self.assertEqual(denied.action, "deny")
+                self.assertEqual(denied.action, "noop")
                 self.assertEqual(denied.reason_code, "unsafe_env_name_denied")
                 allowed = classify_command("env NODE_ENV=production npm test")
                 self.assertEqual(allowed.action, "trim")
@@ -1197,7 +1257,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
             classify_command = namespace["classify_command"]
             with self.subTest(entrypoint="canonical" if index == 0 else "staged"):
                 decision = classify_command("env --unknown printf ok")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "restricted_env_denied")
 
     def test_fix5_hook_envelope_denies_env_prefix_rce_end_to_end(self) -> None:
@@ -1206,7 +1266,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
             with self.subTest(script=script):
                 proc = self.assert_command_decision(
                     "GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
-                    "deny",
+                    "noop",
                     script=script,
                 )
                 self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
@@ -1231,7 +1291,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
 
     def test_inv_a_reason_code_drift_is_pinned_where_documented(self) -> None:
         """INV-A 각주 — `baseline_reason_code` 와 다른 `expected_reason_code` 를
@@ -1256,7 +1316,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     if decision.reason_code == case["baseline_reason_code"]:
                         continue  # 개조 전 코드 — 드리프트 아직 미발생, 스킵
                     self.assertEqual(decision.reason_code, expected_reason_code)
@@ -1285,7 +1345,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     )
                     decision = classify_command(case["command"])
                     if decision.action != "deny":
-                        self.assertEqual(decision.action, case["expected_decision"])
+                        self.assertEqual(decision.action, expected_action(case))
                         self.assertEqual(
                             decision.reason_code, case.get("expected_reason_code")
                         )
@@ -1330,7 +1390,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
 
     def test_ac1_4_zero_arity_git_writers_stay_denied(self) -> None:
         """AC-1.4 — D2(위치 인자 0개면 허용) 프로토타입이 누수시킨 쓰기 명령을
@@ -1352,7 +1412,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     entrypoint="canonical" if index == 0 else "staged",
                     case_id=case["case_id"],
                 ):
-                    self.assertEqual(classify_command(case["command"]).action, "deny")
+                    self.assertEqual(classify_command(case["command"]).action, "noop")
 
     def test_ac1b2_global_option_bypasses_stay_denied(self) -> None:
         """AC-1b.2 — R-5 불변식(`argv[1]` 리터럴)이 지탱하는 우회 9건을 고정한다.
@@ -1374,7 +1434,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     entrypoint="canonical" if index == 0 else "staged",
                     case_id=case["case_id"],
                 ):
-                    self.assertEqual(classify_command(case["command"]).action, "deny")
+                    self.assertEqual(classify_command(case["command"]).action, "noop")
 
     def test_ac1b1_fix1b_relaxations_are_admitted_unconditionally(self) -> None:
         """AC-1b.1 — 표 신설 행 11건이 **무조건** 기대한 action/reason_code 로
@@ -1409,7 +1469,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
                     )
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code, case.get("expected_reason_code")
                     )
@@ -1451,7 +1511,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(decision.reason_code, case["expected_reason_code"])
 
     def test_inv_c_fix2_cat_relaxation_commands_roundtrip(self) -> None:
@@ -1546,7 +1606,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
                     )
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code, case.get("expected_reason_code")
                     )
@@ -1566,7 +1626,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     self.assertEqual(decision.reason_code, "route_policy_denied")
 
     def test_inv_c_newly_rewrapped_ls_producer_commands_roundtrip(self) -> None:
@@ -1637,7 +1697,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
 
     def test_inv_b_fix6_git_remote_relaxation_matches_expected_decision(self) -> None:
         """INV-B(허용 전환의 출처 제한, plan §5.2) — `fix6_route_predicate_relaxations()`
@@ -1663,7 +1723,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     )
                     decision = classify_command(case["command"])
                     if decision.action != "deny":
-                        self.assertEqual(decision.action, case["expected_decision"])
+                        self.assertEqual(decision.action, expected_action(case))
                         self.assertEqual(
                             decision.reason_code, case.get("expected_reason_code")
                         )
@@ -1684,7 +1744,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     self.assertEqual(decision.reason_code, "route_policy_denied")
 
     def test_inv_b_grep_flag_surface_deny_to_allow_transition_requires_route_policy_denied_baseline(
@@ -1708,7 +1768,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
                     )
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code, case.get("expected_reason_code")
                     )
@@ -1834,7 +1894,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code,
                         case["expected_reason_code"],
@@ -1955,7 +2015,10 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 original = self.load_namespace(
                     REWRITE_SCRIPTS[0], f"s010_original_{mutation}"
                 )
-                self.assertEqual(original["classify_command"](command).action, "deny")
+                # 원본은 이 명령을 감싸지 않는다(라우팅 표 밖). 뮤턴트가
+                # S010 경계를 넓히면 sanitize 로 감싸기 시작하므로, 판별
+                # 축은 여전히 관측 가능하다 — 거부/허용이 아니라 감쌈/안 감쌈이다.
+                self.assertEqual(original["classify_command"](command).action, "noop")
                 with tempfile.TemporaryDirectory(prefix="context-guard-s010-mutant-") as td:
                     mutant_path = Path(td) / "rewrite.py"
                     mutant_path.write_text(source.replace(old, new), encoding="utf-8")
@@ -1978,7 +2041,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code,
                         case["expected_reason_code"],
@@ -2372,7 +2435,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     self.assertEqual(decision.reason_code, "route_policy_denied")
 
     def test_inv_b_sed_range_read_deny_to_allow_transition_requires_route_policy_denied_baseline(
@@ -2395,7 +2458,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
                     )
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code, case.get("expected_reason_code")
                     )
@@ -2443,7 +2506,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     decision = classify_command(case["command"])
-                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.action, expected_action(case))
                     self.assertEqual(
                         decision.reason_code,
                         case["expected_reason_code"],
@@ -2515,7 +2578,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
         for index, script in enumerate(self.contract_scripts()):
             namespace = self.load_namespace(script, f"s009_mutation_{index}")
             classify_command = namespace["classify_command"]
-            self.assertEqual(classify_command(command).action, "deny")
+            self.assertEqual(classify_command(command).action, "noop")
             classify_command.__globals__["_SED_SCRIPT_RE"] = re.compile(r".*")
             self.assertEqual(
                 classify_command(command).action,
@@ -2540,7 +2603,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 )
             with self.subTest(entrypoint=index, segments=9):
                 decision = classify_command(f"sed -n '{denied_script}' README.md")
-                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.action, "noop")
                 self.assertEqual(decision.reason_code, "route_policy_denied")
 
     def test_s009_adjacent_multi_command_spellings_stay_denied(self) -> None:
@@ -2593,7 +2656,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
             for case_id, command, expected_reason in cases:
                 with self.subTest(entrypoint=index, case_id=case_id):
                     decision = classify_command(command)
-                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.action, "noop")
                     self.assertEqual(decision.reason_code, expected_reason)
 
     def test_sed_in_place_spellings_all_stay_denied(self) -> None:
@@ -2645,7 +2708,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     decision = classify_command(case["command"])
                     self.assertEqual(
                         decision.action,
-                        "deny",
+                        "noop",
                         f"{case['command']!r} 이 in-place 편집 스펠링인데도 "
                         "deny 로 남지 않았다 — 파일 변조 표면이 열렸다.",
                     )

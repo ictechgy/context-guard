@@ -4,6 +4,42 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- **The `PreToolUse:Bash` hook no longer blocks command execution.**
+  `context-guard-rewrite-bash` previously returned `permissionDecision: "deny"`
+  for every command it could not place in its routing table, which silently made
+  unrelated user CLIs unrunnable in any project with ContextGuard installed.
+  Commands the hook cannot safely wrap now run unmodified, exactly as they would
+  without ContextGuard. This behaviour was never documented; see
+  [`research/bash-hook-zero-command-authority-20260831.md`](research/bash-hook-zero-command-authority-20260831.md).
+  - Unrecognized commands, unparseable command lines, non-bare command paths,
+    network/exec basenames (`curl`, `ssh`, `nc`, …), shell reserved words,
+    restricted env prefixes, heredoc consumer mismatches, and pipeline `PATH`
+    overrides all pass through instead of being denied.
+  - Side-effecting `find` (`-delete`, `-exec`, …) now returns
+    `permissionDecision: "ask"` rather than denying: irreversible, and the
+    decision belongs to the user rather than to ContextGuard. This check runs
+    before parsing, because `-exec … {} \;` does not parse and its previous
+    denial came from the parser rather than from any `find` rule.
+  - `sed -i` now runs. It was previously denied. In-place editing is
+    irreversible, but it is also a routine editing command, so prompting on it
+    would reintroduce exactly the friction this change removes. The host
+    permission system governs it.
+  - An unreadable hook payload now passes the command through instead of
+    denying, and `main()` gained a crash-open guard. A hook bug or host payload
+    change can no longer stop every Bash command.
+  - A missing `context-guard-trim-output` / `context-guard-sanitize-output`
+    wrapper now warns and runs the command unwrapped instead of blocking it.
+  - The only remaining denial is ContextGuard's own recursion guard for a
+    command carrying its execution wrapper. Its message names the tool, the
+    cause, and the remedy instead of an internal policy code.
+- Added `CONTEXT_GUARD_DISABLE=1`, which makes the Bash hook decline all
+  intervention before classification. This is the supported escape hatch from
+  the hook's command **rewriting**, which remains in place.
+- Fixed a routing gap where an active `~` prefix pushed an otherwise recognized
+  command out of the route table. `cat ~/.ssh/id_rsa` is now wrapped and
+  redacted like `cat /home/you/.ssh/id_rsa`. Tilde expansion applies to the
+  routing decision only; the emitted command is unchanged.
+
 ## [0.10.0] - 2026-08-31
 
 - Added an explicit, plan-hash-confirmed cleanup command for the deterministic

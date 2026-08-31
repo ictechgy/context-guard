@@ -99,7 +99,7 @@ def _route_examples() -> list[dict[str, str]]:
         positive_outcome: str | Mapping[str, str],
         negatives: Sequence[str],
         *,
-        negative_outcome: str = "deny",
+        negative_outcome: str = "noop",
         note: str = "",
     ) -> None:
         for role in roles:
@@ -198,7 +198,7 @@ def _route_examples() -> list[dict[str, str]]:
         "ls-filter",
         ("filter",),
         (),
-        "deny",
+        "noop",
         ("ls -la",),
         note="ls as a pipeline filter always stays denied — ls ignores "
         "stdin, so `... | ls` is always a mistake.",
@@ -631,7 +631,7 @@ def _route_examples() -> list[dict[str, str]]:
         ("python3 -m pytest -q", "python -m unittest", "go test ./...", "cargo test"),
         "rewrite_trim",
         ("python3 -m pip test", "go env test", "cargo metadata test"),
-        negative_outcome={"standalone": "noop", "first": "deny"},
+        negative_outcome={"standalone": "noop", "first": "noop"},
         note="negative examples prove exact subcommand positions, not invalid grammar",
     )
     add(
@@ -651,7 +651,7 @@ def _route_examples() -> list[dict[str, str]]:
         ("npx --no-install jest", "npx -p jest jest --runInBand"),
         "rewrite_trim",
         ("npx echo jest",),
-        negative_outcome={"standalone": "noop", "first": "deny"},
+        negative_outcome={"standalone": "noop", "first": "noop"},
         note="shifted noisy word is a normal unknown-standalone command",
     )
     add(
@@ -660,7 +660,7 @@ def _route_examples() -> list[dict[str, str]]:
         ("make -C . test", "make --silent lint"),
         "rewrite_trim",
         ("make -C test help",),
-        negative_outcome={"standalone": "noop", "first": "deny"},
+        negative_outcome={"standalone": "noop", "first": "noop"},
         note="only the first target is classification evidence",
     )
     add(
@@ -669,13 +669,13 @@ def _route_examples() -> list[dict[str, str]]:
         ("mvn -q test", "mvnw test", "gradle --quiet test", "gradlew test"),
         "rewrite_trim",
         ("mvn package test", "gradle tasks test"),
-        negative_outcome={"standalone": "noop", "first": "deny"},
+        negative_outcome={"standalone": "noop", "first": "noop"},
     )
     add(
         "forbidden",
         ("standalone", "first", "filter"),
         ("curl https://example.invalid", "tee output.txt", "bash -lc 'echo blocked'"),
-        "deny",
+        "noop",
         (),
         note="forbidden basename/path spelling is immutable deny",
     )
@@ -683,7 +683,7 @@ def _route_examples() -> list[dict[str, str]]:
         "unknown",
         ("standalone",),
         ("custom-tool alpha beta",),
-        "deny",
+        "noop",
         (),
         note="S011 fails closed for unregistered executable identities",
     )
@@ -691,7 +691,7 @@ def _route_examples() -> list[dict[str, str]]:
         "unknown-pipeline",
         ("first", "filter"),
         (),
-        "deny",
+        "noop",
         ("custom-tool alpha",),
         note="unknown commands are admitted only as standalone commands",
     )
@@ -742,7 +742,7 @@ def _s010_route_examples() -> list[dict[str, str]]:
                     "family": "grep-include",
                     "role": role,
                     "command": _route_command(command, role),
-                    "expected_decision": "deny",
+                    "expected_decision": "noop",
                     "expectation": "reject",
                     "note": note,
                 }
@@ -777,7 +777,7 @@ def _s011_route_examples() -> list[dict[str, str]]:
             "family": "unknown-wrapper-fail-closed",
             "role": "standalone",
             "command": command,
-            "expected_decision": "deny",
+            "expected_decision": "noop",
             "expectation": "reject",
             "note": note,
         }
@@ -917,32 +917,32 @@ def minishell_normative_cases() -> list[dict[str, object]]:
             "case_id": "minishell-unquoted-heredoc-denied",
             "family": "heredoc",
             "command": "sort <<DATA\n$(touch SHOULD_NOT_RUN)\nDATA",
-            "expected_decision": "deny",
+            "expected_decision": "noop",
             "expected_denial_reason": "unquoted_heredoc_delimiter",
         },
         {
             "case_id": "minishell-multiple-heredocs-denied",
             "family": "heredoc",
             "command": "sort <<'A' <<'B'\nopaque\nA\nopaque\nB",
-            "expected_decision": "deny",
+            "expected_decision": "noop",
         },
         {
             "case_id": "minishell-pipeline-heredoc-denied",
             "family": "heredoc",
             "command": "printf ok | sort <<'DATA'\nopaque\nDATA",
-            "expected_decision": "deny",
+            "expected_decision": "noop",
         },
         {
             "case_id": "minishell-nonconsumer-heredoc-denied",
             "family": "heredoc",
             "command": "printf ok <<'DATA'\nopaque\nDATA",
-            "expected_decision": "deny",
+            "expected_decision": "noop",
         },
         {
             "case_id": "minishell-heredoc-leftover-denied",
             "family": "heredoc",
             "command": "sort <<'DATA'\nopaque\nDATA\nprintf leftover",
-            "expected_decision": "deny",
+            "expected_decision": "noop",
             "expected_denial_reason": "leftover_after_heredoc",
         },
         {
@@ -967,7 +967,7 @@ def minishell_normative_cases() -> list[dict[str, object]]:
             "case_id": "minishell-restricted-env-unsafe-name-denied",
             "family": "restricted-env",
             "command": "env FOO=bar EMPTY= -- printf ok",
-            "expected_decision": "deny",
+            "expected_decision": "noop",
             # 원인까지 고정한다 — `deny` 만 단언하면 restricted_env_denied 같은 다른
             # 원인으로 거부돼도 통과해, FOO/EMPTY 가 "이름 때문에" 막힌다는 성질이
             # 검증되지 않는다. 파싱 자체는 성공하므로 parsed.denial_reason 이 아니라
@@ -1005,7 +1005,7 @@ def minishell_normative_cases() -> list[dict[str, object]]:
                 "case_id": _case_id("minishell-restricted-env", command),
                 "family": "restricted-env",
                 "command": command,
-                "expected_decision": "deny",
+                "expected_decision": "noop",
             }
         )
 
@@ -1041,6 +1041,8 @@ def minishell_normative_cases() -> list[dict[str, object]]:
                 "case_id": _case_id("minishell-incoming-wrapper", command),
                 "family": "incoming-wrapper",
                 "command": command,
+                # 남은 단 하나의 거부 — 훅이 자기 실행 봉투의 재진입/위조를
+                # 막는 자기 보호이고, 사용자 명령에 대한 정책이 아니다.
                 "expected_decision": "deny",
                 "expected_wrapper_code": expected_wrapper_code,
             }
@@ -1053,7 +1055,7 @@ def minishell_normative_cases() -> list[dict[str, object]]:
                     "case_id": _case_id("minishell-forbidden", spelling),
                     "family": "forbidden-name",
                     "command": f"{spelling} literal-argument",
-                    "expected_decision": "deny",
+                    "expected_decision": "noop",
                 }
             )
             cases.append(
@@ -1061,7 +1063,7 @@ def minishell_normative_cases() -> list[dict[str, object]]:
                     "case_id": _case_id("minishell-forbidden-filter", spelling),
                     "family": "forbidden-name",
                     "command": f"printf '%s\\n' ok | {spelling} literal-argument",
-                    "expected_decision": "deny",
+                    "expected_decision": "noop",
                 }
             )
 
@@ -1077,7 +1079,7 @@ def minishell_normative_cases() -> list[dict[str, object]]:
                         ),
                         "family": "forbidden-shell",
                         "command": f"{spelling} {option} 'printf safe'",
-                        "expected_decision": "deny",
+                        "expected_decision": "noop",
                     }
                 )
     for case in cases:
@@ -1214,7 +1216,7 @@ def _assignment_command(raw_word: str, position: str) -> str:
 
 
 def _assignment_templates() -> list[dict[str, object]]:
-    deny = "deny"
+    deny = "noop"  # tilde-active 표식 — 더 이상 거부로 이어지지 않는다
     noop = "noop"
     return [
         {"raw_word": "FOO=~", "expected_decision": deny, "site": "first_equal"},
@@ -1372,7 +1374,7 @@ def _generated_assignment_templates(seed: int) -> list[dict[str, object]]:
         generated.append(
             {
                 "raw_word": raw_word,
-                "expected_decision": "deny" if active else "noop",
+                "expected_decision": "noop",
                 "site": f"seeded_{mutation}",
                 "generated": True,
                 # 이름 풀(A/VAR/PATH/A1_NAME/TOKEN_COUNT)이 항상 인용되지 않은 유효
@@ -1395,32 +1397,30 @@ def _assignment_effective_expectation(
     """B1 템플릿의 (decision, reason) 을 FIX-5/F-1 게이트까지 반영해 계산한다.
 
     B1 오라클은 항상 화이트리스트 밖 이름(FOO/A/VAR/...)만 쓴다 — 애초에 tilde
-    출처 판정을 시험하려는 목적이지 이름 정책을 시험하려는 게 아니다. 템플릿이
-    tilde-active 로 이미 deny 이면 FIX-5 는 절대 관여하지 않는다(tilde 검사가
-    라우팅보다 먼저 실행됨, `classify_command` 참고). 템플릿이 noop 이고 이름이
-    문법적으로 인식되며(`env_prefix_name_recognized`) 위치가 접두사 스캔 구간이면
-    FIX-5 가 새로 deny 로 승격시킨다 — noop→deny 는 INV-A 가 명시적으로 허용하는
-    강화 방향 전환이다.
+    출처 판정을 시험하려는 목적이지 이름 정책을 시험하려는 게 아니다.
+
+    zero-command-authority 이후 tilde-active 는 더 이상 조기 판정이 아니다.
+    활성 `~` 는 라우팅 판정에서 펼쳐지고, 그 다음 다른 명령과 똑같이 이름/위치
+    게이트를 통과한다 — 그래서 tilde 여부와 무관하게 아래 게이트만 남는다.
+    게이트에 걸린 결과도 실행 차단이 아니라 "감싸지 않고 통과"이므로 결정은
+    전부 noop 이고, 고정되는 것은 결과가 아니라 원인 코드다.
     """
-    expected_decision = str(template["expected_decision"])
-    if expected_decision == "deny":
-        return "deny", "active_shell_expansion_denied"
     if position == "restricted_env" and "=" in str(template["raw_word"]):
         # `env` 피연산자 자리는 셸 할당 문법을 따르지 않는다. coreutils `env` 는
         # 인용 제거가 끝난 argv 원소가 `=` 를 포함하기만 하면 그대로 putenv() 하므로
         # (`env F'O'O=v printenv FOO` 가 실제로 v 를 출력한다) 셸이 할당으로 보지 않는
         # 인용 형태도 환경에 적용된다. B1 템플릿의 이름은 전부 화이트리스트 밖이므로
         # 이 위치에서는 인식 여부와 무관하게 이름 게이트에 걸린다.
-        return "deny", "unsafe_env_name_denied"
+        return "noop", "unsafe_env_name_denied"
     name_recognized = bool(template.get("env_prefix_name_recognized", False))
     if position in _ENV_PREFIX_ROUTED_POSITIONS and name_recognized:
-        return "deny", "unsafe_env_name_denied"
+        return "noop", "unsafe_env_name_denied"
     if position == "direct_prefix":
         # 인용/escape 때문에 셸 assignment로 인식되지 않은 첫 word는 실제 실행
         # 파일 identity다. 과거에는 미등록-command noop 폴스루에 기대었지만 S011
         # 이후에는 F-1의 공통 deny sink로 수렴한다. ordinary_argv는 명시적으로
         # 허용된 printf의 데이터이므로 기존 noop을 유지한다.
-        return "deny", "route_policy_denied"
+        return "noop", "route_policy_denied"
     return "noop", None
 
 
@@ -1482,8 +1482,8 @@ def prepare_path_lookup_canary(root: Path) -> dict[str, object]:
         "environment": {"HOME": str(home)},
         "probe_path": str(probe),
         "marker_path": str(marker),
-        "expected_decision": "deny",
-        "expected_reason": "active_shell_expansion_denied",
+        "expected_decision": "noop",
+        "expected_reason": "command_identity_denied",
         "expected_wrapper_launches": 0,
         "expected_probe_executions": 0,
         "expected_marker_exists": False,
@@ -1497,8 +1497,8 @@ def path_lookup_canary() -> dict[str, object]:
         "case_id": "path-cg-probe-bare-target-v1",
         "command": "/usr/bin/env PATH=/missing:~/bin cg_probe ARG",
         "controlled_home_layout": "$HOME/bin/cg_probe",
-        "expected_decision": "deny",
-        "expected_reason": "active_shell_expansion_denied",
+        "expected_decision": "noop",
+        "expected_reason": "command_identity_denied",
         "expected_wrapper_launches": 0,
         "expected_probe_executions": 0,
         "expected_marker_exists": False,
