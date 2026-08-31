@@ -46,13 +46,20 @@ estimates, and the same figures with sampling uncertainty in p propagated
 ### The ceiling is not a tunable number today
 
 `max_attempts_per_arm_unit` is **declared and validated, but never consumed by
-the harness.** Slot generation, the run loop, and the analyzer all hardcode
-attempt `0` and attempt `1` — for example the analyzer builds its retry set with
-`row["attempt"] == 1` and raises `"v2 analysis retry coverage is incomplete or
-replaced"` on anything else. Raising the constant alone therefore does not
-produce a third attempt; it only makes the preregistration misdescribe the
-protocol that actually runs, and any third attempt's tokens would fall outside
-the `C = sum(P for every consumed attempt through success)` cost formula.
+the scheduling, execution, or analysis paths.** Slot generation, the run loop,
+and the analyzer all hardcode attempt `0` and attempt `1` — for example the
+analyzer builds its retry set with `row["attempt"] == 1` and raises
+`"v2 analysis retry coverage is incomplete or replaced"` on anything else.
+
+To be precise, the field is not inert in every sense: the plan's raw bytes are
+hashed into `source_sha256`, so changing the value changes the study's identity
+and invalidates existing manifests and resume state. That makes bumping it the
+worst combination available — a new study identity with an unchanged protocol.
+
+Raising the constant alone therefore does not produce a third attempt; it only
+makes the preregistration misdescribe the protocol that actually runs, and any
+third attempt's tokens would fall outside the
+`C = sum(P for every consumed attempt through success)` cost formula.
 
 Changing the ceiling is consequently a harness change across those hardcoded
 sites, not a plan edit. It is deliberately **not** attempted here.
