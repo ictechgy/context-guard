@@ -20,7 +20,7 @@ are not used here.
 | `hook-event-evidence.json` | External evidence that every registered hook event exists in the provider CLI, with its collection method and boundary. |
 | `rehearsal/solutions.json` | Rehearsal-only scripted workspace writes for the fake provider. Never part of any fixture tree and never used by a real provider run. |
 
-## Retry budget, and why R9 was inconclusive
+## Why R9 was inconclusive, and what the retry ceiling actually is
 
 R9 ran the **v1** plan and stopped at `inconclusive`. The reason was not a
 ContextGuard result: a baseline arm-unit failed its initial attempt and its sole
@@ -31,69 +31,70 @@ v1's contract was all-or-nothing over 72 arm-units (12 tasks x 2 arms x 3
 repetitions). Treating R9's observed per-attempt valid-task-failure rate of
 3/31 = 9.7% as independent across units, a unit exhausts two attempts with
 probability 0.94%, and all 72 succeed with probability **50.8%**. The stopping
-rule was close to a coin flip before the study began.
+rule was close to a coin flip before the study began. That is a design property
+worth knowing before spending money, not a fact about the tool under test.
 
-### What raising the ceiling buys, per design
-
-v2 is a different design: three arms (108 arm-units), with
-`host_unmodified` vs `bash_reference_v1` as the primary contrast (72 units) and
-`legacy_trim` as diagnostic. v2 also does **not** halt on an incomplete pair —
-`missing_data` is `incomplete_primary_pair_is_descriptive_only_v1`. So a higher
-ceiling does not rescue v2 from a halt; it raises the chance that the contrasts
-are actually complete, and it is the lever any future all-or-nothing,
-claim-capable plan will need.
-
-Point estimate at p = 9.7%, and the same figure with the sampling uncertainty in
-p propagated (Beta(3.5, 28.5) posterior predictive):
+If the attempt ceiling could be raised, it would be the dominant lever. Point
+estimates, and the same figures with sampling uncertainty in p propagated
+(Beta(3.5, 28.5) posterior predictive):
 
 | Population | k=2 point | k=2 predictive | k=3 point | k=3 predictive |
 | --- | --- | --- | --- | --- |
-| Primary contrast (72 units) | 50.8% | 47.4% | 93.7% | 86.5% |
-| All three arms (108 units) | 36.2% | 37.1% | 90.7% | 81.6% |
+| v1 / v2 primary contrast (72 units) | 50.8% | 47.4% | 93.7% | 86.5% |
+| v2 all three arms (108 units) | 36.2% | 37.1% | 90.7% | 81.6% |
 
-`study-plan-v2.json` therefore declares `max_attempts_per_arm_unit = 3`. The
-point estimates are the optimistic end; the predictive column is the honest one.
+### The ceiling is not a tunable number today
 
-### Why this cannot launder a result
+`max_attempts_per_arm_unit` is **declared and validated, but never consumed by
+the harness.** Slot generation, the run loop, and the analyzer all hardcode
+attempt `0` and attempt `1` — for example the analyzer builds its retry set with
+`row["attempt"] == 1` and raises `"v2 analysis retry coverage is incomplete or
+replaced"` on anything else. Raising the constant alone therefore does not
+produce a third attempt; it only makes the preregistration misdescribe the
+protocol that actually runs, and any third attempt's tokens would fall outside
+the `C = sum(P for every consumed attempt through success)` cost formula.
 
-The arm cost metric is `C = sum(P for every consumed attempt through success)`.
-Every consumed attempt's tokens are charged to the arm that consumed them, so a
-retry makes an arm look **worse**, not better. Raising the ceiling therefore
-cannot flatter whichever arm burns retries. Exhausting the budget still leaves
-the unit incomplete.
+Changing the ceiling is consequently a harness change across those hardcoded
+sites, not a plan edit. It is deliberately **not** attempted here.
 
-### Caveats, and the precommitment that follows from them
+### Why more retries could not launder a result
+
+Worth recording for whoever does that work: the arm cost metric is
+`C = sum(P for every consumed attempt through success)`. Every consumed
+attempt's tokens are charged to the arm that consumed them, so a retry makes an
+arm look **worse**, not better. A higher ceiling cannot flatter whichever arm
+burns retries, and exhausting the budget still leaves the unit incomplete.
+
+### Caveats on the arithmetic above
 
 1. **Small sample.** 3/31 gives a Wilson 95% interval of [3.3%, 24.9%]. At the
    upper end, even three attempts reaches only about 33% for 72 units.
-2. **Independence is assumed, and it is the load-bearing assumption.** The
-   quantity a third attempt actually buys is P(success on attempt 3 | attempts 1
-   and 2 failed), and R9 contains no third attempts, so that number is
-   extrapolated, not measured. R9's aggregate (33 consumed / 30 successful / 3
-   valid failures) fits both "a 9.7% transient rate that doubled up on one unit"
-   and "one task the baseline cannot complete plus a lower transient rate". Under
-   the second, more attempts do not help at all.
+2. **Independence is the load-bearing assumption.** What a third attempt buys is
+   P(success on attempt 3 | attempts 1 and 2 failed), and R9 contains no third
+   attempts, so that number is extrapolated. R9's aggregate (33 consumed / 30
+   successful / 3 valid failures) fits both "a 9.7% transient rate that doubled
+   up on one unit" and "one task the baseline cannot complete plus a lower
+   transient rate". Under the second, more attempts do not help at all.
 3. **The evidence to tell them apart was not retained.** The public record is the
    sanitized aggregate; per-attempt outcomes were not committed.
 
-**Precommitment.** If a v2 unit exhausts three attempts, the next action is to
-investigate that task and its checker — not to raise the ceiling again. Future
-runs should also record per-attempt outcome, attempt index, and a failure class
-(checker rejection, crash, timeout, context overflow) so this question is
-answerable next time instead of extrapolated.
+**Precommitments for the next run.** Record per-attempt outcome, attempt index,
+and a failure class (checker rejection, crash, timeout, context overflow), so
+this question is answered by observation rather than extrapolation. If a unit
+exhausts its budget, investigate that task and its checker before considering a
+higher ceiling.
 
 **`study-plan.json` is deliberately unchanged.** It is the preregistration R9
 actually ran under, and editing it after seeing the result is exactly what the
-frozen-plan discipline exists to prevent. If v1 is ever executed again, treat its
+frozen-plan discipline exists to prevent. If v1 is executed again, treat its
 2-attempt ceiling as a known ~50% stopping-rule risk.
 
 ### Scope limit
 
-Raising the ceiling improves completeness. It does not make v2 answer the
-savings question: the plan declares `power.claim_capable = false`
-(`fixed_12_task_corpus_is_descriptive_only`). This is a completeness
-calculation about a descriptive artifact, not a power calculation. A publishable
-savings number needs a separate, claim-capable preregistration.
+None of this makes v2 answer the savings question: the plan declares
+`power.claim_capable = false` (`fixed_12_task_corpus_is_descriptive_only`), and
+the v2 analyzer hardcodes `descriptive_only: True, claim_allowed: False`. A
+publishable savings number needs a separate, claim-capable preregistration.
 
 ## Task coverage
 

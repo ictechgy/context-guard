@@ -10596,11 +10596,14 @@ BENCHMARK_STUDY_V2_ARMS = (
 BENCHMARK_STUDY_V2_PRIMARY_CONTRAST = ("host_unmodified", "bash_reference_v1")
 BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_RETRY_POLICY = "retain_valid_unfavorable_attempts_v1"
-# R9 는 arm-unit 하나가 시도를 모두 소진해 판정 불가로 끝났다. 상한을 3 으로
-# 두는 근거(관측 실패율, 완주 확률, 불확실성, 그리고 재시도가 결과를 세탁할 수
-# 없는 이유)는 `bench/token-savings-12task/README.md` 의 "Retry budget" 절에
-# 있다. 추정치는 표본이 작아 갱신될 수 있으므로 여기에 숫자를 박아 두지 않는다.
-BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT = 3
+# 이 값은 선언이 아니라 **하네스와 결합돼 있다**. 슬롯 생성, 실행 루프,
+# 분석기가 모두 attempt 0 과 attempt 1 만 하드코딩으로 다룬다(예: 분석기의
+# `row["attempt"] == 1` 재시도 집합). 따라서 이 상수만 올리면 사전등록이 실제
+# 실행 프로토콜을 거짓 기술하게 된다 — 세 번째 시도는 생성되지도, 비용에
+# 합산되지도 않는다. 상한을 바꾸려면 그 하드코딩된 지점들을 함께 일반화해야
+# 한다. 배경과 근거는 `bench/token-savings-12task/README.md` 의 "Retry budget"
+# 절에 있다.
+BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT = 2
 BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS = frozenset({
     "prompt", "output", "command", "command_hash", "command_sha256", "path",
     "project_id", "capabilities", "credential", "credentials", "token", "secret",
