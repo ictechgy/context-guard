@@ -10596,6 +10596,20 @@ BENCHMARK_STUDY_V2_ARMS = (
 BENCHMARK_STUDY_V2_PRIMARY_CONTRAST = ("host_unmodified", "bash_reference_v1")
 BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_RETRY_POLICY = "retain_valid_unfavorable_attempts_v1"
+# DO NOT raise this value on its own. The slot generators carry the attempt list
+# as a literal — `((0, "planned", initial), (1, "conditional", retry))` — and the
+# run loops and analyzers match it, so exactly two attempts per arm-unit are
+# generated no matter what the plan declares. Raising the constant alone makes
+# the preregistration misdescribe the protocol that actually runs. Changing the
+# ceiling means generalizing those literal sites together with this value.
+# `tests/test_benchmark_study_v2.py` pins the coupling: generated attempt indices
+# must equal `range(max_attempts_per_arm_unit)`.
+#
+# 이 상수만 올리면 안 된다. 슬롯 생성기가 시도 목록을 리터럴로 갖고 있어 계획이
+# 무엇을 선언하든 arm-unit 당 두 번만 생성된다. 근거와 배경은
+# `bench/token-savings-12task/README.md` 의
+# "Why R9 was inconclusive, and what the retry ceiling actually is" 절에 있다.
+BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT = 2
 BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS = frozenset({
     "prompt", "output", "command", "command_hash", "command_sha256", "path",
     "project_id", "capabilities", "credential", "credentials", "token", "secret",
@@ -10965,7 +10979,8 @@ def make_benchmark_study_v2_plan(
     plan = {
         "schema_version": BENCHMARK_STUDY_V2_PLAN_SCHEMA_VERSION,
         "arms": list(BENCHMARK_STUDY_V2_ARMS), "schedule_seed": schedule_seed,
-        "repetitions": 3, "max_attempts_per_arm_unit": 2,
+        "repetitions": 3,
+        "max_attempts_per_arm_unit": BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT,
         "retry_policy": BENCHMARK_STUDY_V2_RETRY_POLICY,
         "corpus_sha256": corpus_sha256, "checker_sha256": checker_sha256,
         "task_ids_sha256": task_ids_sha256,
@@ -11000,7 +11015,12 @@ def validate_benchmark_study_v2_plan(plan: Mapping[str, Any]) -> None:
     _benchmark_study_v2_seed(plan["schedule_seed"])
     if plan["arms"] != list(BENCHMARK_STUDY_V2_ARMS) or plan["primary_contrast"] != list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST) or plan["diagnostic_contrast"] != list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST):
         raise ValueError("v2 study arms or contrasts drifted")
-    if plan["repetitions"] != 3 or plan["max_attempts_per_arm_unit"] != 2 or plan["retry_policy"] != BENCHMARK_STUDY_V2_RETRY_POLICY:
+    if (
+        plan["repetitions"] != 3
+        or plan["max_attempts_per_arm_unit"]
+        != BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT
+        or plan["retry_policy"] != BENCHMARK_STUDY_V2_RETRY_POLICY
+    ):
         raise ValueError("v2 study retry contract drifted")
     if any(not isinstance(plan[key], str) or SHA256_HEX_PATTERN.fullmatch(plan[key]) is None for key in ("corpus_sha256", "checker_sha256", "task_ids_sha256")):
         raise ValueError("v2 corpus/checker/task-order binding is invalid")
