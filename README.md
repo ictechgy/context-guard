@@ -253,6 +253,15 @@ global, `npx`, source-checkout, Homebrew, or Claude marketplace-plugin layout
 keeps the existing Bash trim behavior and setup reports the reference route as
 unavailable.
 
+That requirement is deliberate rather than an oversight. Installing into the
+project anchors the Receipt bytes to the registry integrity value in the
+project's own lockfile — a root of trust outside the running ContextGuard — so a
+compromised update channel cannot swap the code that handles a project's
+captured output without a reinstall the project owner performs. A relaxation
+that replaced the install with a project-owned file naming a version was
+designed and rejected in review for losing exactly that anchor; see
+[`research/receipt-install-shape-boundary-20260831.md`](research/receipt-install-shape-boundary-20260831.md).
+
 ```bash
 npm install --save-exact @ictechgy/context-guard@0.10.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan

@@ -186,13 +186,39 @@ def verify_manifest_entries(manifest: object, repo_root: Path = REPO_ROOT) -> No
             raise VerificationError(f"protected surface is unavailable: {path_text}") from exc
         if not stat.S_ISREG(metadata.st_mode):
             raise VerificationError(f"protected surface type drifted: {path_text}")
-        if entry["mode"] != portable_regular_mode(metadata.st_mode):
-            raise VerificationError(f"protected surface mode drifted: {path_text}")
+        observed_mode = portable_regular_mode(metadata.st_mode)
+        if entry["mode"] != observed_mode:
+            raise VerificationError(
+                f"protected surface mode drifted: {path_text}\n"
+                f"  expected: {entry['mode']}\n"
+                f"  observed: {observed_mode}"
+            )
         expected_sha256 = POST_STAGE2_PROTECTED_SHA256.get(path_text, entry["sha256"])
-        if expected_sha256 != hashlib.sha256(path.read_bytes()).hexdigest():
-            raise VerificationError(f"protected surface hash drifted: {path_text}")
-        if type(entry["tracked"]) is not bool or entry["tracked"] != (path_text in tracked):
-            raise VerificationError(f"protected surface tracked status drifted: {path_text}")
+        observed_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected_sha256 != observed_sha256:
+            # 관측값과 핀 위치를 함께 알려 준다. 값을 자동으로 갱신하지는 않는다 —
+            # 핀은 사람이 검토하라고 있는 것이고, 자동 갱신은 그 검토를 우회시킨다.
+            # 다만 같은 다이제스트가 여러 파일에 박혀 있어, 어디를 봐야 하는지
+            # 알려 주지 않으면 매번 저장소를 뒤져야 한다.
+            # 관측값을 함께 낸다. 검토에 필요한 것은 "무엇이 어떻게 달라졌는가"
+            # 이지 "어디를 고쳐라"가 아니다 — 후자를 적으면 빨간 테스트를 본
+            # 자동화가 그대로 따라 하는 절차서가 된다. 이 저장소의 CI 출력은
+            # 에이전트가 읽으며, 변조 상황이라면 그 절차는 변조된 바이트에 핀을
+            # 맞추라는 지시가 된다. 갱신 위치는 정책 문서가 안내한다.
+            raise VerificationError(
+                f"protected surface hash drifted: {path_text}\n"
+                f"  expected: {expected_sha256}\n"
+                f"  observed: {observed_sha256}\n"
+                "  this digest is pinned in more than one place and updating it "
+                "requires human review; see docs/release-runbook.md"
+            )
+        observed_tracked = path_text in tracked
+        if type(entry["tracked"]) is not bool or entry["tracked"] != observed_tracked:
+            raise VerificationError(
+                f"protected surface tracked status drifted: {path_text}\n"
+                f"  expected: {entry['tracked']!r}\n"
+                f"  observed: {observed_tracked!r}"
+            )
 
 
 def verify_unsupported_semantics(repo_root: Path = REPO_ROOT) -> None:

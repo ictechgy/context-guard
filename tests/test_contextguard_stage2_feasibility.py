@@ -157,6 +157,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/lib/context_pack_scanning.py",
         "plugins/context-guard/lib/context_pack_selection.py",
         "research/bash-hook-zero-command-authority-20260831.md",
+        "research/receipt-install-shape-boundary-20260831.md",
         "research/benchmark-plan.md",
         "research/comparator-mechanism-acceptance-matrix.md",
         "research/forge-token-savings-brainstorm-20260804.md",
@@ -733,7 +734,7 @@ RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular',
  {'file_type': 'regular',
   'mode': '0644',
   'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py',
-  'sha256': '219ccdba62c437e821ebc11547613f642d8cd9c65cdccd6285f4082cacc597b9'},
+  'sha256': '5969d1a75e85f24dc5a5d6d1ecb005da4f169ac61af317c2a858f3c11204d245'},
  {'file_type': 'regular',
   'mode': '0644',
   'path': 'packages/context-guard-receipt/tests/adversarial/__init__.py',
@@ -1183,11 +1184,59 @@ def validate_production_surface_inventory(inventory: list[dict[str, str]]) -> No
         raise AssertionError("production inventory path/type/mode digest drifted")
 
 
+def _inventory_drift_detail(
+    actual: list[dict[str, str]],
+    expected: list[dict[str, str]],
+) -> str:
+    """드리프트한 항목과 변한 필드를 사람이 읽을 수 있게 요약한다.
+
+    이 검사는 원래 "무언가 바뀌었다"만 알려 주어, 어느 항목인지 찾으려면
+    인벤토리를 손으로 diff 해야 했다. 핀은 사람이 검토하라고 있는 것이므로
+    값을 자동으로 갱신하지는 않는다 — 다만 무엇을 검토해야 하는지는 알려 준다.
+    """
+    # 경로를 키로 접으면 중복 항목이 조용히 사라진다. 무결성 도구에서 그
+    # 가장자리 케이스가 곧 제품이므로 중복을 먼저 드러낸다.
+    duplicate_lines: list[str] = []
+    for label, entries in (("actual", actual), ("pinned", expected)):
+        seen: dict[str, int] = {}
+        for entry in entries:
+            seen[entry["path"]] = seen.get(entry["path"], 0) + 1
+        for path, count in sorted(seen.items()):
+            if count > 1:
+                duplicate_lines.append(f"  ! duplicate in {label}: {path} x{count}")
+    actual_by_path = {entry["path"]: entry for entry in actual}
+    expected_by_path = {entry["path"]: entry for entry in expected}
+    lines: list[str] = list(duplicate_lines)
+    for path in sorted(set(actual_by_path) - set(expected_by_path)):
+        lines.append(f"  + added: {path}")
+    for path in sorted(set(expected_by_path) - set(actual_by_path)):
+        lines.append(f"  - removed: {path}")
+    for path in sorted(set(actual_by_path) & set(expected_by_path)):
+        was, now = expected_by_path[path], actual_by_path[path]
+        if was == now:
+            continue
+        fields = sorted(
+            key for key in set(was) | set(now) if was.get(key) != now.get(key)
+        )
+        lines.append(f"  ~ changed: {path} ({', '.join(fields)})")
+        for key in fields:
+            lines.append(f"      {key}: {was.get(key)!r} -> {now.get(key)!r}")
+    return "\n".join(lines) or "  (ordering changed without field changes)"
+
+
 def validate_receipt_companion_surface_inventory(inventory: list[dict[str, str]]) -> None:
     if len(inventory) != EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT:
-        raise AssertionError("receipt companion inventory path count drifted")
+        raise AssertionError(
+            "receipt companion inventory path count drifted: "
+            f"{len(inventory)} != {EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT}\n"
+            + _inventory_drift_detail(inventory, RECEIPT_COMPANION_INVENTORY)
+        )
     if inventory != RECEIPT_COMPANION_INVENTORY:
-        raise AssertionError("receipt companion inventory path/type/mode/hash drifted")
+        raise AssertionError(
+            "receipt companion inventory path/type/mode/hash drifted; "
+            "updating the pin requires human review:\n"
+            + _inventory_drift_detail(inventory, RECEIPT_COMPANION_INVENTORY)
+        )
 
 
 def validate_stage2_historical_baseline_identity(
