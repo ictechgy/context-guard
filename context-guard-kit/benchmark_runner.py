@@ -10596,13 +10596,19 @@ BENCHMARK_STUDY_V2_ARMS = (
 BENCHMARK_STUDY_V2_PRIMARY_CONTRAST = ("host_unmodified", "bash_reference_v1")
 BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_RETRY_POLICY = "retain_valid_unfavorable_attempts_v1"
-# 이 값은 선언이 아니라 **하네스와 결합돼 있다**. 슬롯 생성, 실행 루프,
-# 분석기가 모두 attempt 0 과 attempt 1 만 하드코딩으로 다룬다(예: 분석기의
-# `row["attempt"] == 1` 재시도 집합). 따라서 이 상수만 올리면 사전등록이 실제
-# 실행 프로토콜을 거짓 기술하게 된다 — 세 번째 시도는 생성되지도, 비용에
-# 합산되지도 않는다. 상한을 바꾸려면 그 하드코딩된 지점들을 함께 일반화해야
-# 한다. 배경과 근거는 `bench/token-savings-12task/README.md` 의 "Retry budget"
-# 절에 있다.
+# DO NOT raise this value on its own. The slot generators carry the attempt list
+# as a literal — `((0, "planned", initial), (1, "conditional", retry))` — and the
+# run loops and analyzers match it, so exactly two attempts per arm-unit are
+# generated no matter what the plan declares. Raising the constant alone makes
+# the preregistration misdescribe the protocol that actually runs. Changing the
+# ceiling means generalizing those literal sites together with this value.
+# `tests/test_benchmark_study_v2.py` pins the coupling: generated attempt indices
+# must equal `range(max_attempts_per_arm_unit)`.
+#
+# 이 상수만 올리면 안 된다. 슬롯 생성기가 시도 목록을 리터럴로 갖고 있어 계획이
+# 무엇을 선언하든 arm-unit 당 두 번만 생성된다. 근거와 배경은
+# `bench/token-savings-12task/README.md` 의
+# "Why R9 was inconclusive, and what the retry ceiling actually is" 절에 있다.
 BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT = 2
 BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS = frozenset({
     "prompt", "output", "command", "command_hash", "command_sha256", "path",

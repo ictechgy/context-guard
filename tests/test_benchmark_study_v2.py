@@ -14,6 +14,7 @@ import subprocess
 import sys
 import stat
 import tempfile
+import pathlib
 import unittest
 from unittest import mock
 
@@ -134,6 +135,51 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
         self.assertEqual(
             [slot["arm"] for slot in slots[:3]], schedule[0]["arm_order"]
         )
+
+    def test_declared_attempt_budget_equals_the_realized_attempt_indices(self) -> None:
+        """사전등록이 선언한 시도 예산과 실제 생성되는 시도가 일치해야 한다.
+
+        `max_attempts_per_arm_unit` 은 계획에 선언되지만 슬롯 생성기는 시도
+        목록을 리터럴 튜플 `((0, ...), (1, ...))` 로 갖고 있어 그 값을 보지
+        않는다. 그래서 상수만 올리면 사전등록이 실제 실행 프로토콜을 조용히
+        거짓 기술하게 된다 — 이 테스트가 그 상태를 잡는다.
+
+        숫자가 아니라 결합을 고정한다: 하네스를 일반화해 세 번째 시도를 실제로
+        생성하게 되면 예산과 함께 이 단언도 자연히 통과한다.
+        """
+        tasks = [f"task-{index:02d}" for index in range(12)]
+        schedule = self.runner.generate_benchmark_study_v2_schedule(
+            tasks, repetitions=3, schedule_seed="0x5632000000000001"
+        )
+        slots = self.runner.generate_benchmark_study_v2_slots(
+            tasks, schedule, candidate_hash="a" * 64, namespace="ts12-suite-v2"
+        )
+        declared = self.runner.BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT
+        self.assertEqual(
+            {slot["attempt"] for slot in slots},
+            set(range(declared)),
+            "declared attempt budget does not match the attempts the harness "
+            "actually generates; the preregistration would misdescribe the run",
+        )
+        by_unit: dict[tuple[str, int, str], set[int]] = {}
+        for slot in slots:
+            key = (slot["task_id"], slot["repetition"], slot["arm"])
+            by_unit.setdefault(key, set()).add(slot["attempt"])
+        for key, attempts in by_unit.items():
+            self.assertEqual(attempts, set(range(declared)), key)
+
+    def test_analyzer_refuses_attempts_beyond_the_declared_budget(self) -> None:
+        """예산 밖 시도가 조용히 무시되지 않고 큰 소리로 거부되는지 고정한다.
+
+        분석기는 재시도 집합을 `row["attempt"] == 1` 로 만든다. 세 번째 시도가
+        생겨도 비용 합산에 들어가지 않으므로, 그 상태는 통과가 아니라 실패여야
+        한다. 하네스를 일반화할 때 이 단언을 함께 고쳐야 한다는 표식이기도 하다.
+        """
+        source = pathlib.Path(
+            "context-guard-kit/benchmark_runner.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('retry_rows = [row for row in terminal_rows if row["attempt"] == 1]', source)
+        self.assertIn("v2 analysis retry coverage is incomplete or replaced", source)
 
     def test_primary_contrast_excludes_diagnostic_arm(self) -> None:
         result = self.runner.benchmark_study_v2_contrasts(

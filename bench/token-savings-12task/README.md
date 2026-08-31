@@ -22,68 +22,113 @@ are not used here.
 
 ## Why R9 was inconclusive, and what the retry ceiling actually is
 
-R9 ran the **v1** plan and stopped at `inconclusive`. The reason was not a
-ContextGuard result: a baseline arm-unit failed its initial attempt and its sole
-fixed-policy retry, so the complete paired population the v1 contract requires
-became unreachable.
+R9 ran the **v1** plan and stopped at `inconclusive`. A baseline arm-unit failed
+its initial attempt and its sole fixed-policy retry, so the complete paired
+population the v1 contract requires became unreachable.
+
+### The rate, and where its denominator comes from
+
+R9's published aggregate is 33 consumed attempts = 31 initial + 2
+fixed-policy retries = 30 successful + 3 valid task failures. The per-attempt
+failure rate is therefore **3/33 = 9.1%** — failures over *all consumed
+attempts*. (An earlier revision of this section divided the 3 failures by the 31
+*initial* attempts; that mixed two populations and is corrected here.)
+
+### Ex-ante completion probability, under an independence model
 
 v1's contract was all-or-nothing over 72 arm-units (12 tasks x 2 arms x 3
-repetitions). Treating R9's observed per-attempt valid-task-failure rate of
-3/31 = 9.7% as independent across units, a unit exhausts two attempts with
-probability 0.94%, and all 72 succeed with probability **50.8%**. The stopping
-rule was close to a coin flip before the study began. That is a design property
-worth knowing before spending money, not a fact about the tool under test.
+repetitions). Treating attempt failures as independent with p = 9.1%, a unit
+exhausts two attempts with probability 0.83%, and all 72 succeed with
+probability **55.0%**.
 
-If the attempt ceiling could be raised, it would be the dominant lever. Point
-estimates, and the same figures with sampling uncertainty in p propagated
-(Beta(3.5, 28.5) posterior predictive):
+That is a point estimate, and it is derived from R9's own failures rather than
+known in advance. Propagating the sampling uncertainty in p (Wilson 95%
+[3.1%, 23.6%]) puts the same quantity anywhere from **1.6% to 93.1%**. The
+defensible statement is that the design carried a large, unquantified ex-ante
+risk of ending without a verdict — not that it was precisely a coin flip.
+
+If the attempt ceiling were tunable it would be the dominant lever. Point
+estimates, and posterior-predictive figures integrating over p:
 
 | Population | k=2 point | k=2 predictive | k=3 point | k=3 predictive |
 | --- | --- | --- | --- | --- |
-| v1 / v2 primary contrast (72 units) | 50.8% | 47.4% | 93.7% | 86.5% |
-| v2 all three arms (108 units) | 36.2% | 37.1% | 90.7% | 81.6% |
+| v1 / v2 primary contrast (72 units) | 55.0% | 50.6% | 94.7% | 88.3% |
+| v2 all three arms (108 units) | 40.8% | 40.1% | 92.2% | 83.9% |
+
+The predictive column integrates `(1 - p^k)^n` over a Beta(3.5, 30.5) posterior
+— a Jeffreys Beta(0.5, 0.5) prior updated with R9's 3 failures and 30 successes
+— by Monte Carlo with 400,000 draws, seed `20260831`. The point column is the
+same expression evaluated at p = 3/33.
 
 ### The ceiling is not a tunable number today
 
-`max_attempts_per_arm_unit` is **declared and validated, but never consumed by
-the scheduling, execution, or analysis paths.** Slot generation, the run loop,
-and the analyzer all hardcode attempt `0` and attempt `1` — for example the
-analyzer builds its retry set with `row["attempt"] == 1` and raises
-`"v2 analysis retry coverage is incomplete or replaced"` on anything else.
+`max_attempts_per_arm_unit` is declared in the plan and checked by the
+validator, but the slot generators do not read it. Both the v1 and v2 generators
+carry the attempt list as a **literal**:
 
-To be precise, the field is not inert in every sense: the plan's raw bytes are
-hashed into `source_sha256`, so changing the value changes the study's identity
-and invalidates existing manifests and resume state. That makes bumping it the
-worst combination available — a new study identity with an unchanged protocol.
+```python
+for attempt, state, destination in ((0, "planned", initial), (1, "conditional", retry)):
+```
 
-Raising the constant alone therefore does not produce a third attempt; it only
-makes the preregistration misdescribe the protocol that actually runs, and any
-third attempt's tokens would fall outside the
-`C = sum(P for every consumed attempt through success)` cost formula.
+The run loops and analyzers match: the v2 analyzer builds its retry set with
+`row["attempt"] == 1` and raises `"v2 analysis retry coverage is incomplete or
+replaced"` on anything else. So exactly two attempts per arm-unit are generated
+regardless of what the plan declares.
 
-Changing the ceiling is consequently a harness change across those hardcoded
-sites, not a plan edit. It is deliberately **not** attempted here.
+The field is not inert in every sense: the plan's raw bytes are hashed into
+`source_sha256`, so changing the value changes the study's identity and
+invalidates existing manifests and resume state. That makes bumping it the worst
+combination available — a new study identity with an unchanged protocol.
 
-### Why more retries could not launder a result
+Raising the constant alone therefore does not produce a third attempt; it makes
+the preregistration misdescribe the protocol that actually runs. Changing the
+ceiling is a harness change across those literal sites, and is deliberately
+**not** attempted here.
 
-Worth recording for whoever does that work: the arm cost metric is
-`C = sum(P for every consumed attempt through success)`. Every consumed
-attempt's tokens are charged to the arm that consumed them, so a retry makes an
-arm look **worse**, not better. A higher ceiling cannot flatter whichever arm
-burns retries, and exhausting the budget still leaves the unit incomplete.
+`tests/test_benchmark_study_v2.py` now pins the coupling directly: the set of
+generated attempt indices must equal `range(max_attempts_per_arm_unit)`. That
+assertion fails if the constant is raised without the harness work, and passes
+again once the harness genuinely emits the extra attempt.
 
-### Caveats on the arithmetic above
+### What the cost formula does and does not rule out
 
-1. **Small sample.** 3/31 gives a Wilson 95% interval of [3.3%, 24.9%]. At the
-   upper end, even three attempts reaches only about 33% for 72 units.
+The arm cost metric is `C = sum(P for every consumed attempt through success)`,
+so every consumed attempt's tokens are charged to the arm that consumed them. A
+retry therefore raises the retrying arm's own C.
+
+That is narrower than "retries cannot affect the result". It does **not** cover:
+
+- **contrast-level transfer** — R9's exhausting unit was in the *baseline* arm;
+  retries there inflate baseline C, which moves a treatment-minus-baseline
+  contrast in the treatment's favour;
+- **estimands other than C** — success- or quality-based statistics are not
+  protected by this argument;
+- **population composition** — a higher ceiling converts would-be-incomplete
+  units into completed ones, changing which units are analyzed.
+
+Whoever raises the ceiling needs to address those three, not just cite the cost
+formula.
+
+### Caveats on the arithmetic
+
+1. **Small sample.** 3/33 gives a Wilson 95% interval of [3.1%, 23.6%]. At the
+   upper end even three attempts reaches only about 39% for 72 units.
 2. **Independence is the load-bearing assumption.** What a third attempt buys is
    P(success on attempt 3 | attempts 1 and 2 failed), and R9 contains no third
-   attempts, so that number is extrapolated. R9's aggregate (33 consumed / 30
-   successful / 3 valid failures) fits both "a 9.7% transient rate that doubled
-   up on one unit" and "one task the baseline cannot complete plus a lower
-   transient rate". Under the second, more attempts do not help at all.
-3. **The evidence to tell them apart was not retained.** The public record is the
-   sanitized aggregate; per-attempt outcomes were not committed.
+   attempts, so that number is extrapolated. R9's aggregate fits both "a ~9%
+   transient rate that doubled up on one unit" and "one task the baseline cannot
+   complete plus a lower transient rate". Under the second, more attempts do not
+   help under v1's all-or-nothing rule — though a redesigned stopping rule could
+   still salvage partial data.
+3. **Homogeneity across arms is assumed.** One pooled p is applied to baseline
+   and treatment units alike; if the failures concentrate in one arm that is an
+   unstated simplification.
+4. **The evidence to settle any of this was not retained.** The public record is
+   the sanitized aggregate; per-attempt outcomes were not committed.
+
+Note that caveat 2's second branch *would* be a fact about the tool under test,
+so the framing "R9's verdict says nothing about ContextGuard" is only safe for
+the transient branch. Which branch holds is unresolved.
 
 **Precommitments for the next run.** Record per-attempt outcome, attempt index,
 and a failure class (checker rejection, crash, timeout, context overflow), so
@@ -93,8 +138,7 @@ higher ceiling.
 
 **`study-plan.json` is deliberately unchanged.** It is the preregistration R9
 actually ran under, and editing it after seeing the result is exactly what the
-frozen-plan discipline exists to prevent. If v1 is executed again, treat its
-2-attempt ceiling as a known ~50% stopping-rule risk.
+frozen-plan discipline exists to prevent.
 
 ### Scope limit
 
