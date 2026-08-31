@@ -137,6 +137,97 @@ class BashReferenceV1Tests(unittest.TestCase):
             self.assertIsNotNone(adapter)
             self.assertEqual(reason, "receipt_adapter_available")
 
+    def test_non_project_install_shapes_are_refused_with_their_own_cause(self):
+        """프로젝트 밖 설치 형태는 전부 거부되며, 원인까지 고정한다.
+
+        `receipt_source_or_plugin_only` 는 정책 소스에만 존재했고 테스트도
+        문서도 없었다. fail-closed 경로는 검증하지 않으면 썩는다 — 조건이
+        뒤집혀도 조용히 배포된다. 결과만이 아니라 원인을 함께 고정해야,
+        엉뚱한 이유로 실패하게 만드는 리팩터가 이 테스트를 통과하지 못한다.
+
+        세 형태 모두 exact-slice 회수를 쓸 수 없고 legacy trim 으로 폴백한다.
+        이는 현재 의도된 경계이며, 완화 설계는 보안 리뷰에서 반려됐다 —
+        `research/receipt-install-shape-boundary-20260831.md` 참고.
+        """
+        layouts = {
+            # 전역 npm: 정책 파일이 프로젝트 밖 prefix 에 있다.
+            "global-npm": lambda tmp: (
+                Path(tmp) / "project",
+                Path(tmp) / "usr" / "local" / "lib" / "node_modules"
+                / "@ictechgy" / "context-guard",
+            ),
+            # Homebrew: Cellar prefix. 역시 프로젝트 밖이다.
+            "homebrew": lambda tmp: (
+                Path(tmp) / "project",
+                Path(tmp) / "opt" / "homebrew" / "Cellar" / "context-guard"
+                / "0.10.0" / "libexec" / "node_modules"
+                / "@ictechgy" / "context-guard",
+            ),
+            # 소스 체크아웃/플러그인: node_modules 계층 자체가 없다.
+            "source-checkout": lambda tmp: (
+                Path(tmp) / "project",
+                Path(tmp) / "checkout" / "plugins" / "context-guard",
+            ),
+        }
+        for name, build in layouts.items():
+            with self.subTest(layout=name), tempfile.TemporaryDirectory() as tmp:
+                project, package_root = build(tmp)
+                project.mkdir(parents=True)
+                (project / "package.json").write_text(
+                    json.dumps({"name": "customer-application"}), encoding="utf-8"
+                )
+                policy_path = (
+                    package_root / "plugins" / "context-guard" / "bin"
+                    / "bash_reference_policy.py"
+                )
+                policy_path.parent.mkdir(parents=True)
+                shutil.copy2(
+                    ROOT / "context-guard-kit" / "bash_reference_policy.py", policy_path
+                )
+                (package_root / "package.json").write_text(
+                    json.dumps({
+                        "name": "@ictechgy/context-guard", "version": "0.10.0",
+                        "dependencies": {"@ictechgy/context-guard-receipt": "0.4.0"},
+                    }),
+                    encoding="utf-8",
+                )
+                policy = load_policy(policy_path)
+                adapter, reason = policy.discover_adapter(project.resolve())
+                self.assertIsNone(adapter)
+                self.assertEqual(reason, "receipt_source_or_plugin_only")
+
+    def test_project_local_shape_is_what_distinguishes_an_accepted_install(self):
+        """거부 테스트가 공허하지 않음을 보인다 — 위치만 바꾸면 통과한다.
+
+        위 테스트의 레이아웃과 같은 패키지 내용을 프로젝트 안으로 옮기면
+        `receipt_source_or_plugin_only` 를 넘어선다. 즉 거부의 원인이 내용이
+        아니라 위치임이 고정된다.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp).resolve()
+            (project / "package.json").write_text(
+                json.dumps({"name": "customer-application"}), encoding="utf-8"
+            )
+            package_root = project / "node_modules" / "@ictechgy" / "context-guard"
+            policy_path = (
+                package_root / "plugins" / "context-guard" / "bin"
+                / "bash_reference_policy.py"
+            )
+            policy_path.parent.mkdir(parents=True)
+            shutil.copy2(
+                ROOT / "context-guard-kit" / "bash_reference_policy.py", policy_path
+            )
+            (package_root / "package.json").write_text(
+                json.dumps({
+                    "name": "@ictechgy/context-guard", "version": "0.10.0",
+                    "dependencies": {"@ictechgy/context-guard-receipt": "0.4.0"},
+                }),
+                encoding="utf-8",
+            )
+            policy = load_policy(policy_path)
+            _adapter, reason = policy.discover_adapter(project)
+            self.assertNotEqual(reason, "receipt_source_or_plugin_only")
+
     def test_resolver_uses_installed_context_guard_nested_exact_receipt(self):
         """npm's nested dependency layout resolves from the installed package first."""
         with tempfile.TemporaryDirectory() as tmp:

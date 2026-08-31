@@ -157,6 +157,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/lib/context_pack_scanning.py",
         "plugins/context-guard/lib/context_pack_selection.py",
         "research/bash-hook-zero-command-authority-20260831.md",
+        "research/receipt-install-shape-boundary-20260831.md",
         "research/benchmark-plan.md",
         "research/comparator-mechanism-acceptance-matrix.md",
         "research/forge-token-savings-brainstorm-20260804.md",
