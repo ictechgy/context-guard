@@ -189,8 +189,27 @@ def verify_manifest_entries(manifest: object, repo_root: Path = REPO_ROOT) -> No
         if entry["mode"] != portable_regular_mode(metadata.st_mode):
             raise VerificationError(f"protected surface mode drifted: {path_text}")
         expected_sha256 = POST_STAGE2_PROTECTED_SHA256.get(path_text, entry["sha256"])
-        if expected_sha256 != hashlib.sha256(path.read_bytes()).hexdigest():
-            raise VerificationError(f"protected surface hash drifted: {path_text}")
+        observed_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected_sha256 != observed_sha256:
+            # 관측값과 핀 위치를 함께 알려 준다. 값을 자동으로 갱신하지는 않는다 —
+            # 핀은 사람이 검토하라고 있는 것이고, 자동 갱신은 그 검토를 우회시킨다.
+            # 다만 같은 다이제스트가 여러 파일에 박혀 있어, 어디를 봐야 하는지
+            # 알려 주지 않으면 매번 저장소를 뒤져야 한다.
+            raise VerificationError(
+                f"protected surface hash drifted: {path_text}\n"
+                f"  expected: {expected_sha256}\n"
+                f"  observed: {observed_sha256}\n"
+                "  after reviewing the change, update this digest wherever it is "
+                "pinned; it is normally pinned in more than one place:\n"
+                "    tests/test_contextguard_stage2_protected_surfaces.py "
+                "(POST_STAGE2_PROTECTED_SHA256)\n"
+                "    packages/context-guard-receipt/scripts/"
+                "verify_protected_surfaces.py\n"
+                "    packages/context-guard-receipt/tests/contract/test_boundary.py\n"
+                "  changing files under packages/context-guard-receipt/ then also "
+                "drifts RECEIPT_COMPANION_INVENTORY in "
+                "tests/test_contextguard_stage2_feasibility.py"
+            )
         if type(entry["tracked"]) is not bool or entry["tracked"] != (path_text in tracked):
             raise VerificationError(f"protected surface tracked status drifted: {path_text}")
 

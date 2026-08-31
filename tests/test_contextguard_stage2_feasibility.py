@@ -1184,11 +1184,50 @@ def validate_production_surface_inventory(inventory: list[dict[str, str]]) -> No
         raise AssertionError("production inventory path/type/mode digest drifted")
 
 
+def _inventory_drift_detail(
+    actual: list[dict[str, str]],
+    expected: list[dict[str, str]],
+) -> str:
+    """드리프트한 항목과 변한 필드를 사람이 읽을 수 있게 요약한다.
+
+    이 검사는 원래 "무언가 바뀌었다"만 알려 주어, 어느 항목인지 찾으려면
+    인벤토리를 손으로 diff 해야 했다. 핀은 사람이 검토하라고 있는 것이므로
+    값을 자동으로 갱신하지는 않는다 — 다만 무엇을 검토해야 하는지는 알려 준다.
+    """
+    actual_by_path = {entry["path"]: entry for entry in actual}
+    expected_by_path = {entry["path"]: entry for entry in expected}
+    lines: list[str] = []
+    for path in sorted(set(actual_by_path) - set(expected_by_path)):
+        lines.append(f"  + added: {path}")
+    for path in sorted(set(expected_by_path) - set(actual_by_path)):
+        lines.append(f"  - removed: {path}")
+    for path in sorted(set(actual_by_path) & set(expected_by_path)):
+        was, now = expected_by_path[path], actual_by_path[path]
+        if was == now:
+            continue
+        fields = sorted(
+            key for key in set(was) | set(now) if was.get(key) != now.get(key)
+        )
+        lines.append(f"  ~ changed: {path} ({', '.join(fields)})")
+        for key in fields:
+            lines.append(f"      {key}: {was.get(key)!r} -> {now.get(key)!r}")
+    return "\n".join(lines) or "  (ordering changed without field changes)"
+
+
 def validate_receipt_companion_surface_inventory(inventory: list[dict[str, str]]) -> None:
     if len(inventory) != EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT:
-        raise AssertionError("receipt companion inventory path count drifted")
+        raise AssertionError(
+            "receipt companion inventory path count drifted: "
+            f"{len(inventory)} != {EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT}\n"
+            + _inventory_drift_detail(inventory, RECEIPT_COMPANION_INVENTORY)
+        )
     if inventory != RECEIPT_COMPANION_INVENTORY:
-        raise AssertionError("receipt companion inventory path/type/mode/hash drifted")
+        raise AssertionError(
+            "receipt companion inventory path/type/mode/hash drifted. Review each "
+            "entry below, then update RECEIPT_COMPANION_INVENTORY in "
+            "tests/test_contextguard_stage2_feasibility.py:\n"
+            + _inventory_drift_detail(inventory, RECEIPT_COMPANION_INVENTORY)
+        )
 
 
 def validate_stage2_historical_baseline_identity(
