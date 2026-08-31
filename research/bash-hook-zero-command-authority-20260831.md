@@ -250,33 +250,42 @@ ContextGuard's Bash hook entirely.
   `decline_reason`, so diagnostics and tests can assert *why* a wrap was declined
   without asserting that execution was blocked.
 
-## Known blocker: Gate-B re-blessing
+## Gate-B: resolved by narrowing, not by re-blessing
 
-`scripts/verify_gate_b_rollback.py` fails on this change:
+`scripts/verify_gate_b_rollback.py` initially failed on this change:
 
 ```
 component paths changed after durable reapplication:
 ['tests/test_context_guard_kit.py']
 ```
 
-`tests/test_context_guard_kit.py` is a member of `SHARED_INTEGRATION_PATHS`, so
-the proof forbids it changing after the active generation's shared-integration
-commit. Changing it legitimately requires appending a generation — a four-commit
-reapply sequence plus a `Generation` record and an appended fingerprint.
+That path was a member of `SHARED_INTEGRATION_PATHS`, and it was the *only*
+component path this change touches. It is not avoidable by moving code: the
+migrated tests that asserted the old deny behaviour live in that file.
 
-This is not avoidable by moving code: the eight migrated tests that asserted the
-old deny behaviour live in that file.
+The release runbook's own step 1 says to prefer the cheaper options — "splitting
+a large frozen test file, or narrowing the frozen path set for a future
+generation" — over a routine re-bless. Narrowing is the right one here, because
+freezing a 30,000-line general test module means *any* PR touching *any*
+ContextGuard test breaks a release proof. That is a mis-scoped component path,
+not a deliberate constraint.
 
-**This must be resolved before release.** It is deferred rather than fixed
-because the right question is prior to the ceremony: a 30,000-line general test
-module is frozen as a Gate-B component, which means *any* PR touching *any*
-ContextGuard test trips a release proof. The same trap is already armed for the
-in-flight `setup_wizard.py` and `context-guard-setup` edits in the working tree,
-which are also `SHARED_INTEGRATION_PATHS`.
+`gen16` therefore drops `tests/test_context_guard_kit.py` from the
+shared-integration set. No Gate-B or residual marker owns that path, so the
+marker contract is unaffected; the generation carries every earlier marker and
+path set otherwise. Because the change touches none of the paths `gen16` still
+owns, its `residual_edits` is empty and its bless content for those paths is
+byte-identical to `gen15`'s.
 
-Either the component path is mis-scoped and should name the integration tests it
-actually guards, or the apparatus should be frozen. Decide that first, then
-re-bless or re-scope accordingly.
+**The file is now permanently outside the freeze.** Restoring it requires
+another explicit, reviewed generation. That is the trade this PR is making, and
+it is called out here and in the runbook because the freeze is the thing being
+reduced.
+
+The same trap remains armed for `context-guard-kit/setup_wizard.py` and
+`plugins/context-guard/bin/context-guard-setup`, which stay frozen — but those
+are implementation surfaces the proof genuinely guards, not a catch-all test
+module.
 
 ## Open question for the `find` row
 
