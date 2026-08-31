@@ -4,6 +4,10 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.11.0] - 2026-08-31
+
 - **The `PreToolUse:Bash` hook no longer blocks command execution.**
   `context-guard-rewrite-bash` previously returned `permissionDecision: "deny"`
   for every command it could not place in its routing table, which silently made
@@ -53,6 +57,13 @@ All notable changes for the ContextGuard plugin are documented here.
   body, so `bash -c "find /tmp/x -delete"` prompts like `find /tmp/x -delete`.
 - The crash-open guard does not cover `--context-guard-exec-git` mode, where
   stdout carries command output rather than hook protocol.
+- Diagnosed R9's `inconclusive` verdict and pinned the retry-budget coupling:
+  `BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT` does not control the retry
+  budget on its own, because the slot generators carry the attempt list as a
+  literal. An invariant test now fails if the constant is raised alone.
+- Pinned why non-project Receipt install shapes (global, `npx`, Homebrew,
+  plugin-only) refuse the Bash-reference route, and recorded the requirements a
+  future relaxation would have to meet.
 
 ## [0.10.0] - 2026-08-31
 
