@@ -148,6 +148,14 @@ class BashReferenceV1Tests(unittest.TestCase):
         세 형태 모두 exact-slice 회수를 쓸 수 없고 legacy trim 으로 폴백한다.
         이는 현재 의도된 경계이며, 완화 설계는 보안 리뷰에서 반려됐다 —
         `research/receipt-install-shape-boundary-20260831.md` 참고.
+
+        판별력의 한계도 적어 둔다. 위치 술어를 제거해 보면 `global-npm` 과
+        `homebrew` 는 원인이 `receipt_npm_package_unavailable` 로 바뀌어 이
+        테스트가 잡지만, `source-checkout` 은 `node_modules` 계층 자체가 없어
+        위치와 무관하게 같은 원인으로 거부된다 — 과다결정이라 그 레이아웃은
+        위치 술어를 판별하지 못한다. 그럼에도 남겨 두는 이유는 소스 체크아웃과
+        플러그인 레이아웃이 사용자에게 가장 흔한 형태이고, 그 형태가 거부된다는
+        사실 자체를 고정할 값어치가 있기 때문이다.
         """
         layouts = {
             # 전역 npm: 정책 파일이 프로젝트 밖 prefix 에 있다.
@@ -226,7 +234,10 @@ class BashReferenceV1Tests(unittest.TestCase):
             )
             policy = load_policy(policy_path)
             _adapter, reason = policy.discover_adapter(project)
-            self.assertNotEqual(reason, "receipt_source_or_plugin_only")
+            # "그 원인이 아니다" 로는 세 번째 원인으로 거부돼도 통과해 공허해질
+            # 수 있다. 위치를 옮겼을 때 실제로 어디까지 나아가는지를 고정한다 —
+            # 여기서는 Receipt 패키지가 없어서 멈춘다.
+            self.assertEqual(reason, "receipt_npm_package_unavailable")
 
     def test_resolver_uses_installed_context_guard_nested_exact_receipt(self):
         """npm's nested dependency layout resolves from the installed package first."""

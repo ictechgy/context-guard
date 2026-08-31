@@ -1194,9 +1194,19 @@ def _inventory_drift_detail(
     인벤토리를 손으로 diff 해야 했다. 핀은 사람이 검토하라고 있는 것이므로
     값을 자동으로 갱신하지는 않는다 — 다만 무엇을 검토해야 하는지는 알려 준다.
     """
+    # 경로를 키로 접으면 중복 항목이 조용히 사라진다. 무결성 도구에서 그
+    # 가장자리 케이스가 곧 제품이므로 중복을 먼저 드러낸다.
+    duplicate_lines: list[str] = []
+    for label, entries in (("actual", actual), ("pinned", expected)):
+        seen: dict[str, int] = {}
+        for entry in entries:
+            seen[entry["path"]] = seen.get(entry["path"], 0) + 1
+        for path, count in sorted(seen.items()):
+            if count > 1:
+                duplicate_lines.append(f"  ! duplicate in {label}: {path} x{count}")
     actual_by_path = {entry["path"]: entry for entry in actual}
     expected_by_path = {entry["path"]: entry for entry in expected}
-    lines: list[str] = []
+    lines: list[str] = list(duplicate_lines)
     for path in sorted(set(actual_by_path) - set(expected_by_path)):
         lines.append(f"  + added: {path}")
     for path in sorted(set(expected_by_path) - set(actual_by_path)):
@@ -1223,9 +1233,8 @@ def validate_receipt_companion_surface_inventory(inventory: list[dict[str, str]]
         )
     if inventory != RECEIPT_COMPANION_INVENTORY:
         raise AssertionError(
-            "receipt companion inventory path/type/mode/hash drifted. Review each "
-            "entry below, then update RECEIPT_COMPANION_INVENTORY in "
-            "tests/test_contextguard_stage2_feasibility.py:\n"
+            "receipt companion inventory path/type/mode/hash drifted; "
+            "updating the pin requires human review:\n"
             + _inventory_drift_detail(inventory, RECEIPT_COMPANION_INVENTORY)
         )
 
