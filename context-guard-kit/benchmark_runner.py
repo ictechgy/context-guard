@@ -10596,12 +10596,10 @@ BENCHMARK_STUDY_V2_ARMS = (
 BENCHMARK_STUDY_V2_PRIMARY_CONTRAST = ("host_unmodified", "bash_reference_v1")
 BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_RETRY_POLICY = "retain_valid_unfavorable_attempts_v1"
-# R9(v1) 는 시도당 유효 task 실패율 9.7% (3/31) 를 관측했고, 재시도 1회로는
-# 72개 arm-unit 이 전부 성공할 확률이 약 50% 였다. 실제로 baseline unit 하나가
-# 두 시도를 모두 소진해 연구가 판정 불가로 끝났다 — ContextGuard 의 성능과
-# 무관하게 정지 규칙이 동전 던지기였다는 뜻이다. 시도 상한을 3 으로 올리면
-# 같은 실패율에서 완주 확률이 약 94% 가 된다. 비용은 재시도가 실제로 발생할
-# 때만 증가한다.
+# R9 는 arm-unit 하나가 시도를 모두 소진해 판정 불가로 끝났다. 상한을 3 으로
+# 두는 근거(관측 실패율, 완주 확률, 불확실성, 그리고 재시도가 결과를 세탁할 수
+# 없는 이유)는 `bench/token-savings-12task/README.md` 의 "Retry budget" 절에
+# 있다. 추정치는 표본이 작아 갱신될 수 있으므로 여기에 숫자를 박아 두지 않는다.
 BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT = 3
 BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS = frozenset({
     "prompt", "output", "command", "command_hash", "command_sha256", "path",
