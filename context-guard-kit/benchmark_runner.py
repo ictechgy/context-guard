@@ -10596,6 +10596,13 @@ BENCHMARK_STUDY_V2_ARMS = (
 BENCHMARK_STUDY_V2_PRIMARY_CONTRAST = ("host_unmodified", "bash_reference_v1")
 BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST = ("legacy_trim", "bash_reference_v1")
 BENCHMARK_STUDY_V2_RETRY_POLICY = "retain_valid_unfavorable_attempts_v1"
+# R9(v1) 는 시도당 유효 task 실패율 9.7% (3/31) 를 관측했고, 재시도 1회로는
+# 72개 arm-unit 이 전부 성공할 확률이 약 50% 였다. 실제로 baseline unit 하나가
+# 두 시도를 모두 소진해 연구가 판정 불가로 끝났다 — ContextGuard 의 성능과
+# 무관하게 정지 규칙이 동전 던지기였다는 뜻이다. 시도 상한을 3 으로 올리면
+# 같은 실패율에서 완주 확률이 약 94% 가 된다. 비용은 재시도가 실제로 발생할
+# 때만 증가한다.
+BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT = 3
 BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS = frozenset({
     "prompt", "output", "command", "command_hash", "command_sha256", "path",
     "project_id", "capabilities", "credential", "credentials", "token", "secret",
@@ -10965,7 +10972,8 @@ def make_benchmark_study_v2_plan(
     plan = {
         "schema_version": BENCHMARK_STUDY_V2_PLAN_SCHEMA_VERSION,
         "arms": list(BENCHMARK_STUDY_V2_ARMS), "schedule_seed": schedule_seed,
-        "repetitions": 3, "max_attempts_per_arm_unit": 2,
+        "repetitions": 3,
+        "max_attempts_per_arm_unit": BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT,
         "retry_policy": BENCHMARK_STUDY_V2_RETRY_POLICY,
         "corpus_sha256": corpus_sha256, "checker_sha256": checker_sha256,
         "task_ids_sha256": task_ids_sha256,
@@ -11000,7 +11008,12 @@ def validate_benchmark_study_v2_plan(plan: Mapping[str, Any]) -> None:
     _benchmark_study_v2_seed(plan["schedule_seed"])
     if plan["arms"] != list(BENCHMARK_STUDY_V2_ARMS) or plan["primary_contrast"] != list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST) or plan["diagnostic_contrast"] != list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST):
         raise ValueError("v2 study arms or contrasts drifted")
-    if plan["repetitions"] != 3 or plan["max_attempts_per_arm_unit"] != 2 or plan["retry_policy"] != BENCHMARK_STUDY_V2_RETRY_POLICY:
+    if (
+        plan["repetitions"] != 3
+        or plan["max_attempts_per_arm_unit"]
+        != BENCHMARK_STUDY_V2_MAX_ATTEMPTS_PER_ARM_UNIT
+        or plan["retry_policy"] != BENCHMARK_STUDY_V2_RETRY_POLICY
+    ):
         raise ValueError("v2 study retry contract drifted")
     if any(not isinstance(plan[key], str) or SHA256_HEX_PATTERN.fullmatch(plan[key]) is None for key in ("corpus_sha256", "checker_sha256", "task_ids_sha256")):
         raise ValueError("v2 corpus/checker/task-order binding is invalid")

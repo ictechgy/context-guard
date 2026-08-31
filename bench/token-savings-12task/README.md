@@ -20,6 +20,53 @@ are not used here.
 | `hook-event-evidence.json` | External evidence that every registered hook event exists in the provider CLI, with its collection method and boundary. |
 | `rehearsal/solutions.json` | Rehearsal-only scripted workspace writes for the fake provider. Never part of any fixture tree and never used by a real provider run. |
 
+## Retry budget, and why R9 was inconclusive
+
+R9 ran the v1 plan and stopped at `inconclusive`. The reason was not a
+ContextGuard result: a baseline arm-unit failed its initial attempt and its sole
+fixed-policy retry, so the complete paired population the v1 contract requires
+became unreachable.
+
+That outcome was roughly a coin flip before the study started. From R9's own
+numbers:
+
+| Quantity | Value |
+| --- | --- |
+| Observed per-attempt valid task failure rate | 3/31 = 9.7% |
+| `max_attempts_per_arm_unit` (v1 and, previously, v2) | 2 |
+| P(one arm-unit exhausts every attempt) | 0.94% |
+| Arm-units that must all succeed (12 x 2 arms x 3 reps) | 72 |
+| **P(the study completes at all)** | **50.8%** |
+
+Raising the attempt ceiling is the dominant lever:
+
+| `max_attempts_per_arm_unit` | P(complete, 72 units) |
+| --- | --- |
+| 2 | 50.8% |
+| 3 | 93.7% |
+| 4 | 99.4% |
+
+`study-plan-v2.json` therefore declares `max_attempts_per_arm_unit = 3`. Cost
+rises only when a retry actually fires, and a study that halts at 33 of 72
+attempts has already spent money for no verdict.
+
+Two honest caveats. First, 3/31 is a small sample: the Wilson 95% interval on
+that rate is [3.3%, 24.9%], and at the upper end even three attempts only
+reaches 32.6%. Second, this arithmetic assumes failures are independent. If the
+unit that exhausted R9's budget failed *deterministically* — a task the baseline
+arm structurally cannot complete — then more attempts do not help and the task
+or its checker is what needs fixing. R9's raw per-attempt evidence is not
+committed (the public record is the sanitized aggregate summary), so that
+distinction is unresolved here.
+
+**`study-plan.json` is deliberately unchanged.** It is the preregistration R9
+actually ran under, and editing it after seeing the result is exactly what the
+frozen-plan discipline exists to prevent.
+
+The general lesson worth carrying into any future preregistration: compute the
+probability that the stopping rule fires before launching. A gate with a ~50%
+chance of ending the study should be a known, accepted risk, not a surprise.
+
 ## Task coverage
 
 The 12 categories are fixed and ordered: small fix, bugfix, exploration, review,
