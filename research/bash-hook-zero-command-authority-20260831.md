@@ -250,6 +250,34 @@ ContextGuard's Bash hook entirely.
   `decline_reason`, so diagnostics and tests can assert *why* a wrap was declined
   without asserting that execution was blocked.
 
+## Known blocker: Gate-B re-blessing
+
+`scripts/verify_gate_b_rollback.py` fails on this change:
+
+```
+component paths changed after durable reapplication:
+['tests/test_context_guard_kit.py']
+```
+
+`tests/test_context_guard_kit.py` is a member of `SHARED_INTEGRATION_PATHS`, so
+the proof forbids it changing after the active generation's shared-integration
+commit. Changing it legitimately requires appending a generation — a four-commit
+reapply sequence plus a `Generation` record and an appended fingerprint.
+
+This is not avoidable by moving code: the eight migrated tests that asserted the
+old deny behaviour live in that file.
+
+**This must be resolved before release.** It is deferred rather than fixed
+because the right question is prior to the ceremony: a 30,000-line general test
+module is frozen as a Gate-B component, which means *any* PR touching *any*
+ContextGuard test trips a release proof. The same trap is already armed for the
+in-flight `setup_wizard.py` and `context-guard-setup` edits in the working tree,
+which are also `SHARED_INTEGRATION_PATHS`.
+
+Either the component path is mis-scoped and should name the integration tests it
+actually guards, or the apparatus should be frozen. Decide that first, then
+re-bless or re-scope accordingly.
+
 ## Open question for the `find` row
 
 A hook `permissionDecision: "ask"` is assumed to prompt even in
