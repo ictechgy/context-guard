@@ -30571,25 +30571,113 @@ class ZeroCommandAuthorityTest(unittest.TestCase):
                 self.assertIn("ContextGuard", hook["permissionDecisionReason"])
                 self.assertIn("CONTEXT_GUARD_DISABLE=1", hook["permissionDecisionReason"])
 
+    def test_side_effecting_find_inside_a_shell_c_body_still_asks(self):
+        """모델이 일상적으로 쓰는 `bash -c '...'` 안에 숨어도 잡아야 한다."""
+        module = self._module()
+        for command in [
+            'bash -c "find /tmp/x -delete"',
+            "sh -lc 'find . -exec rm -rf {} +'",
+            'zsh -c "find /var -okdir rm {} ;"',
+        ]:
+            with self.subTest(command=command):
+                self.assertEqual(module.classify_command(command).action, "ask")
+
+    def test_harmless_shell_c_bodies_are_not_escalated(self):
+        module = self._module()
+        for command in ['bash -c "echo hi"', "sh -c 'ls -la'"]:
+            with self.subTest(command=command):
+                self.assertEqual(module.classify_command(command).action, "noop")
+
+    def test_forged_wrapper_envelope_is_refused(self):
+        """호스트 허용목록이 정규 래퍼 argv 형태를 신뢰할 수 있으므로,
+        값 하나만 바꾼 위조 봉투로 프롬프트를 우회하게 두면 안 된다."""
+        module = self._module()
+        wrapped = hook_json(KIT_REWRITE, "pytest -q")["hookSpecificOutput"][
+            "updatedInput"
+        ]["command"]
+        for label, command in [
+            ("canonical", wrapped),
+            ("max-lines changed", wrapped.replace("--max-lines 220", "--max-lines 221", 1)),
+            ("inner command swapped", wrapped.replace("'pytest -q'", "'id'", 1)),
+        ]:
+            with self.subTest(label=label):
+                decision = module.classify_command(command)
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "incoming_wrapper_denied")
+
+    def test_direct_wrapper_cli_use_is_still_ordinary(self):
+        """위조 봉투 차단이 사람이 손으로 쓰는 직접 호출까지 막아서는 안 된다.
+        구분자는 격리된 runtime shell argv 의 존재다."""
+        module = self._module()
+        for command in [
+            "context-guard-trim-output --max-lines 10 -- pytest",
+            "context-guard-sanitize-output --max-lines 10 -- git diff",
+        ]:
+            with self.subTest(command=command):
+                self.assertNotEqual(module.classify_command(command).action, "deny")
+
+    def test_git_guard_exec_mode_is_outside_the_crash_open_guard(self):
+        """git-guard 모드에서는 stdout 이 훅 프로토콜이 아니라 명령 출력이다.
+        거기에 `{}` 를 흘리거나 종료 코드를 0 으로 덮으면 안 된다."""
+        source = KIT_REWRITE.read_text(encoding="utf-8")
+        guard = source[source.index("def main() -> int:"):source.index("def _main() -> int:")]
+        self.assertIn("_GIT_GUARD_MODE in sys.argv[1:]", guard)
+        self.assertLess(
+            guard.index("_GIT_GUARD_MODE in sys.argv[1:]"),
+            guard.index("except BaseException"),
+        )
+
+    def test_non_string_command_declines_instead_of_asserting(self):
+        """페이로드 검증이 먼저 잡는다. `assert` 는 `python -O` 에서 사라지므로
+        분류기 앞의 타입 검사도 실제 분기로 남겨 둔다."""
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            with self.subTest(script=script):
+                proc = run_hook_payload(script, {"tool_input": {"command": 12}})
+                self.assertEqual(json.loads(proc.stdout), {})
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertIn("could not read hook input", proc.stderr)
+        source = KIT_REWRITE.read_text(encoding="utf-8")
+        self.assertNotIn("assert isinstance(command, str)", source)
+
+    def test_disable_env_accepts_the_same_values_as_fail_open(self):
+        for value in ["1", "true", "yes", "on"]:
+            with self.subTest(value=value):
+                env = dict(os.environ)
+                env["CONTEXT_GUARD_DISABLE"] = value
+                proc = run_hook_payload(
+                    KIT_REWRITE, {"tool_input": {"command": "pytest -q"}}, env=env
+                )
+                self.assertEqual(json.loads(proc.stdout), {})
+        env = dict(os.environ)
+        env["CONTEXT_GUARD_DISABLE"] = "0"
+        proc = run_hook_payload(
+            KIT_REWRITE, {"tool_input": {"command": "pytest -q"}}, env=env
+        )
+        self.assertIn("updatedInput", json.loads(proc.stdout)["hookSpecificOutput"])
+
     def test_read_only_find_is_still_wrapped(self):
         module = self._module()
         self.assertEqual(module.classify_command("find . -name '*.py'").action, "trim")
 
-    def test_active_tilde_routes_like_its_expanded_path(self):
-        """`~` 하나 때문에 비밀값이 래퍼 없이 흘러가면 안 된다."""
+    def test_active_tilde_no_longer_costs_the_wrapper(self):
+        """전면 tilde deny 를 없앤 것만으로 마스킹이 복구된다.
+
+        라우트 술어는 피연산자 텍스트를 보지 않으므로 `~` 를 펼칠 필요가 없다.
+        예전에는 `~` 하나 때문에 이 명령이 통째로 거부되어, 감싸지 않는 대신
+        아예 실행되지 않았다.
+        """
         module = self._module()
         decision = module.classify_command("cat ~/.ssh/id_rsa")
         self.assertEqual(decision.action, "trim")
         self.assertIsNone(decision.decline_reason)
 
-    def test_tilde_expansion_does_not_change_the_emitted_command(self):
+    def test_tilde_is_never_expanded_in_the_emitted_command(self):
         wrapped = hook_json(KIT_REWRITE, "cat ~/.ssh/config")["hookSpecificOutput"]
         emitted = wrapped["updatedInput"]["command"]
         self.assertIn("~/.ssh/config", emitted)
         self.assertNotIn(str(Path.home()) + "/.ssh/config", emitted)
 
     def test_unresolvable_tilde_never_denies_and_keeps_the_literal_word(self):
-        """펼칠 수 없는 `~` 는 리터럴 값으로 라우팅되고, 셸이 알아서 처리한다."""
         module = self._module()
         decision = module.classify_command("cat ~nosuchuser-contextguard/file")
         self.assertNotEqual(decision.action, "deny")

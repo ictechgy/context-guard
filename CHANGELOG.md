@@ -32,13 +32,27 @@ All notable changes for the ContextGuard plugin are documented here.
   - The only remaining denial is ContextGuard's own recursion guard for a
     command carrying its execution wrapper. Its message names the tool, the
     cause, and the remedy instead of an internal policy code.
-- Added `CONTEXT_GUARD_DISABLE=1`, which makes the Bash hook decline all
+- Added `CONTEXT_GUARD_DISABLE`, which makes the Bash hook decline all
   intervention before classification. This is the supported escape hatch from
-  the hook's command **rewriting**, which remains in place.
-- Fixed a routing gap where an active `~` prefix pushed an otherwise recognized
-  command out of the route table. `cat ~/.ssh/id_rsa` is now wrapped and
-  redacted like `cat /home/you/.ssh/id_rsa`. Tilde expansion applies to the
-  routing decision only; the emitted command is unchanged.
+  the hook's command **rewriting**, which remains in place. It accepts the same
+  values as `CONTEXT_GUARD_SANITIZER_FAIL_OPEN` (`1`, `true`, `yes`, `on`).
+- `CONTEXT_GUARD_SANITIZER_FAIL_OPEN` no longer changes hook behaviour. It meant
+  "run unwrapped rather than be blocked", and nothing is blocked any more, so
+  that is the default. Use `CONTEXT_GUARD_DISABLE` to stop rewriting.
+- An active `~` no longer costs a command its wrapper. `cat ~/.ssh/id_rsa` was
+  denied outright; it is now trim-wrapped and redacted like
+  `cat /home/you/.ssh/id_rsa`. The emitted command keeps the literal tilde.
+- A forged ContextGuard execution envelope is now refused. Recognising an
+  incoming envelope previously required an exact `--max-lines` value, so a
+  one-character change escaped the recursion guard and was denied only
+  coincidentally by the route table. Envelope matching now accepts any
+  `--max-lines` value while still requiring the isolated runtime-shell argv, so
+  direct wrapper CLI use stays ordinary while a forged envelope cannot borrow a
+  host allowlist entry that trusts the canonical wrapper argv shape.
+- The side-effecting `find` check now also looks one level into a shell `-c`
+  body, so `bash -c "find /tmp/x -delete"` prompts like `find /tmp/x -delete`.
+- The crash-open guard does not cover `--context-guard-exec-git` mode, where
+  stdout carries command output rather than hook protocol.
 
 ## [0.10.0] - 2026-08-31
 
@@ -61,7 +75,6 @@ All notable changes for the ContextGuard plugin are documented here.
 
 - Added composable adapter capabilities and safe project MCP setup for Codex,
   Gemini, Cursor, Copilot/VS Code, OpenCode, and ForgeCode through `--with-mcp`.
-
 - Added provider-free `net-efficiency`, `fanout-plan`, `prefix-plan`,
   `prune-plan`, and `shadow-policy` evaluators. They gate matched quality,
   fully loaded cost, p95 latency, output/model-round regressions, distinct

@@ -78,7 +78,7 @@ classifications are re-mapped.
 | Recognized noisy command, safe to wrap | `trim` / `sanitize` | unchanged |
 | Recognized quiet command | `noop` | unchanged |
 | Digest reference expansion | `reference` | unchanged |
-| **Predicate gap: active tilde on an otherwise recognized route** | deny | **route normally** (see below) |
+| **Active tilde on an otherwise recognized route** | deny | **route normally** (see below) |
 | **Side-effecting `find` (`-delete`, `-exec`, `-ok`, …)** | deny | **`ask`** |
 | Not in the routing table (`route_policy_denied`) | deny | noop |
 | Grammar not fully consumed (`parsed.denial_reason`, e.g. `active_3e`) | deny | noop |
@@ -94,18 +94,18 @@ classifications are re-mapped.
 
 ### Three rows that are not plain `noop`
 
-**Predicate gap: active tilde.** `cat ~/.ssh/id_rsa` is denied today by
-`active_shell_expansion_denied`. `cat` is a *recognized* route whose wrapper
-redacts secrets, so a plain `noop` would send unredacted key material to the
-model where it was previously blocked — a real regression, and the one place the
-deny path was serving ContextGuard's own declared promise.
+**Active tilde.** `cat ~/.ssh/id_rsa` is denied today by
+`active_shell_expansion_denied`. Deleting that blanket denial is the whole fix:
+the route predicates match on flags and command identity, not on operand text,
+so `cat ~/.ssh/id_rsa` routes to `trim` on its literal operand exactly as
+`cat /home/you/.ssh/id_rsa` does, and the wrapper redacts it.
 
-This is a predicate bug, not an unknown command. The fix is to expand `~` and
-`~user` prefixes **at routing time only**, so the predicate sees the real path.
-The emitted command is unchanged byte-for-byte; only the routing decision
-improves. Unknown-command rows and known-route-predicate-gap rows are different
-species, and collapsing them would foreclose exactly the route improvements this
-work should enable.
+An earlier revision of this design also expanded `~` at routing time, on the
+theory that the tilde pushed the command out of the route table. That theory was
+wrong, and the machinery was measured to change **zero** decisions across
+operand, command-word, env-prefix and pipeline positions. It was deleted. The
+lesson is worth recording in a project with this much apparatus: a mechanism
+whose removal changes no observable behaviour is not a safeguard.
 
 **Side-effecting `find` → `ask`.** This is the one row where the deny was doing
 real work: `find … -delete` / `-exec rm` is irreversible, and the users most
@@ -250,7 +250,15 @@ ContextGuard's Bash hook entirely.
   `decline_reason`, so diagnostics and tests can assert *why* a wrap was declined
   without asserting that execution was blocked.
 
-## As built: five things the design did not anticipate
+## Open question for the `find` row
+
+A hook `permissionDecision: "ask"` is assumed to prompt even in
+`bypassPermissions` mode. If the pinned host downgrades `ask` to allow in that
+mode, this row is decorative for exactly the population it was written for — the
+users running without prompts. Verify against the pinned host version before
+treating it as a safeguard.
+
+## As built: things the design did not anticipate
 
 1. **`find … -exec rm {} \;` never reaches the routing loop.** `{}` fails the
    MiniShell grammar (`active_7b`), so the command declines at the parse stage.
@@ -280,7 +288,26 @@ ContextGuard's Bash hook entirely.
    remains as the explicit marker that a `noop` was a declined wrap rather than
    a quiet pass.
 
-5. **A missing trim/sanitize wrapper now declines instead of blocking.** This
+5. **A forged wrapper envelope is refused, not passed through.** Recognising an
+   incoming envelope originally required an exact `--max-lines` value, so a
+   one-character change escaped it and was denied only coincidentally by the
+   route table. With that coincidence gone, a host allowlist that trusts the
+   canonical wrapper argv shape would suppress the prompt for an arbitrary inner
+   command. Envelope matching now accepts any `--max-lines` value while still
+   requiring the isolated runtime-shell argv, so direct CLI use
+   (`context-guard-trim-output --max-lines 10 -- pytest`) stays ordinary and the
+   forged envelope is denied.
+
+6. **`CONTEXT_GUARD_SANITIZER_FAIL_OPEN` no longer changes behaviour.** Its
+   purpose was "run unwrapped rather than be blocked"; nothing blocks, so that is
+   now the default. `CONTEXT_GUARD_DISABLE` is the knob for turning off
+   rewriting. Both accept the same value set.
+
+7. **The crash-open guard does not cover git-guard exec mode.** In that mode
+   stdout carries command output rather than hook protocol, so emitting `{}` and
+   returning 0 would corrupt the stream and mask git's exit code.
+
+8. **A missing trim/sanitize wrapper now declines instead of blocking.** This
    row was not in the original table. A partial install previously blocked every
    noisy command, and `CONTEXT_GUARD_SANITIZER_FAIL_OPEN` was the only way out.
    An incomplete ContextGuard install is a ContextGuard problem, not a reason to

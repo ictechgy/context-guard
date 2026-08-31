@@ -358,6 +358,13 @@ def find_wrapper(kind: str) -> str | None:
 
 
 def fail_open_source_env() -> str | None:
+    """FAIL_OPEN 변수가 설정되었는지 보고한다.
+
+    이 변수는 더 이상 훅의 동작을 바꾸지 않는다. 원래 목적이 "차단당하느니
+    감싸지 않은 채로 실행하라" 였는데, 이제는 아무것도 차단하지 않으므로 그
+    목적이 기본 동작이 되었다. 재작성 자체를 끄려면 `CONTEXT_GUARD_DISABLE` 을
+    쓴다. 진단 목적으로만 남긴다.
+    """
     canonical_value = os.environ.get(FAIL_OPEN_ENV)
     if canonical_value is not None:
         return FAIL_OPEN_ENV if canonical_value.strip().lower() in FAIL_OPEN_VALUES else None
@@ -505,42 +512,11 @@ def _annotate_word_tildes(word: MiniShellWord) -> MiniShellWord:
     )
 
 
-def _expand_active_tildes(word: MiniShellWord) -> str:
-    """라우팅 판정용으로만 활성 `~` 접두사를 실제 경로로 펼친다.
-
-    훅이 내보내는 명령 문자열에는 이 결과가 절대 섞이지 않는다. `cat
-    ~/.ssh/id_rsa` 처럼 인식 가능한 경로를 가진 명령이 오직 `~` 때문에 라우팅
-    표를 벗어나, 비밀값을 가려 주는 래퍼 없이 그대로 흘러가는 일을 막기 위한
-    판정 보정이다. 펼칠 수 없는 `~unknownuser` 는 원본을 그대로 돌려주므로
-    라우팅 표에서 자연히 탈락한다.
-    """
-    if not word.active_tilde_sites:
-        return word.value
-    source = word.source_value
-    pieces: list[str] = []
-    cursor = 0
-    for start in word.active_tilde_sites:
-        if start < cursor:
-            continue
-        assignment_site = (
-            word.assignment_index is not None and start > word.assignment_index
-        )
-        end = _tilde_prefix_end(word, start, assignment_site=assignment_site)
-        if end is None:
-            continue
-        prefix = source[start:end]
-        expanded = os.path.expanduser(prefix)
-        if expanded == prefix:
-            continue
-        pieces.append(source[cursor:start])
-        pieces.append(expanded)
-        cursor = end
-    if not pieces:
-        return word.value
-    pieces.append(source[cursor:])
-    return "".join(pieces)
-
-
+# 셸 `-c` 본문을 한 겹만 들여다본다. 중첩을 무한히 따라가는 것은 이 휴리스틱의
+# 목적(실수하는 모델을 잡는 것)에 필요 없고, 회피자를 막지도 못한다.
+_FIND_SCAN_MAX_DEPTH = 1
+# 봉투 매칭에서 "값은 무엇이든 좋다"를 뜻하는 센티넬.
+_ANY_TOKEN = object()
 _FIND_SIDE_EFFECT_ACTIONS = frozenset({
     "-delete",
     "-exec",
@@ -569,7 +545,32 @@ def _raw_command_is_side_effecting_find(command: str) -> bool:
         tokens = shlex.split(command)
     except ValueError:
         tokens = command.split()
+    return _tokens_carry_side_effecting_find(tokens)
+
+
+def _tokens_carry_side_effecting_find(tokens: list[str], depth: int = 0) -> bool:
     for index, token in enumerate(tokens):
+        # `bash -c "find . -delete"` 는 스크립트 본문이 토큰 하나로 남아 겉에서는
+        # 보이지 않는다. 모델이 일상적으로 쓰는 형태라 한 겹은 들어가서 본다.
+        if (
+            depth < _FIND_SCAN_MAX_DEPTH
+            and os.path.basename(token) in MINISHELL_DENIED_SHELL_BASENAMES
+        ):
+            for offset, follower in enumerate(tokens[index + 1:], start=index + 1):
+                if not follower.startswith("-"):
+                    break
+                if re.fullmatch(r"-[^-]*c[^-]*", follower) is None:
+                    continue
+                body = tokens[offset + 1] if offset + 1 < len(tokens) else None
+                if body is None:
+                    break
+                try:
+                    inner = shlex.split(body)
+                except ValueError:
+                    inner = body.split()
+                if _tokens_carry_side_effecting_find(inner, depth + 1):
+                    return True
+                break
         if os.path.basename(token) != "find":
             continue
         if any(
@@ -1368,18 +1369,28 @@ def classify_incoming_wrapper(
         )
         return (code, kind, None)
 
-    legacy_prefixes = (
-        ("--max-lines", CGW1_MAX_LINES),
+    # `--max-lines` 값은 고정하지 않는다. 값 하나만 바꾼 위조 봉투가 예전에는
+    # 라우팅 표 밖이라는 이유로 우연히 거부됐는데, 이제 그 우연이 사라졌다.
+    # 봉투를 봉투로 알아보지 못하면 호스트 허용목록이 정규 래퍼 argv 형태를
+    # 신뢰하고 있을 때 임의 명령의 프롬프트가 함께 억제될 수 있다.
+    #
+    # 직접 CLI 사용(`context-guard-trim-output --max-lines 10 -- pytest`)은
+    # 여전히 통상 라우트를 탄다 — 아래 매칭이 격리된 runtime shell argv 를
+    # 그대로 요구하기 때문이다. 사람이 손으로 적는 형태가 아니다.
+    prefix_matchers: tuple[tuple[object, ...], ...] = (
+        ("--max-lines", _ANY_TOKEN),
         (CGW1_COMMAND_SEARCH_DIFF,),
         ("--mode", CGW1_COMMAND_SEARCH_DIFF),
     )
     shell_argvs = (CGW1_SHELL_ARGV, _runtime_shell_argv())
-    for prefix in legacy_prefixes:
+    for prefix in prefix_matchers:
         for shell_argv in shell_argvs:
             fixed = (*prefix, "--", *shell_argv)
-            if (
-                len(envelope_argv) == len(fixed) + 1
-                and envelope_argv[:-1] == fixed
+            if len(envelope_argv) != len(fixed) + 1:
+                continue
+            if all(
+                expected is _ANY_TOKEN or expected == actual
+                for expected, actual in zip(fixed, envelope_argv[:-1])
             ):
                 return ("incoming_wrapper_denied", kind, envelope_argv[-1])
     return None
@@ -2876,8 +2887,7 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
 
     segment_routes: list[str] = []
     for segment_index, segment in enumerate(parsed.segments):
-        # 활성 `~` 는 라우팅 판정에서만 펼친다. 내보내는 명령은 원본 그대로다.
-        segment_argv = tuple(_expand_active_tildes(word) for word in segment)
+        segment_argv = tuple(word.value for word in segment)
         route_start = _routing_start(segment, segment_argv)
         if route_start == -2:
             return _decline(parsed, "unsafe_env_name_denied")
@@ -3170,25 +3180,36 @@ def print_updated_command(wrapped: str, tool_input: dict[str, object]) -> None:
 
 
 def hook_is_disabled() -> bool:
-    return os.environ.get(DISABLE_ENV) == "1"
+    # 같은 제품 안에서 두 플래그가 서로 다른 값 규약을 갖지 않도록 FAIL_OPEN 과
+    # 동일한 집합을 받는다.
+    return os.environ.get(DISABLE_ENV, "").strip().lower() in FAIL_OPEN_VALUES
 
 
 def main() -> int:
+    # git-guard 실행 모드에서는 stdout 이 훅 프로토콜이 아니라 명령 출력이다.
+    # 거기에 `{}` 를 흘리거나 git 의 종료 코드를 0 으로 덮으면 안 되므로
+    # crash-open 을 적용하지 않고 그대로 죽게 둔다.
+    if _GIT_GUARD_MODE in sys.argv[1:]:
+        return _main()
     try:
         return _main()
     except SystemExit:
         raise
     except BaseException:  # noqa: BLE001 - crash-open 은 의도된 계약이다
         # 훅의 버그가 사용자의 Bash 를 멈추게 해서는 안 된다. 예외를 삼키고
-        # 개입을 포기한다.
+        # 개입을 포기한다. 진단과 응답은 서로를 막지 않도록 분리하고,
+        # 마지막 수단은 print 기계 없이 fd 에 직접 쓴다.
         try:
-            print(
-                "context-guard-rewrite-bash: internal error; leaving the command "
-                "unchanged",
-                file=sys.stderr,
+            os.write(
+                2,
+                b"context-guard-rewrite-bash: internal error; leaving the "
+                b"command unchanged\n",
             )
-            print_noop()
-        except Exception:  # noqa: BLE001 - 여기서 더 할 수 있는 일은 없다
+        except BaseException:  # noqa: BLE001 - 진단 실패가 응답을 막으면 안 된다
+            pass
+        try:
+            os.write(1, b"{}\n")
+        except BaseException:  # noqa: BLE001 - 여기서 더 할 수 있는 일은 없다
             pass
         return 0
 
@@ -3219,7 +3240,11 @@ def _main() -> int:
         decline_invalid_hook_input("input_read_failed")
         return 0
     command = tool_input["command"]
-    assert isinstance(command, str)
+    if not isinstance(command, str):
+        # assert 는 입력 검증 수단이 아니다 — `python -O` 에서 사라져 비문자열이
+        # 파서로 흘러 들어간다.
+        decline_invalid_hook_input("command_not_string")
+        return 0
 
     decision = classify_command(command)
     if decision.action == "deny":

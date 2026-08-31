@@ -831,15 +831,15 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 self.assert_command_decision(wrapped, "deny", script=script)
 
             with self.subTest(script=script, command="near-v0-direct-cli"):
-                # 정확한 v0 봉투가 아니므로 재귀 가드에 걸리지 않는다. 예전에는
-                # 라우팅 표 밖이라는 이유로 우연히 거부됐을 뿐이다. 감싸지 않고
-                # 통과시키는 것으로 충분하다 — 훅이 이 명령에 아무 권한도
-                # 부여하지 않기 때문이다.
+                # 값 하나만 바꾼 위조 봉투도 봉투로 인식한다. 예전에는 라우팅
+                # 표 밖이라는 이유로 우연히 거부됐을 뿐이고, 그 우연이 사라지면
+                # 정규 래퍼 argv 형태를 신뢰하는 호스트 허용목록이 임의 내부
+                # 명령의 프롬프트까지 억제할 수 있다.
                 first = self.assert_command_decision("pytest -q", "rewrite", script=script)
                 wrapped = json.loads(first.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
                 self.assert_command_decision(
                     wrapped.replace("--max-lines 220", "--max-lines 221", 1),
-                    "noop",
+                    "deny",
                     script=script,
                 )
 
