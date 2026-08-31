@@ -112,6 +112,10 @@ GEN15_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen15 setup referen
 GEN15_B1_SUBJECT = "proof: reapply Gate-B nudge component gen15 setup reference"
 GEN15_B2_SUBJECT = "proof: reapply Gate-B usage component gen15 setup reference"
 GEN15_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen15 setup reference"
+GEN16_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen16 bash hook zero command authority"
+GEN16_B1_SUBJECT = "proof: reapply Gate-B nudge component gen16 bash hook zero command authority"
+GEN16_B2_SUBJECT = "proof: reapply Gate-B usage component gen16 bash hook zero command authority"
+GEN16_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen16 bash hook zero command authority"
 
 B1_PATHS = frozenset(
     {
@@ -144,6 +148,15 @@ SHARED_INTEGRATION_PATHS = frozenset(
     }
 )
 ALL_COMPONENT_PATHS = B1_PATHS | B2_PATHS | SHARED_INTEGRATION_PATHS
+
+# gen16 이 구속하는 통합 경로. `tests/test_context_guard_kit.py` 를 뺀다 —
+# 3만 줄짜리 범용 테스트 모듈이라, ContextGuard 테스트를 건드리는 어떤 PR 이든
+# 릴리스 proof 를 깨뜨렸다. 이는 runbook 이 명시한 "narrowing vector" 이며 해당
+# 파일이 freeze 에서 영구 제외됨을 뜻한다. 어떤 Gate-B/잔여 마커도 이 경로를
+# 소유하지 않으므로 마커 계약은 영향을 받지 않는다.
+GEN16_SHARED_INTEGRATION_PATHS = SHARED_INTEGRATION_PATHS - {
+    "tests/test_context_guard_kit.py"
+}
 
 # gen1 잔여물이 보존해야 하는 무관 기능 마커(존재 방향). 이 세대가 무엇을
 # 축복했는지에 상대적이므로 세대 레코드에 박아 넣는다 — 나중에 무관 기능이
@@ -446,6 +459,19 @@ GENERATIONS: tuple[Generation, ...] = (
             }
         ),
     ),
+    Generation(
+        name="gen16",
+        bless_subject=GEN16_BLESS_SUBJECT,
+        b1_subject=GEN16_B1_SUBJECT,
+        b2_subject=GEN16_B2_SUBJECT,
+        shared_subject=GEN16_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=GEN16_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -469,6 +495,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "f9a99a1cd68dcf6d19bd6e6f5187742a563b2b7266098fcd72edacc5972c57ed",
     "fdd0b29d6c97cb094b86a1daa2a8fdd1f70d5373efe6eee45ccfedd3cbdee2c6",
     "ab0c99d2bdb7e22d47d5de63968893293931dd4feaeb6b6b16af8064174cda9d",
+    "5a40580198573b01662b1067b74e627035ae34c9e20cf0fab217599decf3b0c4",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
