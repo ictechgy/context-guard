@@ -293,7 +293,18 @@ into a small frozen spec file — was rejected because identifying and blessing
 that kernel's changed content is the full five-commit re-bless that narrowing
 avoids. That is the real reason, and it belongs on the record.
 
-Two mechanical bounds ship with the narrowing so it cannot quietly grow:
+Two claims here are machine-enforced rather than authorial, so the passing proof
+run is their evidence:
+
+- *no marker owns the dropped path* — `assert_generation_records_wellformed`
+  rejects any generation whose `gate_b_markers` owner or `residual_markers` key
+  is not one of that generation's own component paths, so a narrowing that
+  orphaned a marker would fail rather than pass silently;
+- *`residual_edits` is empty* — `assert_declared_residual_edits` computes the
+  actual bless-vs-bless diff over the paths both generations own and requires it
+  to equal the declared set exactly, so an undeclared edit fails.
+
+Two further bounds ship with the narrowing so it cannot quietly grow:
 `assert_shipped_generations_narrow_only` requires every shipped generation's
 path sets to be a subset of the canonical sets, so `gen17` cannot chain off
 `gen16`'s already-narrowed set and hide a second drop; and
