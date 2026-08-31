@@ -117,11 +117,14 @@ class ToolResultBytesProfileTests(unittest.TestCase):
         self.assertEqual(extensions, {"swift"})
 
     def test_classifies_image_reads_apart_from_text(self) -> None:
+        image_payload = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "p" * 900}}
+        ]
         report = profile(
             {
                 "a.jsonl": [
                     assistant_row(tool_use("u1", "Read", file_path="/tmp/shot.png")),
-                    user_row(tool_result("u1", "p" * 900)),
+                    user_row(tool_result("u1", image_payload)),
                     assistant_row(tool_use("u2", "Read", file_path="/tmp/main.py")),
                     user_row(tool_result("u2", "t" * 100)),
                 ]
@@ -130,6 +133,24 @@ class ToolResultBytesProfileTests(unittest.TestCase):
         classes = {row["label"]: row["bytes"] for row in report["by_content_class"]}
         self.assertEqual(classes["image"], 900)
         self.assertEqual(classes["text"], 100)
+
+    def test_failed_image_read_returning_text_is_not_counted_as_image(self) -> None:
+        """확장자가 이미지여도 본문이 평문이면 읽기가 실패한 것이므로 text 다.
+
+        확장자를 먼저 보면 오류 문자열이 이미지 바이트로 잡혀, 이미지가 컨텍스트를
+        얼마나 차지하는지에 대한 판단을 왜곡한다.
+        """
+        report = profile(
+            {
+                "a.jsonl": [
+                    assistant_row(tool_use("u1", "Read", file_path="/tmp/shot.png")),
+                    user_row(tool_result("u1", "Error: file not found")),
+                ]
+            }
+        )
+        classes = {row["label"]: row["bytes"] for row in report["by_content_class"]}
+        self.assertNotIn("image", classes)
+        self.assertEqual(classes["text"], len("Error: file not found"))
 
     def test_image_payload_blocks_count_as_image_without_an_extension(self) -> None:
         block_content = [
@@ -322,8 +343,116 @@ class ToolResultBytesProfileTests(unittest.TestCase):
                 env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertIn("Context bytes carried by tool results", completed.stdout)
+            self.assertIn("Bytes stored in tool_result blocks", completed.stdout)
             self.assertIn("not a savings claim", completed.stdout)
+
+    def test_tool_label_cardinality_is_bounded_without_losing_bytes(self) -> None:
+        """도구 이름은 transcript가 정하므로 서로 다른 값이 무한히 올 수 있다.
+
+        상한을 넘으면 넘침 버킷으로 접되 바이트 총합은 보존해야 한다. 상한을 렌더 단계에만
+        두면 Counter 자체는 계속 자라 메모리 상한이 의미를 잃는다.
+        """
+        accumulator = audit.ToolResultBytesAudit()
+        accumulator.start_file(Path("a.jsonl"))
+        overflow = audit.TOOL_RESULT_MAX_TOOL_LABELS + 100
+        for index in range(overflow):
+            accumulator.observe(assistant_row(tool_use(f"u{index}", f"Tool{index}")))
+            accumulator.observe(user_row(tool_result(f"u{index}", "x" * 10)))
+        self.assertLessEqual(
+            len(accumulator.by_tool_bytes), audit.TOOL_RESULT_MAX_TOOL_LABELS + 1
+        )
+        self.assertIn(audit.TOOL_RESULT_OVERFLOW_LABEL, accumulator.by_tool_bytes)
+        self.assertEqual(accumulator.total_bytes, overflow * 10)
+        self.assertEqual(sum(accumulator.by_tool_bytes.values()), overflow * 10)
+
+    def test_extension_cardinality_is_bounded_without_losing_bytes(self) -> None:
+        accumulator = audit.ToolResultBytesAudit()
+        accumulator.start_file(Path("a.jsonl"))
+        overflow = audit.TOOL_RESULT_MAX_EXTENSIONS + 50
+        for index in range(overflow):
+            accumulator.observe(
+                assistant_row(tool_use(f"u{index}", "Read", file_path=f"/tmp/a.e{index}"))
+            )
+            accumulator.observe(user_row(tool_result(f"u{index}", "y" * 10)))
+        self.assertLessEqual(
+            len(accumulator.by_extension_bytes), audit.TOOL_RESULT_MAX_EXTENSIONS + 1
+        )
+        self.assertEqual(sum(accumulator.by_extension_bytes.values()), overflow * 10)
+
+    def test_a_record_is_not_counted_twice_when_content_appears_twice(self) -> None:
+        """message.content 와 최상위 content 를 모두 순회하면 한 결과가 두 번 세어진다.
+
+        두 번째 사본은 완전중복으로도 잡혀 중복률까지 조작된다. message 를 우선하고
+        최상위는 엄격한 대체 경로여야 한다.
+        """
+        block = tool_result("u1", "z" * 120)
+        row = {
+            "type": "user",
+            "message": {"role": "user", "content": [block]},
+            "content": [block],
+        }
+        report = profile({"a.jsonl": [assistant_row(tool_use("u1", "Bash", command="ls")), row]})
+        self.assertEqual(report["results"], 1)
+        self.assertEqual(report["total_bytes"], 120)
+        self.assertEqual(report["exact_duplicates"]["results"], 0)
+
+    def test_directory_valued_paths_do_not_leak_a_name_fragment(self) -> None:
+        """디렉터리 경로에서 이름 조각이 확장자 라벨로 나가면 안 된다."""
+        self.assertIsNone(audit._tool_input_extension({"file_path": "/Users/jane.doe/repo/"}))
+        self.assertEqual(audit._tool_input_extension({"file_path": "/Users/jane.doe/repo"}), "(none)")
+        self.assertEqual(audit._tool_input_extension({"file_path": "/tmp/.env"}), "(none)")
+        # 일반적인 "path" 키는 디렉터리를 가리키는 도구가 많아 확장자 집계 대상이 아니다.
+        self.assertIsNone(audit._tool_input_extension({"path": "/Users/jane.doe/repo"}))
+
+    def test_correlation_table_overflow_is_reported_not_silent(self) -> None:
+        accumulator = audit.ToolResultBytesAudit()
+        accumulator.start_file(Path("a.jsonl"))
+        for index in range(audit.TOOL_RESULT_MAX_PENDING_USES + 5):
+            accumulator.observe(assistant_row(tool_use(f"u{index}", "Bash", command="ls")))
+        self.assertTrue(accumulator.attribution_truncated)
+
+    def test_matched_uses_are_released_so_long_sessions_do_not_fill_the_table(self) -> None:
+        """결과를 만나면 대기 항목을 꺼내야 정상적인 긴 세션이 상한에 닿지 않는다."""
+        accumulator = audit.ToolResultBytesAudit()
+        accumulator.start_file(Path("a.jsonl"))
+        for index in range(audit.TOOL_RESULT_MAX_PENDING_USES * 2):
+            accumulator.observe(assistant_row(tool_use(f"u{index}", "Bash", command="ls")))
+            accumulator.observe(user_row(tool_result(f"u{index}", "x" * 5)))
+        self.assertFalse(accumulator.attribution_truncated)
+        self.assertEqual(accumulator.uncorrelated_results, 0)
+        self.assertEqual(len(accumulator._pending_uses), 0)
+
+    def test_concentration_states_its_own_sample_basis(self) -> None:
+        """집중도 분모는 표본이고 다른 비중은 전체다. 그 차이가 절 안에 드러나야 한다."""
+        report = profile({"a.jsonl": rows_for("q", 50)})
+        concentration = report["concentration"]
+        self.assertIn("sample_results", concentration)
+        self.assertIn("sample_bytes", concentration)
+        self.assertIn("sample_truncated", concentration)
+        self.assertIn("not over total_bytes", concentration["note"])
+
+    def test_claim_boundary_does_not_assert_a_counterfactual(self) -> None:
+        """절감에 준하는 반사실 표현이 들어가면 주장 경계를 넘는다."""
+        report = profile({"a.jsonl": rows_for("q", 50)})
+        prose = " ".join(
+            [report["claim_boundary"], report["exact_duplicates"]["note"]]
+            + [report["file_read_bounding"]["note"]]
+        )
+        for forbidden in ("would have", "saves", "savings you", "recover"):
+            self.assertNotIn(forbidden, prose)
+        self.assertIn("lower bound on context exposure", report["claim_boundary"])
+
+    def test_svg_reads_are_text_because_they_can_be_trimmed(self) -> None:
+        report = profile(
+            {
+                "a.jsonl": [
+                    assistant_row(tool_use("u1", "Read", file_path="/tmp/icon.svg")),
+                    user_row(tool_result("u1", "<svg></svg>" * 20)),
+                ]
+            }
+        )
+        classes = {row["label"] for row in report["by_content_class"]}
+        self.assertEqual(classes, {"text"})
 
 
 if __name__ == "__main__":

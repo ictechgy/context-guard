@@ -118,15 +118,17 @@ TOOL_RESULT_MAX_DUP_HASHES = 100_000
 # 확장자 라벨로 허용하는 모양. 경로는 절대 노출하지 않고 확장자만 집계한다.
 TOOL_RESULT_EXTENSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._-]{0,15}$")
 TOOL_RESULT_MAX_EXTENSIONS = 200
+TOOL_RESULT_MAX_TOOL_LABELS = 500
+TOOL_RESULT_OVERFLOW_LABEL = "(other)"
 IMAGE_EXTENSIONS = frozenset(
     {
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
-        "ico", "heic", "heif", "avif", "svg",
+        "ico", "heic", "heif", "avif",
     }
 )
 # Read 계열로 취급할 도구 이름. 파일 경로 입력을 갖는 것들만 확장자 집계 대상이다.
 FILE_READ_TOOL_NAMES = frozenset({"Read", "NotebookRead"})
-TOOL_RESULT_FILE_PATH_KEYS = ("file_path", "filePath", "path", "notebook_path")
+TOOL_RESULT_FILE_PATH_KEYS = ("file_path", "filePath", "notebook_path")
 TOOL_RESULT_RANGE_KEYS = ("offset", "limit", "pages", "line_range", "range")
 
 
@@ -213,7 +215,11 @@ def json_compact(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError, RecursionError):
+        pass
+    try:
         return repr(value)
+    except BaseException:
+        return f"<unrepresentable {type(value).__name__}>"
 
 
 def _iter_content_blocks(root: Any) -> Iterable[dict[str, Any]]:
@@ -224,15 +230,14 @@ def _iter_content_blocks(root: Any) -> Iterable[dict[str, Any]]:
     """
     if not isinstance(root, dict):
         return
-    for holder in (root.get("message"), root):
-        if not isinstance(holder, dict):
-            continue
-        content = holder.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if isinstance(block, dict):
-                yield block
+    message = root.get("message")
+    holder = message if isinstance(message, dict) else root
+    content = holder.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict):
+            yield block
 
 
 def _tool_input_extension(payload: dict[str, Any]) -> str | None:
@@ -241,8 +246,11 @@ def _tool_input_extension(payload: dict[str, Any]) -> str | None:
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
             continue
-        base = value.replace("\\", "/").rsplit("/", 1)[-1]
-        if "." not in base:
+        normalized = value.replace("\\", "/")
+        if normalized.endswith("/"):
+            return None
+        base = normalized.rsplit("/", 1)[-1]
+        if "." not in base or base.startswith("."):
             return "(none)"
         extension = base.rsplit(".", 1)[-1].lower()
         if TOOL_RESULT_EXTENSION_RE.match(extension):
@@ -299,13 +307,15 @@ def _tool_result_content_class(extension: str | None, content: Any) -> str:
     확장자를 우선 보고, 없으면 내용 블록의 이미지 페이로드 여부로 판단한다. 이미지 바이트는
     줄 단위 트리밍으로 줄일 수 없어 텍스트와 성격이 다르므로 따로 센다.
     """
-    if extension in IMAGE_EXTENSIONS:
-        return "image"
     if _tool_result_has_image_block(content):
         return "image"
-    if extension is not None:
-        return "text"
     if isinstance(content, str) or _tool_result_is_all_text_blocks(content):
+        # 이미지 확장자여도 본문이 평문이면 읽기가 실패해 오류 문자열이 돌아온 것이다.
+        # 확장자를 먼저 보면 그런 결과가 이미지 바이트로 잡혀 독자를 오도한다.
+        return "text"
+    if extension in IMAGE_EXTENSIONS:
+        return "image"
+    if extension is not None:
         return "text"
     return "unknown"
 
@@ -325,6 +335,17 @@ def _tool_result_is_all_text_blocks(content: Any) -> bool:
             continue
         return False
     return True
+
+
+def _bounded_label(label: str, seen: Counter[str], limit: int) -> str:
+    """라벨 카디널리티를 상한 안에 둔다.
+
+    도구 이름과 확장자는 transcript가 정하는 값이므로 서로 다른 값이 무한히 올 수 있다.
+    상한을 넘으면 넘침 버킷으로 접어 바이트 총합은 보존하되 Counter가 무한히 자라지 않게 한다.
+    """
+    if label in seen or len(seen) < limit:
+        return label
+    return TOOL_RESULT_OVERFLOW_LABEL
 
 
 def _tool_result_digest(content: Any) -> str | None:
@@ -369,6 +390,7 @@ class ToolResultBytesAudit:
     bounded_read_bytes: int = 0
     correlated_results: int = 0
     uncorrelated_results: int = 0
+    attribution_truncated: bool = False
     _current_file: Path | None = field(default=None, init=False, repr=False)
     _pending_uses: dict[str, tuple[str, bool, str | None]] = field(
         default_factory=dict, init=False, repr=False
@@ -402,6 +424,7 @@ class ToolResultBytesAudit:
         if not isinstance(use_id, str) or not isinstance(name, str):
             return
         if len(self._pending_uses) >= TOOL_RESULT_MAX_PENDING_USES:
+            self.attribution_truncated = True
             return
         payload = block.get("input")
         payload = payload if isinstance(payload, dict) else {}
@@ -424,17 +447,23 @@ class ToolResultBytesAudit:
             self.size_samples_truncated = True
 
         use_id = block.get("tool_use_id")
-        entry = self._pending_uses.get(use_id) if isinstance(use_id, str) else None
+        entry = self._pending_uses.pop(use_id, None) if isinstance(use_id, str) else None
         if entry is None:
             self.uncorrelated_results += 1
             tool_name, bounded, extension = "unattributed", False, None
         else:
             self.correlated_results += 1
             tool_name, bounded, extension = entry
+        tool_name = _bounded_label(
+            tool_name, self.by_tool_bytes, TOOL_RESULT_MAX_TOOL_LABELS
+        )
         self.by_tool_results[tool_name] += 1
         self.by_tool_bytes[tool_name] += size
 
         if extension is not None:
+            extension = _bounded_label(
+                extension, self.by_extension_bytes, TOOL_RESULT_MAX_EXTENSIONS
+            )
             self.by_extension_results[extension] += 1
             self.by_extension_bytes[extension] += size
         content_class = _tool_result_content_class(extension, block.get("content"))
@@ -2296,9 +2325,12 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
         "schema_version": TOOL_RESULT_BYTES_SCHEMA_VERSION,
         "status": status,
         "claim_boundary": (
-            "Observed transcript tool_result byte distribution only. This is not a token count, "
-            "not a cost estimate, and not a savings claim; provider token accounting is per-request "
-            "and does not attribute tokens to individual tools."
+            "Observed distribution of bytes stored in transcript tool_result blocks, counted once "
+            "per result. This is not a token count, not a cost estimate, and not a savings claim. "
+            "Provider token accounting is per-request and does not attribute tokens to individual "
+            "tools, and a stored result is re-sent on later requests, so stored bytes are a lower "
+            "bound on context exposure rather than a measure of it. Sizes are measured on a "
+            "canonical serialization, so they approximate rather than reproduce on-disk bytes."
         ),
         "results": audit.results,
         "total_bytes": total,
@@ -2306,9 +2338,12 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
         "attribution": {
             "correlated_results": audit.correlated_results,
             "uncorrelated_results": audit.uncorrelated_results,
+            "truncated": audit.attribution_truncated,
             "note": (
                 "Uncorrelated results had no matching tool_use block in the same transcript file "
-                "and are reported under the 'unattributed' label."
+                "and are reported under the 'unattributed' label. If truncated is true the "
+                "correlation table filled up, so some results are unattributed for that reason "
+                "rather than because their tool_use was absent."
             ),
         },
     }
@@ -2340,10 +2375,14 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
             "large_results": len(large),
             "large_result_share": _share(len(large), len(sizes)),
             "large_byte_share": _share(sum(large), sampled_total),
+            "sample_results": len(sizes),
+            "sample_bytes": sampled_total,
+            "sample_truncated": audit.size_samples_truncated,
             "note": (
-                "Share of sampled results at or above the large-result threshold, and the share of "
-                "sampled bytes they carry. A small count with a large byte share means a few results "
-                "dominate and are the only ones worth targeting."
+                "Shares here are over the size sample, not over total_bytes as every other share in "
+                "this report is. A small count holding a large byte share means a few results "
+                "dominate. If sample_truncated is true the sample is the first results seen rather "
+                "than a random draw, so concentration may be understated."
             ),
         }
 
@@ -2370,8 +2409,10 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
         "scope": "within a single transcript file",
         "tracking_truncated": audit.duplicate_tracking_truncated,
         "note": (
-            "Byte-identical repeats of an earlier result in the same session. A low share means "
-            "deduplication would recover little and is not worth building here."
+            "Repeats of an earlier result in the same session, matched on a canonical serialization "
+            "rather than raw bytes, so this is an upper bound on byte-identical repeats. Repeats "
+            "stored by the transcript itself are indistinguishable here from content the model saw "
+            "twice. If tracking_truncated is true the share is understated."
         ),
     }
     read_bytes = audit.unbounded_read_bytes + audit.bounded_read_bytes
@@ -2383,8 +2424,10 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
         "bounded_results": audit.bounded_read_results,
         "bounded_bytes": audit.bounded_read_bytes,
         "note": (
-            "Bounded means the read carried an explicit range argument (offset/limit/pages). "
-            "A high unbounded share means whole files entered context where a range would have done."
+            "Bounded means the request carried an explicit range argument (offset/limit/pages). "
+            "This counts how reads were requested, not how much of each file exists: an unranged "
+            "request may still be truncated by the host's own read limits. Only exact-match "
+            "file-reading tool names are counted here, so MCP or custom readers are excluded."
         ),
     }
     return report
@@ -2722,7 +2765,7 @@ def _format_share(share: float | None) -> str:
 def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
     """tool_result 바이트 분포를 텍스트로 출력한다."""
     report = build_tool_result_bytes(summary, top)
-    print("\nContext bytes carried by tool results")
+    print("\nBytes stored in tool_result blocks")
     if report["status"] != "observed":
         print(f"  unavailable: {report.get('reason', 'no tool_result blocks observed')}")
         return
