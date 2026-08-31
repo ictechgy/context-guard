@@ -4,7 +4,21 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
-_No unreleased changes._
+- `context-guard-audit` now reports `tool_result_bytes`: where context bytes
+  actually came from, counted directly from transcript `tool_use`/`tool_result`
+  blocks. It breaks bytes down by tool, by content class (image vs text), and by
+  file extension, and adds the size distribution, the share carried by the
+  largest results, the byte-identical duplicate share, and how much file reading
+  carried an explicit range.
+  - Provider token accounting is per-request and cannot attribute tokens to an
+    individual tool, so this section is byte-based and says so in its own
+    output. Shares are observations, not savings.
+  - It exists because guardrails have to be aimed. Measuring one real transcript
+    corpus while building this overturned two assumptions in a row about which
+    tool was carrying the bytes, and neither guess was close.
+  - Reading paths are never emitted; file extensions only. Correlation between
+    `tool_use` and `tool_result`, and byte-identical duplicate detection, are
+    both scoped to a single transcript file. Every accumulator is bounded.
 
 ## [0.11.0] - 2026-08-31
 

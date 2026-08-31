@@ -494,7 +494,10 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
 
 - `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md): 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다.
 - `cache_layout_advice`: 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 신호를 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다.
+- `tool_result_bytes`: 컨텍스트 바이트가 실제로 어디서 왔는지를 대화 기록의 `tool_use`/`tool_result` 블록에서 직접 세어 보고합니다. 도구별, 내용 종류별(이미지/텍스트), 확장자별 분포와 크기 백분위, 가장 큰 결과들이 차지하는 비중, 완전 중복 비율, 파일 읽기 중 범위를 지정한 비율을 담습니다. provider의 토큰 집계는 요청 단위여서 도구별 귀속이 불가능하므로 이 절은 바이트 기준이며, 그 경계를 출력 자체에 명시합니다.
 - `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): 로컬 macOS 가시화 surface가 바인딩할 수 있는 계약입니다. 안정적인 top-level field만 가리키며, `summary`는 primary UI binding 대상이 아닙니다.
+
+가드레일도 실행 비용이 있고 모든 프로젝트에서 이득이 되지는 않으므로, 켜기 전에 먼저 측정하세요. 여기 나오는 바이트 비중은 관측값이지 절감량이 아닙니다. 바이트가 어디로 갔는지를 말할 뿐, 그것을 줄였을 때 무엇을 회수하는지는 말하지 않습니다. 읽은 파일 경로는 절대 출력하지 않고 확장자만 집계합니다.
 
 이 필드들은 prompt prefix 근처의 volatile content 가능성, stable-prefix 후보, cache-miss 가설, TTL/headroom evidence gap을 알려줄 수 있습니다. 원문 프롬프트를 출력하지 않고 provider cache hit나 live headroom을 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
 

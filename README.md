@@ -581,7 +581,10 @@ JSON output can include several evidence surfaces:
 
 - `cache_friendliness` and [`cache_diagnostics`](docs/cache-diagnostics-schema.md): heuristic prompt-layout/cache-read diagnostics built from bounded usage fields, timestamped cache telemetry records, and redacted segment hashes.
 - `cache_layout_advice`: ranked **checks/experiments** such as splitting long sessions or stabilizing early prompt prefixes, with observed issues kept separate from hypothesized or corroborated causes.
+- `tool_result_bytes`: where context bytes actually came from, counted directly from transcript `tool_use`/`tool_result` blocks — by tool, by content class (image/text), by file extension, plus the size distribution, the share carried by the largest results, the byte-identical duplicate share, and how much of your file reading carried an explicit range. Provider token accounting is per-request and cannot attribute tokens to a tool, so this section is byte-based and states that boundary in its own output.
 - `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): a contract for local macOS-visible consumers. Only stable top-level fields are binding targets; `summary` is not a primary UI binding source.
+
+Guardrails cost something to run and not every one pays off on every project, so measure before enabling. Reported byte shares are observations, not savings: they say where the bytes went, not what you would recover by trimming them. Reading paths are never emitted here — file extensions only.
 
 These fields can flag likely volatile content near the prompt prefix, stable-prefix candidates, cache-miss hypotheses, and TTL/headroom evidence gaps. They do not print raw prompt text, do not prove provider cache hits, and may be `missing`, `partial`, `hypothesis`, or `unavailable` when transcript schemas do not expose enough evidence.
 
