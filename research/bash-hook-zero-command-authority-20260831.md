@@ -278,9 +278,27 @@ owns, its `residual_edits` is empty and its bless content for those paths is
 byte-identical to `gen15`'s.
 
 **The file is now permanently outside the freeze.** Restoring it requires
-another explicit, reviewed generation. That is the trade this PR is making, and
-it is called out here and in the runbook because the freeze is the thing being
-reduced.
+another explicit, reviewed generation.
+
+What that costs, stated plainly rather than only as an inconvenience removed:
+the hook implementation was never a component path, so Gate-B never froze hook
+behaviour directly — but the test module pinned it, so changing that behaviour
+forced a reviewed generation whose bless diff named the changed assertions. That
+indirect constraint is gone. A future PR can change hook semantics and update
+the assertions that pin them together, and the same now holds for the rest of
+the kit coverage in that file. Ordinary CI is what guards it, not Gate-B.
+
+The coverage-preserving alternative — extracting the load-bearing assertions
+into a small frozen spec file — was rejected because identifying and blessing
+that kernel's changed content is the full five-commit re-bless that narrowing
+avoids. That is the real reason, and it belongs on the record.
+
+Two mechanical bounds ship with the narrowing so it cannot quietly grow:
+`assert_shipped_generations_narrow_only` requires every shipped generation's
+path sets to be a subset of the canonical sets, so `gen17` cannot chain off
+`gen16`'s already-narrowed set and hide a second drop; and
+`verify_gate_b_rollback.py --json` reports `narrowed_paths` per generation, so
+every dropped path is named in proof output.
 
 The same trap remains armed for `context-guard-kit/setup_wizard.py` and
 `plugins/context-guard/bin/context-guard-setup`, which stay frozen — but those

@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import dataclasses
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -1810,6 +1811,46 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen16.shared_subject,
             ),
             gen16_subjects,
+        )
+
+    def test_narrowing_must_be_a_subset_of_the_canonical_path_sets(self) -> None:
+        """좁히기는 정규 집합의 부분집합으로만 표현할 수 있다.
+
+        이 불변식이 없으면 다음 세대가 직전 세대의 좁혀진 집합을 기준으로 또
+        빼면서 "이어받는다"처럼 보이게 만들 수 있고, 빠진 경로가 어디에도
+        드러나지 않는다.
+        """
+        for generation in rollback_proof.GENERATIONS:
+            with self.subTest(generation=generation.name):
+                self.assertTrue(generation.b1_paths <= rollback_proof.B1_PATHS)
+                self.assertTrue(generation.b2_paths <= rollback_proof.B2_PATHS)
+                self.assertTrue(
+                    generation.shared_paths
+                    <= rollback_proof.SHARED_INTEGRATION_PATHS
+                )
+
+    def test_shipped_generation_check_rejects_a_path_outside_the_canonical_set(
+        self,
+    ) -> None:
+        base = rollback_proof.GENERATIONS[-1]
+        smuggled = dataclasses.replace(
+            base,
+            name="gen-smuggled",
+            shared_paths=frozenset(base.shared_paths | {"scripts/not_a_component.py"}),
+        )
+        with self.assertRaises(rollback_proof.ProofError) as caught:
+            rollback_proof.assert_shipped_generations_narrow_only(
+                (*rollback_proof.GENERATIONS, smuggled)
+            )
+        self.assertIn("outside", str(caught.exception))
+
+    def test_shipped_generation_check_passes_on_the_real_list(self) -> None:
+        rollback_proof.assert_shipped_generations_narrow_only()
+
+    def test_narrowed_paths_report_names_every_dropped_path(self) -> None:
+        report = rollback_proof.narrowed_paths_report()
+        self.assertEqual(
+            report, {"gen16": ["tests/test_context_guard_kit.py"]}
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:

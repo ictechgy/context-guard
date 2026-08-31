@@ -907,6 +907,57 @@ def assert_generation_fingerprint_history_append_only(
         )
 
 
+def assert_shipped_generations_narrow_only(
+    generations: tuple[Generation, ...] = GENERATIONS,
+) -> None:
+    """출하된 세대의 경로 집합은 정규 집합의 부분집합이어야 한다.
+
+    gen16 은 `SHARED_INTEGRATION_PATHS - {…}` 로 한 경로를 뺐다. 이 관용구는
+    읽기 쉬울 뿐 강제되지 않는다 — 다음 세대가
+    `GEN16_SHARED_INTEGRATION_PATHS - {…}` 라고 쓰면 "gen16 을 그대로
+    이어받는다"처럼 읽히면서 조용히 두 번째 좁히기가 된다. 부분집합을 요구하면
+    좁힌 양이 언제나 정규 집합과의 차집합 하나로 계산되어
+    `narrowed_paths_report()` 에 드러난다.
+
+    합성 세대를 쓰는 검사(``assert_generation_records_wellformed``)와 분리한다.
+    그 쪽은 임의의 레코드 형태를 검사하는 자리이고, 이 불변식은 이 저장소가
+    실제로 출하하는 목록에만 의미가 있다.
+    """
+    for generation in generations:
+        for label, declared, canonical in (
+            ("b1_paths", generation.b1_paths, B1_PATHS),
+            ("b2_paths", generation.b2_paths, B2_PATHS),
+            ("shared_paths", generation.shared_paths, SHARED_INTEGRATION_PATHS),
+        ):
+            extra = declared - canonical
+            if extra:
+                raise ProofError(
+                    f"generation {generation.name!r} {label} declares paths outside "
+                    f"the canonical set: {sorted(extra)!r}. Narrowing must be "
+                    "expressed as a subset of the canonical set so the dropped "
+                    "paths are computable and visible in review."
+                )
+
+
+def narrowed_paths_report() -> dict[str, list[str]]:
+    """세대별로 정규 집합에서 빠진 경로. 좁히기를 조용히 넘어가지 못하게 한다.
+
+    부분집합 불변식 덕분에 이 차집합이 곧 그 세대가 동결에서 제외한 경로 전체다.
+    비어 있는 세대는 보고하지 않으므로, 출력에 이름이 뜨는 것 자체가 리뷰
+    신호다.
+    """
+    report: dict[str, list[str]] = {}
+    for generation in GENERATIONS:
+        dropped = sorted(
+            (B1_PATHS - generation.b1_paths)
+            | (B2_PATHS - generation.b2_paths)
+            | (SHARED_INTEGRATION_PATHS - generation.shared_paths)
+        )
+        if dropped:
+            report[generation.name] = dropped
+    return report
+
+
 def assert_generation_records_wellformed(generations: tuple[Generation, ...]) -> None:
     """git 없이 세대 레코드 자체의 자기 신고 구멍을 막는다 (D6, 신규 구현).
 
@@ -1251,6 +1302,7 @@ def resolve_history(
     for generation in GENERATIONS:
         assert_disjoint_paths(generation)
 
+    assert_shipped_generations_narrow_only()
     all_commits: dict[str, dict[str, str]] = {}
     for generation in GENERATIONS:
         commits = resolve_generation_commits(
@@ -1527,6 +1579,7 @@ def run_proof(repo: Path = ROOT) -> dict[str, object]:
         "b2": active_apply["b2"],
         "revert_order": ["b1", "b2", "shared-integration"],
         "generations": build_generations_report(all_commits),
+        "narrowed_paths": narrowed_paths_report(),
         "review_pathspec": review_pathspec(),
         **revert_order,
     }
