@@ -263,7 +263,7 @@ designed and rejected in review for losing exactly that anchor; see
 [`research/receipt-install-shape-boundary-20260831.md`](research/receipt-install-shape-boundary-20260831.md).
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.10.0
+npm install --save-exact @ictechgy/context-guard@0.11.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
