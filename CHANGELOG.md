@@ -4,6 +4,56 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- **The `PreToolUse:Bash` hook no longer blocks command execution.**
+  `context-guard-rewrite-bash` previously returned `permissionDecision: "deny"`
+  for every command it could not place in its routing table, which silently made
+  unrelated user CLIs unrunnable in any project with ContextGuard installed.
+  Commands the hook cannot safely wrap now run unmodified, exactly as they would
+  without ContextGuard. This behaviour was never documented; see
+  [`research/bash-hook-zero-command-authority-20260831.md`](research/bash-hook-zero-command-authority-20260831.md).
+  - Unrecognized commands, unparseable command lines, non-bare command paths,
+    network/exec basenames (`curl`, `ssh`, `nc`, …), shell reserved words,
+    restricted env prefixes, heredoc consumer mismatches, and pipeline `PATH`
+    overrides all pass through instead of being denied.
+  - Side-effecting `find` (`-delete`, `-exec`, …) now returns
+    `permissionDecision: "ask"` rather than denying: irreversible, and the
+    decision belongs to the user rather than to ContextGuard. This check runs
+    before parsing, because `-exec … {} \;` does not parse and its previous
+    denial came from the parser rather than from any `find` rule.
+  - `sed -i` now runs. It was previously denied. In-place editing is
+    irreversible, but it is also a routine editing command, so prompting on it
+    would reintroduce exactly the friction this change removes. The host
+    permission system governs it.
+  - An unreadable hook payload now passes the command through instead of
+    denying, and `main()` gained a crash-open guard. A hook bug or host payload
+    change can no longer stop every Bash command.
+  - A missing `context-guard-trim-output` / `context-guard-sanitize-output`
+    wrapper now warns and runs the command unwrapped instead of blocking it.
+  - The only remaining denial is ContextGuard's own recursion guard for a
+    command carrying its execution wrapper. Its message names the tool, the
+    cause, and the remedy instead of an internal policy code.
+- Added `CONTEXT_GUARD_DISABLE`, which makes the Bash hook decline all
+  intervention before classification. This is the supported escape hatch from
+  the hook's command **rewriting**, which remains in place. It accepts the same
+  values as `CONTEXT_GUARD_SANITIZER_FAIL_OPEN` (`1`, `true`, `yes`, `on`).
+- `CONTEXT_GUARD_SANITIZER_FAIL_OPEN` no longer changes hook behaviour. It meant
+  "run unwrapped rather than be blocked", and nothing is blocked any more, so
+  that is the default. Use `CONTEXT_GUARD_DISABLE` to stop rewriting.
+- An active `~` no longer costs a command its wrapper. `cat ~/.ssh/id_rsa` was
+  denied outright; it is now trim-wrapped and redacted like
+  `cat /home/you/.ssh/id_rsa`. The emitted command keeps the literal tilde.
+- A forged ContextGuard execution envelope is now refused. Recognising an
+  incoming envelope previously required an exact `--max-lines` value, so a
+  one-character change escaped the recursion guard and was denied only
+  coincidentally by the route table. Envelope matching now accepts any
+  `--max-lines` value while still requiring the isolated runtime-shell argv, so
+  direct wrapper CLI use stays ordinary while a forged envelope cannot borrow a
+  host allowlist entry that trusts the canonical wrapper argv shape.
+- The side-effecting `find` check now also looks one level into a shell `-c`
+  body, so `bash -c "find /tmp/x -delete"` prompts like `find /tmp/x -delete`.
+- The crash-open guard does not cover `--context-guard-exec-git` mode, where
+  stdout carries command output rather than hook protocol.
+
 ## [0.10.0] - 2026-08-31
 
 - Added an explicit, plan-hash-confirmed cleanup command for the deterministic
@@ -25,7 +75,6 @@ All notable changes for the ContextGuard plugin are documented here.
 
 - Added composable adapter capabilities and safe project MCP setup for Codex,
   Gemini, Cursor, Copilot/VS Code, OpenCode, and ForgeCode through `--with-mcp`.
-
 - Added provider-free `net-efficiency`, `fanout-plan`, `prefix-plan`,
   `prune-plan`, and `shadow-policy` evaluators. They gate matched quality,
   fully loaded cost, p95 latency, output/model-round regressions, distinct

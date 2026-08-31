@@ -567,7 +567,13 @@ class HookRuntimeHardeningTests(unittest.TestCase):
                 check=True,
             )
             self.assertEqual(json.loads(fail_open_proc.stdout), {})
-            self.assertIn("CONTEXT_GUARD_SANITIZER_FAIL_OPEN=1 active", fail_open_proc.stderr)
+            # 래퍼가 없으면 FAIL_OPEN 여부와 무관하게 감싸지 않고 통과시킨다.
+            # 예전에는 이 경로가 차단이었고 FAIL_OPEN 만이 탈출구였다.
+            self.assertIn(
+                "context-guard-sanitize-output is not installed",
+                fail_open_proc.stderr,
+            )
+            self.assertIn("running this command unsanitized", fail_open_proc.stderr)
 
             status_proc = subprocess.run(
                 status_command,

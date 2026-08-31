@@ -1409,10 +1409,9 @@ class BashReferenceV1Tests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(
-            json.loads(rejected.stdout)["hookSpecificOutput"]["permissionDecision"],
-            "deny",
-        )
+        # 정확한 standalone 형태가 아니면 reference 라우트로 인정하지 않는다.
+        # 거부하지는 않는다 — 감싸지 않고 원본 그대로 통과시킨다.
+        self.assertEqual(json.loads(rejected.stdout), {})
 
     def test_verified_adapter_prelaunches_exact_private_fd_broker(self):
         """Break caught: Receipt launches after Bash or receives a spool pathname."""

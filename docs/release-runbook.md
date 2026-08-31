@@ -167,18 +167,58 @@ The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_
 
 **Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
 
-The active `gen15` record re-blesses the setup flag help correction while
-preserving the OpenCode MCP schema from `gen14`, cross-vendor MCP setup from
-`gen13`, wrapper no-follow hardening from `gen12`, and every earlier residual.
-It carries every earlier Gate-B marker and path set. Its declared residual
-edits are exactly `context-guard-kit/setup_wizard.py` and the packaged
-`plugins/context-guard/bin/context-guard-setup` mirror; the `gen14`-to-`gen15`
-bless diff changes only the `--with-skill` help from Codex-only wording to
-Codex and OpenCode. B1 and B2 are restored unchanged, and shared integration
-then restores the complete live setup implementation and tests.
+The active `gen16` record is a **narrowing** generation, not a routine
+re-bless. It drops `tests/test_context_guard_kit.py` from the shared-integration
+component set, so that path is no longer frozen. It was the only component path
+the Bash-hook zero-command-authority change touched, and freezing a 30,000-line
+general test module meant any PR touching any ContextGuard test broke the
+release proof — the runbook's own step 1 names "splitting a large frozen test
+file" and narrowing the path set as the cheaper options to prefer over a
+re-bless, and narrowing is what this generation does.
 
-The next routine re-bless must append `gen16` rather than rewriting or reusing
-an existing generation.
+No Gate-B or residual marker owns that path, so the marker contract is
+unaffected: `gen16` carries every earlier Gate-B marker, and both marker owner
+sets remain inside its component paths. Because the change touches none of the
+paths `gen16` still owns, its `residual_edits` is empty and its `bless` content
+for those paths is identical to `gen15`'s. B1, B2 and the remaining shared
+integration are restored unchanged.
+
+**What the freeze was doing, and what is now gone.** Stating only the nuisance
+would misrepresent the trade. The hook implementation itself was never a
+component path, so Gate-B never froze hook behaviour directly — but the test
+module pinned that behaviour, so any change to it forced a reviewed generation
+whose `bless` diff named the changed assertions. That indirect constraint is
+gone. A future PR can now change hook semantics and update the assertions that
+pin them in the same commit, with no anchor friction, and the same is true for
+the other ~30,000 lines of kit coverage in that file: weakening, skipping or
+deleting assertions there no longer breaks any proof. What still guards it is
+ordinary CI, not Gate-B.
+
+**Why splitting was not chosen.** The runbook's other cheap option — extracting
+the load-bearing assertions into a small frozen spec file — would have preserved
+freeze coverage over the kernel. It was rejected because identifying and
+blessing that kernel's changed content is the full five-commit re-bless the
+narrowing avoids. That is an honest statement of cost, not a claim that
+narrowing is strictly better.
+
+**Narrowing is now mechanically bounded.** `assert_shipped_generations_narrow_only`
+requires every shipped generation's path sets to be a subset of the canonical
+`B1_PATHS` / `B2_PATHS` / `SHARED_INTEGRATION_PATHS`, so a later generation
+cannot chain off an already-narrowed set and hide a second drop behind
+"carrying the previous generation forward". `verify_gate_b_rollback.py --json`
+reports `narrowed_paths` per generation, so every dropped path is named in proof
+output rather than inferable only from a diff.
+
+`gen15` re-blessed the setup flag help correction while preserving the OpenCode
+MCP schema from `gen14`, cross-vendor MCP setup from `gen13`, wrapper no-follow
+hardening from `gen12`, and every earlier residual. Its declared residual edits
+were exactly `context-guard-kit/setup_wizard.py` and the packaged
+`plugins/context-guard/bin/context-guard-setup` mirror.
+
+The next routine re-bless must append `gen17` rather than rewriting or reusing
+an existing generation. Note that `tests/test_context_guard_kit.py` is now
+outside the freeze permanently; restoring it requires another explicit,
+reviewed generation.
 
 Re-blessing procedure:
 

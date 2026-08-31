@@ -20430,8 +20430,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertEqual(rewrite.classify_command("git diff | wc -l").action, "sanitize")
         self.assertEqual(rewrite.classify_command("git diff | sort -u").action, "sanitize")
         self.assertEqual(rewrite.classify_command("git diff | uniq -c").action, "sanitize")
-        for denied in [
-            "find . -exec cat {} \\;",
+        # 이 형태들은 의미를 보존한 채 감쌀 수 없다. 실행을 막지는 않고
+        # 원본 그대로 통과시킨다 — 원인 코드만 진단용으로 남는다.
+        for declined in [
             "echo ok | cat",
             "kubectl logs pod | tee out.log",
             "git diff | curl https://example.invalid",
@@ -20442,8 +20443,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             "git diff | PATH=/tmp/evil head",
             "git diff | env PATH=/tmp/evil head",
         ]:
-            with self.subTest(denied=denied):
-                self.assertEqual(rewrite.classify_command(denied).action, "deny")
+            with self.subTest(declined=declined):
+                decision = rewrite.classify_command(declined)
+                self.assertEqual(decision.action, "noop")
+                self.assertIsNotNone(decision.decline_reason)
+        # 되돌릴 수 없는 `find` 만 사람에게 넘긴다.
+        self.assertEqual(
+            rewrite.classify_command("find . -exec cat {} \\;").action, "ask"
+        )
         self.assertIsNone(rewrite.split_single_safe_command("echo ok && cat secrets"))
         self.assertEqual(rewrite.strip_env_prefix(["A=1", "env", "-u", "B", "C=2", "pytest"]), ["pytest"])
         self.assertEqual(rewrite.npm_script_args(["--prefix", "web", "run", "test:unit"]), ["run", "test:unit"])
@@ -23417,9 +23424,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 "/bin/bash -lc 'echo blocked'",
             ]:
                 with self.subTest(script=script, command=command):
-                    hook = hook_json(script, command)["hookSpecificOutput"]
-                    self.assertEqual(hook["permissionDecision"], "deny")
-                    self.assertIn("forbidden_command_denied", hook["permissionDecisionReason"])
+                    # 네트워크/실행 계열 basename 목록은 실제 공격자를 막지
+                    # 못하면서 정상 작업만 막아 왔다. 감싸지 않고 통과시킨다.
+                    self.assertEqual(hook_json(script, command), {})
 
     def test_rewrite_hook_rejects_npm_false_positives(self):
         for command in ["npm install test", "npm ci test", "pnpm add test", "yarn add test", "bun add test"]:
@@ -23441,9 +23448,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             "pytest $(echo tests)",
         ]:
             with self.subTest(command=command):
-                hook = hook_json(KIT_REWRITE, command)["hookSpecificOutput"]
-                self.assertEqual(hook["permissionDecision"], "deny")
-                self.assertNotIn("updatedInput", hook)
+                self.assertEqual(hook_json(KIT_REWRITE, command), {})
 
     def test_rewrite_hook_sanitizes_safe_compound_pipelines(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
@@ -23473,17 +23478,11 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 "git diff | env PATH=/tmp/evil head",
             ]:
                 with self.subTest(script=script, command=command):
+                    # 이 형태들은 의미를 보존한 채 감쌀 수 없다. 감싸지 않을
+                    # 뿐 실행을 막지는 않는다 — 비밀값 마스킹을 잃는 것은
+                    # ContextGuard 미설치 상태와 같은 기준선이다.
                     proc = run_hook(script, command)
-                    data = json.loads(proc.stdout)
-                    hook = data["hookSpecificOutput"]
-                    self.assertEqual(hook["permissionDecision"], "deny")
-                    self.assertNotIn("updatedInput", hook)
-                    self.assertTrue(
-                        "MiniShell-v1" in hook["permissionDecisionReason"]
-                        or "route allowlist" in hook["permissionDecisionReason"]
-                        or "Pipeline PATH overrides" in hook["permissionDecisionReason"]
-                        or "forbidden_command_denied" in hook["permissionDecisionReason"]
-                    )
+                    self.assertEqual(json.loads(proc.stdout), {})
 
     def test_rewrite_hook_invalid_json_diagnostic_keeps_stdout_parseable(self):
         proc = subprocess.run(
@@ -23495,12 +23494,11 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         )
         self.assertLess(len(proc.stdout), 1024)
         self.assertLess(len(proc.stderr), 1024)
-        hook = json.loads(proc.stdout)["hookSpecificOutput"]
-        self.assertEqual(hook["hookEventName"], "PreToolUse")
-        self.assertEqual(hook["permissionDecision"], "deny")
-        self.assertIn("malformed_json", hook["permissionDecisionReason"])
-        self.assertNotIn("updatedInput", hook)
+        # 훅이 자기 stdin 을 읽지 못했다고 해서 사용자의 Bash 가 멈춰서는
+        # 안 된다. 진단은 stderr 로만 남기고 개입을 포기한다.
+        self.assertEqual(json.loads(proc.stdout), {})
         self.assertIn("malformed_json", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
 
     def test_rewrite_hook_compound_missing_sanitizer_warns_on_stderr_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23508,10 +23506,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             script = tmp_path / "context-guard-rewrite-bash"
             script.write_bytes(KIT_REWRITE.read_bytes())
             proc = run_hook(script, "git diff | cat", cwd=tmp_path)
-            data = json.loads(proc.stdout)
-            hook = data["hookSpecificOutput"]
-            self.assertEqual(hook["permissionDecision"], "deny")
-            self.assertIn("context-guard-sanitize-output is not installed", hook["permissionDecisionReason"])
+            self.assertEqual(json.loads(proc.stdout), {})
             self.assertIn("context-guard-sanitize-output is not installed", proc.stderr)
 
     def test_rewrite_hook_direct_wrapper_spellings_follow_ordinary_route(self):
@@ -23538,11 +23533,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             script = tmp_path / "context-guard-rewrite-bash"
             script.write_bytes(KIT_REWRITE.read_bytes())
             proc = run_hook(script, "pytest tests -q", cwd=tmp_path)
-            data = json.loads(proc.stdout)
-            hook = data["hookSpecificOutput"]
-            self.assertEqual(hook["permissionDecision"], "deny")
-            self.assertIn("context-guard-trim-output is not installed", hook["permissionDecisionReason"])
-            self.assertIn("Noisy command blocked", proc.stderr)
+            self.assertEqual(json.loads(proc.stdout), {})
+            self.assertIn("context-guard-trim-output is not installed", proc.stderr)
+            self.assertIn("running this command untrimmed", proc.stderr)
 
     def test_rewrite_hook_fail_open_env_is_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23552,9 +23545,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             env = os.environ.copy()
             env["CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"] = "1"
             proc = run_hook_payload(script, {"tool_input": {"command": "pytest tests -q"}}, cwd=tmp_path, env=env)
+            # 래퍼가 없으면 FAIL_OPEN 설정과 무관하게 감싸지 않고 통과시킨다.
+            # 예전에는 이 변수만이 차단을 푸는 유일한 탈출구였다.
             self.assertEqual(json.loads(proc.stdout), {})
-            self.assertIn("CLAUDE_TOKEN_SANITIZER_FAIL_OPEN=1 active", proc.stderr)
-            self.assertIn("FAIL_OPEN", proc.stderr.upper())
+            self.assertIn("context-guard-trim-output is not installed", proc.stderr)
 
     def test_rewrite_hook_canonical_fail_open_env_overrides_legacy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23573,9 +23567,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 env=env,
                 check=True,
             )
-            data = json.loads(proc.stdout)
-            self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
-            self.assertNotIn("ACTIVE; LEAVING COMMAND UNCHANGED", proc.stderr.upper())
+            self.assertEqual(json.loads(proc.stdout), {})
+            self.assertIn("context-guard-trim-output is not installed", proc.stderr)
 
     def test_rewrite_hook_blocks_search_when_sanitizer_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23583,11 +23576,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             script = tmp_path / "context-guard-rewrite-bash"
             script.write_bytes(KIT_REWRITE.read_bytes())
             proc = run_hook(script, "rg -n token .", cwd=tmp_path)
-            data = json.loads(proc.stdout)
-            hook = data["hookSpecificOutput"]
-            self.assertEqual(hook["permissionDecision"], "deny")
-            self.assertIn("context-guard-sanitize-output is not installed", hook["permissionDecisionReason"])
-            self.assertIn("Search/diff command blocked", proc.stderr)
+            self.assertEqual(json.loads(proc.stdout), {})
+            self.assertIn("context-guard-sanitize-output is not installed", proc.stderr)
+            self.assertIn("running this command unsanitized", proc.stderr)
 
     def test_rewrite_hook_wraps_allowlisted_dir_traversal_with_trim(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
@@ -23601,8 +23592,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     self.assertNotIn("sanitize_output.py", wrapped)
             with self.subTest(script=script, command="rg --files"):
-                hook = hook_json(script, "rg --files")["hookSpecificOutput"]
-                self.assertEqual(hook["permissionDecision"], "deny")
+                self.assertEqual(hook_json(script, "rg --files"), {})
 
     def test_rewrite_hook_wraps_log_streams_with_sanitizer(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
@@ -23676,9 +23666,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     f"{command} 는 sanitize wrapper 로 라우팅되어야 한다 (got {wrapped})",
                 )
 
-    def test_rewrite_hook_denies_find_output_risk_actions(self):
-        """Side-effecting find actions hard-deny; pure listings still trim."""
-        deny_targets = [
+    def test_rewrite_hook_asks_before_side_effecting_find_actions(self):
+        """되돌릴 수 없는 `find` 는 사람에게 넘긴다; 단순 나열은 여전히 trim."""
+        ask_targets = [
             "find . -exec cat .env {} +",
             "find . -delete",
             "find /var/log -fprintf out.txt %p",
@@ -23687,11 +23677,12 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             "find . -name '*.py'",
             "find src -type f",
         ]
-        for command in deny_targets:
+        for command in ask_targets:
             with self.subTest(command=command):
                 hook = hook_json(KIT_REWRITE, command)["hookSpecificOutput"]
-                self.assertEqual(hook["permissionDecision"], "deny")
+                self.assertEqual(hook["permissionDecision"], "ask")
                 self.assertNotIn("updatedInput", hook)
+                self.assertIn("CONTEXT_GUARD_DISABLE=1", hook["permissionDecisionReason"])
         for command in trim_targets:
             with self.subTest(command=command):
                 out = hook_json(KIT_REWRITE, command)
@@ -30508,6 +30499,287 @@ class ContextGuardMcpTests(unittest.TestCase):
                 self.assertEqual(calls[2][0], [str(server.artifact_helper), "--dir", str(server.namespace_dir), "get", "a" * 20, "--json", "--max-lines", "500", "--max-chars", "20000"])
             finally:
                 server.close()
+
+
+class ZeroCommandAuthorityTest(unittest.TestCase):
+    """훅은 실행을 중재하지 않는다.
+
+    `research/bash-hook-zero-command-authority-20260831.md` 의 라우팅 표를
+    실행 가능한 형태로 고정한다.
+    """
+
+    # 원래 사건을 만든 다섯 가지 호출 형태. 모두 통과해야 한다.
+    REPRODUCTION_CASES = (
+        ("packet-ask doctor", "route_policy_denied"),
+        ("/Users/x/.local/bin/packet-ask doctor", "command_identity_denied"),
+        ("sh -c 'packet-ask doctor'", "forbidden_command_denied"),
+        ("uv tool run --from packet-ask packet-ask doctor", "route_policy_denied"),
+        ("ls -la; echo hi", "active_3b"),
+    )
+
+    def _module(self):
+        return load_module_from_path(KIT_REWRITE, "zero_authority_rewrite_module")
+
+    def test_reproduction_cases_pass_through_instead_of_denying(self):
+        module = self._module()
+        for command, expected_reason in self.REPRODUCTION_CASES:
+            with self.subTest(command=command):
+                decision = module.classify_command(command)
+                self.assertEqual(decision.action, "noop")
+                self.assertEqual(decision.decline_reason, expected_reason)
+
+    def test_reproduction_cases_emit_no_intervention_end_to_end(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command, _reason in self.REPRODUCTION_CASES:
+                with self.subTest(script=script, command=command):
+                    proc = run_hook(script, command)
+                    self.assertEqual(proc.returncode, 0)
+                    self.assertEqual(json.loads(proc.stdout), {})
+
+    def test_declined_wraps_never_route_to_trim(self):
+        """미지의 명령을 감싸면 대화형/stdin 명령이 워치독까지 멈춘다."""
+        module = self._module()
+        for command in [
+            "packet-ask doctor",
+            "npm run dev",
+            "python3",
+            "vim README.md",
+            "psql",
+        ]:
+            with self.subTest(command=command):
+                decision = module.classify_command(command)
+                self.assertIn(decision.action, {"noop", "ask"})
+
+    def test_side_effecting_find_asks_instead_of_denying(self):
+        module = self._module()
+        for command in [
+            "find . -name '*.tmp' -delete",
+            # `{}` 는 MiniShell 문법을 통과하지 못한다. 파싱과 무관하게
+            # 알아보지 못하면 되돌릴 수 없는 삭제가 그대로 지나간다.
+            r"find . -type f -exec rm {} \;",
+            "find . -name x -execdir rm {} +",
+            "find /tmp -okdir rm {} ';'",
+            "ls | find . -delete",
+        ]:
+            with self.subTest(command=command):
+                decision = module.classify_command(command)
+                self.assertEqual(decision.action, "ask")
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            with self.subTest(script=script):
+                hook = hook_json(script, "find . -name '*.tmp' -delete")["hookSpecificOutput"]
+                self.assertEqual(hook["permissionDecision"], "ask")
+                self.assertIn("ContextGuard", hook["permissionDecisionReason"])
+                self.assertIn("CONTEXT_GUARD_DISABLE=1", hook["permissionDecisionReason"])
+
+    def test_side_effecting_find_inside_a_shell_c_body_still_asks(self):
+        """모델이 일상적으로 쓰는 `bash -c '...'` 안에 숨어도 잡아야 한다."""
+        module = self._module()
+        for command in [
+            'bash -c "find /tmp/x -delete"',
+            "sh -lc 'find . -exec rm -rf {} +'",
+            'zsh -c "find /var -okdir rm {} ;"',
+        ]:
+            with self.subTest(command=command):
+                self.assertEqual(module.classify_command(command).action, "ask")
+
+    def test_harmless_shell_c_bodies_are_not_escalated(self):
+        module = self._module()
+        for command in ['bash -c "echo hi"', "sh -c 'ls -la'"]:
+            with self.subTest(command=command):
+                self.assertEqual(module.classify_command(command).action, "noop")
+
+    def test_forged_wrapper_envelope_is_refused(self):
+        """호스트 허용목록이 정규 래퍼 argv 형태를 신뢰할 수 있으므로,
+        값 하나만 바꾼 위조 봉투로 프롬프트를 우회하게 두면 안 된다."""
+        module = self._module()
+        wrapped = hook_json(KIT_REWRITE, "pytest -q")["hookSpecificOutput"][
+            "updatedInput"
+        ]["command"]
+        for label, command in [
+            ("canonical", wrapped),
+            ("max-lines changed", wrapped.replace("--max-lines 220", "--max-lines 221", 1)),
+            ("inner command swapped", wrapped.replace("'pytest -q'", "'id'", 1)),
+        ]:
+            with self.subTest(label=label):
+                decision = module.classify_command(command)
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "incoming_wrapper_denied")
+
+    def test_direct_wrapper_cli_use_is_still_ordinary(self):
+        """위조 봉투 차단이 사람이 손으로 쓰는 직접 호출까지 막아서는 안 된다.
+        구분자는 격리된 runtime shell argv 의 존재다."""
+        module = self._module()
+        for command in [
+            "context-guard-trim-output --max-lines 10 -- pytest",
+            "context-guard-sanitize-output --max-lines 10 -- git diff",
+        ]:
+            with self.subTest(command=command):
+                self.assertNotEqual(module.classify_command(command).action, "deny")
+
+    def test_git_guard_exec_mode_is_outside_the_crash_open_guard(self):
+        """git-guard 모드에서는 stdout 이 훅 프로토콜이 아니라 명령 출력이다.
+        거기에 `{}` 를 흘리거나 종료 코드를 0 으로 덮으면 안 된다."""
+        source = KIT_REWRITE.read_text(encoding="utf-8")
+        guard = source[source.index("def main() -> int:"):source.index("def _main() -> int:")]
+        self.assertIn("_GIT_GUARD_MODE in sys.argv[1:]", guard)
+        self.assertLess(
+            guard.index("_GIT_GUARD_MODE in sys.argv[1:]"),
+            guard.index("except BaseException"),
+        )
+
+    def test_non_string_command_declines_instead_of_asserting(self):
+        """페이로드 검증이 먼저 잡는다. `assert` 는 `python -O` 에서 사라지므로
+        분류기 앞의 타입 검사도 실제 분기로 남겨 둔다."""
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            with self.subTest(script=script):
+                proc = run_hook_payload(script, {"tool_input": {"command": 12}})
+                self.assertEqual(json.loads(proc.stdout), {})
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertIn("could not read hook input", proc.stderr)
+        source = KIT_REWRITE.read_text(encoding="utf-8")
+        self.assertNotIn("assert isinstance(command, str)", source)
+
+    def test_disable_env_accepts_the_same_values_as_fail_open(self):
+        for value in ["1", "true", "yes", "on"]:
+            with self.subTest(value=value):
+                env = dict(os.environ)
+                env["CONTEXT_GUARD_DISABLE"] = value
+                proc = run_hook_payload(
+                    KIT_REWRITE, {"tool_input": {"command": "pytest -q"}}, env=env
+                )
+                self.assertEqual(json.loads(proc.stdout), {})
+        env = dict(os.environ)
+        env["CONTEXT_GUARD_DISABLE"] = "0"
+        proc = run_hook_payload(
+            KIT_REWRITE, {"tool_input": {"command": "pytest -q"}}, env=env
+        )
+        self.assertIn("updatedInput", json.loads(proc.stdout)["hookSpecificOutput"])
+
+    def test_read_only_find_is_still_wrapped(self):
+        module = self._module()
+        self.assertEqual(module.classify_command("find . -name '*.py'").action, "trim")
+
+    def test_active_tilde_no_longer_costs_the_wrapper(self):
+        """전면 tilde deny 를 없앤 것만으로 마스킹이 복구된다.
+
+        라우트 술어는 피연산자 텍스트를 보지 않으므로 `~` 를 펼칠 필요가 없다.
+        예전에는 `~` 하나 때문에 이 명령이 통째로 거부되어, 감싸지 않는 대신
+        아예 실행되지 않았다.
+        """
+        module = self._module()
+        decision = module.classify_command("cat ~/.ssh/id_rsa")
+        self.assertEqual(decision.action, "trim")
+        self.assertIsNone(decision.decline_reason)
+
+    def test_tilde_is_never_expanded_in_the_emitted_command(self):
+        wrapped = hook_json(KIT_REWRITE, "cat ~/.ssh/config")["hookSpecificOutput"]
+        emitted = wrapped["updatedInput"]["command"]
+        self.assertIn("~/.ssh/config", emitted)
+        self.assertNotIn(str(Path.home()) + "/.ssh/config", emitted)
+
+    def test_unresolvable_tilde_never_denies_and_keeps_the_literal_word(self):
+        module = self._module()
+        decision = module.classify_command("cat ~nosuchuser-contextguard/file")
+        self.assertNotEqual(decision.action, "deny")
+        emitted = hook_json(KIT_REWRITE, "cat ~nosuchuser-contextguard/file")
+        self.assertIn(
+            "~nosuchuser-contextguard/file",
+            emitted["hookSpecificOutput"]["updatedInput"]["command"],
+        )
+
+    def test_recursion_guard_is_the_only_remaining_denial(self):
+        module = self._module()
+        wrapped = hook_json(KIT_REWRITE, "pytest -q")["hookSpecificOutput"]
+        emitted = wrapped["updatedInput"]["command"]
+        decision = module.classify_command(emitted)
+        self.assertEqual(decision.action, "deny")
+        self.assertIn("recursion guard", decision.reason)
+        self.assertNotIn("MiniShell", decision.reason)
+
+    def test_disable_env_declines_before_classification(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            with self.subTest(script=script):
+                env = dict(os.environ)
+                env["CONTEXT_GUARD_DISABLE"] = "1"
+                proc = run_hook_payload(
+                    script, {"tool_input": {"command": "pytest -q"}}, env=env
+                )
+                self.assertEqual(json.loads(proc.stdout), {})
+
+    def test_missing_wrapper_runs_the_command_unwrapped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            script = tmp_path / "context-guard-rewrite-bash"
+            script.write_bytes(KIT_REWRITE.read_bytes())
+            for command in ["pytest tests -q", "rg -n token ."]:
+                with self.subTest(command=command):
+                    proc = run_hook(script, command, cwd=tmp_path)
+                    self.assertEqual(json.loads(proc.stdout), {})
+                    self.assertIn("is not installed", proc.stderr)
+
+    def test_malformed_payloads_never_deny_and_never_traceback(self):
+        """호스트 페이로드가 흔들려도 Bash 가 전면 중단되면 안 된다."""
+        payloads = [
+            {},
+            {"tool_input": {}},
+            {"tool_input": {"command": None}},
+            {"tool_input": {"command": 12}},
+            {"tool_input": []},
+            {"tool_input": {"command": ["ls"]}},
+            {"unexpected": "shape"},
+            {"tool_input": {"command": "ls"}, "extra": {"deep": [1, 2, 3]}},
+        ]
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for payload in payloads:
+                with self.subTest(script=script, payload=payload):
+                    proc = run_hook_payload(script, payload)
+                    self.assertEqual(proc.returncode, 0)
+                    self.assertNotIn("Traceback", proc.stderr)
+                    data = json.loads(proc.stdout)
+                    decision = data.get("hookSpecificOutput", {}).get(
+                        "permissionDecision"
+                    )
+                    self.assertNotEqual(decision, "deny")
+
+    def test_non_json_and_oversized_stdin_never_deny(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for raw in ["", "not json", "\x00\xff", "[" * 500, "{" + '"a":' * 200 + "1" + "}" * 200]:
+                with self.subTest(script=script, raw=raw[:20]):
+                    proc = subprocess.run(
+                        [sys.executable, str(script)],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        cwd=ROOT,
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 0)
+                    self.assertNotIn("Traceback", proc.stderr)
+                    data = json.loads(proc.stdout)
+                    decision = data.get("hookSpecificOutput", {}).get(
+                        "permissionDecision"
+                    )
+                    self.assertNotEqual(decision, "deny")
+
+    def test_affirmative_routes_are_unchanged(self):
+        module = self._module()
+        expected = {
+            "ls -la": "noop",
+            "cat README.md": "trim",
+            "git status": "sanitize",
+            "rg foo": "sanitize",
+            "pytest -q": "trim",
+        }
+        for command, action in expected.items():
+            with self.subTest(command=command):
+                self.assertEqual(module.classify_command(command).action, action)
+
+    def test_no_user_facing_text_names_the_internal_policy(self):
+        module = self._module()
+        for command, _reason in self.REPRODUCTION_CASES:
+            with self.subTest(command=command):
+                decision = module.classify_command(command)
+                self.assertIsNone(decision.reason)
 
 
 _MOVED_TEST_EXPORTS = {

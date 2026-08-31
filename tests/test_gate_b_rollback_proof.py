@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import dataclasses
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -1203,8 +1204,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen15(self) -> None:
-        """운영 레코드는 gen2~gen15를 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen16(self) -> None:
+        """운영 레코드는 gen2~gen16을 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1223,11 +1224,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen13",
                 "gen14",
                 "gen15",
+                "gen16",
             ),
         )
-        gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10, gen11, gen12, gen13, gen14, gen15 = (
-            rollback_proof.GENERATIONS
-        )
+        (
+            gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10,
+            gen11, gen12, gen13, gen14, gen15, gen16,
+        ) = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
         self.assertEqual(gen2.shared_paths, gen1.shared_paths)
@@ -1762,6 +1765,92 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen15.shared_subject,
             ),
             gen15_subjects,
+        )
+
+        # gen16 은 범용 테스트 모듈을 freeze 에서 뺀 narrowing 세대다.
+        self.assertEqual(gen16.b1_paths, rollback_proof.B1_PATHS)
+        self.assertEqual(gen16.b2_paths, rollback_proof.B2_PATHS)
+        self.assertEqual(
+            gen16.shared_paths,
+            rollback_proof.GEN16_SHARED_INTEGRATION_PATHS,
+        )
+        self.assertEqual(
+            rollback_proof.SHARED_INTEGRATION_PATHS - gen16.shared_paths,
+            {"tests/test_context_guard_kit.py"},
+        )
+        self.assertNotIn(
+            "tests/test_context_guard_kit.py", gen16.all_component_paths
+        )
+        for marker in gen16.gate_b_markers:
+            self.assertIn(marker.owner_path, gen16.all_component_paths)
+        for owner in gen16.residual_markers:
+            self.assertIn(owner, gen16.all_component_paths)
+        self.assertEqual(gen16.residual_markers, rollback_proof.GEN1_RESIDUAL_MARKERS)
+        self.assertEqual(gen16.gate_b_markers, rollback_proof.GEN1_GATE_B_MARKERS)
+        self.assertEqual(gen16.residual_edits, frozenset())
+        gen16_subjects = (
+            rollback_proof.GEN16_BLESS_SUBJECT,
+            rollback_proof.GEN16_B1_SUBJECT,
+            rollback_proof.GEN16_B2_SUBJECT,
+            rollback_proof.GEN16_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen16_subjects,
+            (
+                "proof: establish Gate-B-free residual gen16 bash hook zero command authority",
+                "proof: reapply Gate-B nudge component gen16 bash hook zero command authority",
+                "proof: reapply Gate-B usage component gen16 bash hook zero command authority",
+                "proof: reapply Gate-B integration component gen16 bash hook zero command authority",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen16.bless_subject,
+                gen16.b1_subject,
+                gen16.b2_subject,
+                gen16.shared_subject,
+            ),
+            gen16_subjects,
+        )
+
+    def test_narrowing_must_be_a_subset_of_the_canonical_path_sets(self) -> None:
+        """좁히기는 정규 집합의 부분집합으로만 표현할 수 있다.
+
+        이 불변식이 없으면 다음 세대가 직전 세대의 좁혀진 집합을 기준으로 또
+        빼면서 "이어받는다"처럼 보이게 만들 수 있고, 빠진 경로가 어디에도
+        드러나지 않는다.
+        """
+        for generation in rollback_proof.GENERATIONS:
+            with self.subTest(generation=generation.name):
+                self.assertTrue(generation.b1_paths <= rollback_proof.B1_PATHS)
+                self.assertTrue(generation.b2_paths <= rollback_proof.B2_PATHS)
+                self.assertTrue(
+                    generation.shared_paths
+                    <= rollback_proof.SHARED_INTEGRATION_PATHS
+                )
+
+    def test_shipped_generation_check_rejects_a_path_outside_the_canonical_set(
+        self,
+    ) -> None:
+        base = rollback_proof.GENERATIONS[-1]
+        smuggled = dataclasses.replace(
+            base,
+            name="gen-smuggled",
+            shared_paths=frozenset(base.shared_paths | {"scripts/not_a_component.py"}),
+        )
+        with self.assertRaises(rollback_proof.ProofError) as caught:
+            rollback_proof.assert_shipped_generations_narrow_only(
+                (*rollback_proof.GENERATIONS, smuggled)
+            )
+        self.assertIn("outside", str(caught.exception))
+
+    def test_shipped_generation_check_passes_on_the_real_list(self) -> None:
+        rollback_proof.assert_shipped_generations_narrow_only()
+
+    def test_narrowed_paths_report_names_every_dropped_path(self) -> None:
+        report = rollback_proof.narrowed_paths_report()
+        self.assertEqual(
+            report, {"gen16": ["tests/test_context_guard_kit.py"]}
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:
