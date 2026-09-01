@@ -4,6 +4,10 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.12.3] - 2026-09-01
+
 - Hardened the `--graph-cache` store. The cache holds repo-map/graph-rank output
   under `~/.cache/context-guard/graph-rank` (or `CONTEXT_GUARD_GRAPH_CACHE_DIR`),
   a shared location outside the repository, and it was reached by path with none
