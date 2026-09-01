@@ -4,6 +4,10 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.12.0] - 2026-09-01
+
 - `context-guard-audit` now reports `tool_result_bytes`: where context bytes
   actually came from, counted directly from transcript `tool_use`/`tool_result`
   blocks. It breaks bytes down by tool, by content class (image vs text), and by
@@ -19,6 +23,11 @@ All notable changes for the ContextGuard plugin are documented here.
   - Reading paths are never emitted; file extensions only. Correlation between
     `tool_use` and `tool_result`, and byte-identical duplicate detection, are
     both scoped to a single transcript file. Every accumulator is bounded.
+- Fixed the P3 live-contract protocol tests expiring with the calendar. They
+  validated the pricing window against the real clock, so they began failing on
+  2026-09-01 with no code change. They now pin a date inside the window; the
+  guard that refuses live calls under an expired pricing window is unchanged and
+  a new test holds it to that.
 
 ## [0.11.0] - 2026-08-31
 
