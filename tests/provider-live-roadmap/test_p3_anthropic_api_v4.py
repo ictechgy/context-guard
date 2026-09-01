@@ -1,5 +1,7 @@
 import importlib.util
 import copy
+import datetime
+import functools
 import inspect
 import json
 import os
@@ -20,6 +22,33 @@ LAUNCHER = V4 / "live_launcher.py"
 CAPTURE = V3 / "provider-input-freeze.json"
 POLICY = V4 / "budget_policy.py"
 REPORT = V4 / "budget-policy-report.json"
+
+
+# 계약의 가격 유효기간 안에 있는 고정 날짜.
+#
+# 이 테스트들이 검증하는 것은 프로토콜(봉투 재시작, 단위별 1회 실행)이지 달력이
+# 아니다. 그런데 run_live_authorized 는 실제 시계로 가격창을 확인하므로,
+# effective_end 가 지나는 순간 프로토콜 테스트가 통째로 썩는다. 실제로 2026-09-01
+# 자정에 그렇게 됐다.
+#
+# 가드 자체는 옳다 - 만료된 공시가로 실제 provider 호출을 하면 안 된다. 그래서
+# 프로덕션 시그니처에 날짜 우회 경로를 만들지 않고, 테스트 경계에서만 고정한다.
+# 창 밖에서 여전히 거부하는지는 test_pricing_window_still_refuses_outside_the_window
+# 가 따로 지킨다.
+PINNED_PRICING_DATE = datetime.date(2026, 8, 15)
+
+
+def pinned_pricing_window(runner):
+    """가격창 검사를 고정 날짜로 수행하게 만드는 컨텍스트 매니저.
+
+    검사 로직 자체는 그대로 돈다. 관측 날짜만 주입하므로 EXPECTED_PRICING 불일치나
+    창 경계 계산이 여전히 검증된다.
+    """
+    return mock.patch.object(
+        runner,
+        "validate_pricing_window",
+        functools.partial(runner.validate_pricing_window, observed_date=PINNED_PRICING_DATE),
+    )
 
 
 def load_runner():
@@ -139,8 +168,34 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
             self.assertFalse(state.exists())
             self.assertFalse(output.exists())
 
+    def test_pricing_window_still_refuses_outside_the_window(self) -> None:
+        """가격창 가드는 그대로여야 한다.
+
+        위 두 테스트는 창 안의 고정 날짜를 주입해 달력 의존을 없앤다. 그 주입이 가드를
+        무력화하지 않았는지를 여기서 지킨다. 창 밖 날짜는 여전히 거부해야 한다.
+        """
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        pricing = runner.EXPECTED_PRICING
+        start = datetime.date.fromisoformat(pricing["effective_start"])
+        end = datetime.date.fromisoformat(pricing["effective_end"])
+        self.assertLessEqual(start, PINNED_PRICING_DATE)
+        self.assertLessEqual(PINNED_PRICING_DATE, end)
+
+        one_day = datetime.timedelta(days=1)
+        for outside in (start - one_day, end + one_day):
+            with self.subTest(observed_date=outside.isoformat()):
+                with self.assertRaises(runner.LiveRunError) as caught:
+                    runner.validate_pricing_window(contract, observed_date=outside)
+                self.assertEqual(str(caught.exception), "pricing_window_unavailable")
+
+        for inside in (start, PINNED_PRICING_DATE, end):
+            with self.subTest(observed_date=inside.isoformat()):
+                runner.validate_pricing_window(contract, observed_date=inside)
+
     def test_authorized_v2_envelopes_execute_each_unit_once(self) -> None:
         runner = load_runner()
+        self.enterContext(pinned_pricing_window(runner))
         contract = json.loads(CONTRACT.read_bytes())
         plan, selection = self._plan(runner)
         verification_key = b"v" * 32
@@ -237,6 +292,7 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
 
     def test_registry_commit_crash_restarts_same_v2_approvals_without_redispatch(self) -> None:
         runner = load_runner()
+        self.enterContext(pinned_pricing_window(runner))
         contract = json.loads(CONTRACT.read_bytes())
         plan, selection = self._plan(runner)
         verification_key = b"v" * 32
