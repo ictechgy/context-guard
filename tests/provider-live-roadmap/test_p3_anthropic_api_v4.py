@@ -44,10 +44,18 @@ def pinned_pricing_window(runner):
     검사 로직 자체는 그대로 돈다. 관측 날짜만 주입하므로 EXPECTED_PRICING 불일치나
     창 경계 계산이 여전히 검증된다.
     """
+    # 대체물을 스파이로 둔다. 날짜만 고정하면 "가드가 살아 있다" 는 것만 알 뿐,
+    # run_live_authorized 가 실제로 그것을 부르는지는 알 수 없다. 호출을 기록해두면
+    # 라이브 경로에서 가드를 떼어내는 리팩터가 조용히 통과하지 못한다.
     return mock.patch.object(
         runner,
         "validate_pricing_window",
-        functools.partial(runner.validate_pricing_window, observed_date=PINNED_PRICING_DATE),
+        mock.MagicMock(
+            side_effect=functools.partial(
+                runner.validate_pricing_window, observed_date=PINNED_PRICING_DATE
+            ),
+            __name__="validate_pricing_window",
+        ),
     )
 
 
@@ -193,9 +201,25 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
             with self.subTest(observed_date=inside.isoformat()):
                 runner.validate_pricing_window(contract, observed_date=inside)
 
+    def test_pricing_window_refuses_a_contract_whose_pricing_was_altered(self) -> None:
+        """날짜를 고정해도 가격표 자체의 검증은 살아 있어야 한다.
+
+        pinned_pricing_window 의 docstring 이 "EXPECTED_PRICING 불일치는 여전히
+        검증된다" 고 주장하는데, 창 경계만 검사하는 테스트는 그것을 지키지 못한다.
+        """
+        runner = load_runner()
+        contract = json.loads(CONTRACT.read_bytes())
+        altered = copy.deepcopy(contract)
+        pricing = dict(altered["pricing"])
+        pricing["effective_end"] = "2099-12-31"
+        altered["pricing"] = pricing
+        with self.assertRaises(runner.LiveRunError) as caught:
+            runner.validate_pricing_window(altered, observed_date=PINNED_PRICING_DATE)
+        self.assertEqual(str(caught.exception), "invalid_pricing")
+
     def test_authorized_v2_envelopes_execute_each_unit_once(self) -> None:
         runner = load_runner()
-        self.enterContext(pinned_pricing_window(runner))
+        pricing_guard = self.enterContext(pinned_pricing_window(runner))
         contract = json.loads(CONTRACT.read_bytes())
         plan, selection = self._plan(runner)
         verification_key = b"v" * 32
@@ -288,11 +312,14 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                         api_key=b"sk-ant-api03-test-value",
                     )
             self.assertEqual(result["status"], "completed")
+            # 라이브 경로가 실제로 가격창 가드를 통과했는지 확인한다. 날짜 고정만으로는
+            # 가드가 호출되지 않게 되는 리팩터를 잡을 수 없다.
+            pricing_guard.assert_called()
             self.assertEqual(len(calls), 288)
 
     def test_registry_commit_crash_restarts_same_v2_approvals_without_redispatch(self) -> None:
         runner = load_runner()
-        self.enterContext(pinned_pricing_window(runner))
+        pricing_guard = self.enterContext(pinned_pricing_window(runner))
         contract = json.loads(CONTRACT.read_bytes())
         plan, selection = self._plan(runner)
         verification_key = b"v" * 32
@@ -428,6 +455,9 @@ class P3AnthropicAPIV4Tests(unittest.TestCase):
                         api_key=b"sk-ant-api03-test-value",
                     )
             self.assertEqual(result["status"], "completed")
+            # 라이브 경로가 실제로 가격창 가드를 통과했는지 확인한다. 날짜 고정만으로는
+            # 가드가 호출되지 않게 되는 리팩터를 잡을 수 없다.
+            pricing_guard.assert_called()
             self.assertEqual(len(calls), 288)
             ledger = json.loads((state / "ledger.json").read_bytes())
             self.assertTrue(

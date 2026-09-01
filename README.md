@@ -263,7 +263,7 @@ designed and rejected in review for losing exactly that anchor; see
 [`research/receipt-install-shape-boundary-20260831.md`](research/receipt-install-shape-boundary-20260831.md).
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.12.0
+npm install --save-exact @ictechgy/context-guard@0.12.1
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -581,7 +581,7 @@ JSON output can include several evidence surfaces:
 
 - `cache_friendliness` and [`cache_diagnostics`](docs/cache-diagnostics-schema.md): heuristic prompt-layout/cache-read diagnostics built from bounded usage fields, timestamped cache telemetry records, and redacted segment hashes.
 - `cache_layout_advice`: ranked **checks/experiments** such as splitting long sessions or stabilizing early prompt prefixes, with observed issues kept separate from hypothesized or corroborated causes.
-- `tool_result_bytes`: where context bytes actually came from, counted directly from transcript `tool_use`/`tool_result` blocks — by tool, by content class (image/text), by file extension, plus the size distribution, the share carried by the largest results, the byte-identical duplicate share, and how much of your file reading carried an explicit range. Provider token accounting is per-request and cannot attribute tokens to a tool, so this section is byte-based and states that boundary in its own output.
+- `tool_result_bytes`: where context bytes actually came from, counted from the **content of transcript `tool_result` blocks** — by tool, by content class (image/text), by file extension, plus the size distribution, the share carried by the largest results, the duplicate share, and how many file reads requested an explicit range. `tool_use` blocks are read only to attribute a result to a tool; their input bytes are not counted, and neither is anything outside tool results. Sizes are measured on a canonical serialization, so they approximate rather than reproduce on-disk bytes, and a stored result is re-sent on later requests, so these are a lower bound on context exposure. Provider token accounting is per-request and cannot attribute tokens to a tool, so this section is byte-based and states that boundary in its own output.
 - `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): a contract for local macOS-visible consumers. Only stable top-level fields are binding targets; `summary` is not a primary UI binding source.
 
 Guardrails cost something to run and not every one pays off on every project, so measure before enabling. Reported byte shares are observations, not savings: they say where the bytes went, not what you would recover by trimming them. Reading paths are never emitted here — file extensions only.

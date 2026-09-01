@@ -6,6 +6,33 @@ All notable changes for the ContextGuard plugin are documented here.
 
 _No unreleased changes._
 
+## [0.12.1] - 2026-09-01
+
+Follow-ups from an adversarial review of the 0.12.0 byte profiler. No reported
+number changes for ordinary corpora; these close gaps between what the code
+guaranteed and what it did.
+
+- File-extension labels are now restricted to extension-shaped suffixes. The
+  previous pattern passed through most of whatever followed the last dot, so
+  `notes.client-acme` was labelled `client-acme` — a filename fragment emitted
+  as an "extension", weaker than the stated guarantee that paths never leave
+  this section. Suffixes that are not extension-shaped now fold into
+  `(not-an-extension)`, which is deliberately distinct from the cardinality
+  overflow bucket `(other)`.
+- The text report now carries the caveats that were only in the JSON: that the
+  concentration shares are over the size sample rather than `total_bytes`, that
+  duplicate tracking may be truncated, why results are unattributed, and that
+  the read-bounding ratio counts exact-match file-reading tools only.
+- Corrected the README and CHANGELOG description of what is counted. Only the
+  content of `tool_result` blocks is measured; `tool_use` blocks are read for
+  attribution and their input bytes are never counted.
+- Corrected the content-classification docstring, which described the
+  extension-first order that the 0.12.0 review had already replaced with
+  content-first.
+- The pricing-window tests now prove the guard is still wired into
+  `run_live_authorized` rather than only that the validator works when called
+  directly, and a new test pins that an altered pricing table is still refused.
+
 ## [0.12.0] - 2026-09-01
 
 - `context-guard-audit` now reports `tool_result_bytes`: where context bytes
