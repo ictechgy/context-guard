@@ -106,6 +106,31 @@ PROMPT_AUDIT_MAX_DEPTH = 64
 USER_PROMPT_ROLES = {"user", "human"}
 TEXT_BLOCK_TYPES = {"text", "input_text"}
 
+TOOL_RESULT_BYTES_SCHEMA_VERSION = "contextguard.tool-result-bytes.v1"
+# 큰 결과의 기준. 이 값 이상만 상위 목록과 집중도 분모에 쓴다.
+TOOL_RESULT_LARGE_BYTES = 20_000
+# 백분위 계산을 위해 보관하는 크기 표본의 상한. 크기(int)만 담으므로 내용은 남지 않는다.
+TOOL_RESULT_MAX_SIZE_SAMPLES = 200_000
+# 세션 하나에서 tool_use_id -> 도구 정보를 들고 있을 상한. 파일이 바뀌면 비운다.
+TOOL_RESULT_MAX_PENDING_USES = 20_000
+# 세션 하나에서 완전 중복 판정을 위해 유지하는 해시 상한.
+TOOL_RESULT_MAX_DUP_HASHES = 100_000
+# 확장자 라벨로 허용하는 모양. 경로는 절대 노출하지 않고 확장자만 집계한다.
+TOOL_RESULT_EXTENSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._-]{0,15}$")
+TOOL_RESULT_MAX_EXTENSIONS = 200
+TOOL_RESULT_MAX_TOOL_LABELS = 500
+TOOL_RESULT_OVERFLOW_LABEL = "(other)"
+IMAGE_EXTENSIONS = frozenset(
+    {
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
+        "ico", "heic", "heif", "avif",
+    }
+)
+# Read 계열로 취급할 도구 이름. 파일 경로 입력을 갖는 것들만 확장자 집계 대상이다.
+FILE_READ_TOOL_NAMES = frozenset({"Read", "NotebookRead"})
+TOOL_RESULT_FILE_PATH_KEYS = ("file_path", "filePath", "notebook_path")
+TOOL_RESULT_RANGE_KEYS = ("offset", "limit", "pages", "line_range", "range")
+
 
 def push_bounded(
     stack: list[tuple[Any, int]],
@@ -181,6 +206,293 @@ class PromptCacheAudit:
         ))
 
 
+def json_compact(value: Any) -> str:
+    """바이트 길이 측정을 위한 결정적 직렬화.
+
+    깊게 중첩되거나 직렬화 불가능한 값이 와도 예외로 스캔을 멈추지 않아야 하므로,
+    실패하면 repr로 물러난다. 여기서 나온 문자열은 길이/해시 계산에만 쓰이고 출력되지 않는다.
+    """
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError, RecursionError):
+        pass
+    try:
+        return repr(value)
+    except BaseException:
+        return f"<unrepresentable {type(value).__name__}>"
+
+
+def _iter_content_blocks(root: Any) -> Iterable[dict[str, Any]]:
+    """레코드의 message.content 배열에서 블록 딕셔너리를 순회한다.
+
+    transcript 스키마는 message.content 아래에 블록을 두지만, 일부 행은 content를 최상위에
+    두기도 한다. 두 모양만 받고 그 밖은 무시해 walk() 전체 순회 비용을 피한다.
+    """
+    if not isinstance(root, dict):
+        return
+    message = root.get("message")
+    holder = message if isinstance(message, dict) else root
+    content = holder.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict):
+            yield block
+
+
+def _tool_input_extension(payload: dict[str, Any]) -> str | None:
+    """도구 입력의 파일 경로에서 소문자 확장자만 뽑는다. 경로 자체는 버린다."""
+    for key in TOOL_RESULT_FILE_PATH_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        normalized = value.replace("\\", "/")
+        if normalized.endswith("/"):
+            return None
+        base = normalized.rsplit("/", 1)[-1]
+        if "." not in base or base.startswith("."):
+            return "(none)"
+        extension = base.rsplit(".", 1)[-1].lower()
+        if TOOL_RESULT_EXTENSION_RE.match(extension):
+            return extension
+        return "(other)"
+    return None
+
+
+def _tool_result_byte_length(content: Any) -> int | None:
+    """tool_result 내용의 UTF-8 바이트 길이. 측정할 수 없으면 None."""
+    if isinstance(content, str):
+        return len(content.encode("utf-8", errors="replace"))
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    total += len(text.encode("utf-8", errors="replace"))
+                    continue
+                source = block.get("source")
+                if isinstance(source, dict):
+                    data = source.get("data")
+                    if isinstance(data, str):
+                        total += len(data.encode("utf-8", errors="replace"))
+                        continue
+            total += len(json_compact(block).encode("utf-8", errors="replace"))
+        return total
+    if content is None:
+        return None
+    return len(json_compact(content).encode("utf-8", errors="replace"))
+
+
+def _tool_result_has_image_block(content: Any) -> bool:
+    """내용 블록에 이미지 페이로드가 들어 있는지 확인한다."""
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "image":
+            return True
+        source = block.get("source")
+        if isinstance(source, dict):
+            media = source.get("media_type")
+            if isinstance(media, str) and media.startswith("image/"):
+                return True
+    return False
+
+
+def _tool_result_content_class(extension: str | None, content: Any) -> str:
+    """결과 바이트를 image/text/unknown 중 하나로 분류한다.
+
+    확장자를 우선 보고, 없으면 내용 블록의 이미지 페이로드 여부로 판단한다. 이미지 바이트는
+    줄 단위 트리밍으로 줄일 수 없어 텍스트와 성격이 다르므로 따로 센다.
+    """
+    if _tool_result_has_image_block(content):
+        return "image"
+    if isinstance(content, str) or _tool_result_is_all_text_blocks(content):
+        # 이미지 확장자여도 본문이 평문이면 읽기가 실패해 오류 문자열이 돌아온 것이다.
+        # 확장자를 먼저 보면 그런 결과가 이미지 바이트로 잡혀 독자를 오도한다.
+        return "text"
+    if extension in IMAGE_EXTENSIONS:
+        return "image"
+    if extension is not None:
+        return "text"
+    return "unknown"
+
+
+def _tool_result_is_all_text_blocks(content: Any) -> bool:
+    """내용이 텍스트 블록으로만 이루어졌는지 확인한다.
+
+    Bash처럼 파일 경로가 없는 도구의 결과에는 확장자가 없다. 그렇다고 종류를 모르는 것은
+    아니므로, 텍스트 블록만 있으면 text로 분류해 unknown이 과대 집계되지 않게 한다.
+    """
+    if not isinstance(content, list) or not content:
+        return False
+    for block in content:
+        if isinstance(block, str):
+            continue
+        if isinstance(block, dict) and block.get("type") in TEXT_BLOCK_TYPES:
+            continue
+        return False
+    return True
+
+
+def _bounded_label(label: str, seen: Counter[str], limit: int) -> str:
+    """라벨 카디널리티를 상한 안에 둔다.
+
+    도구 이름과 확장자는 transcript가 정하는 값이므로 서로 다른 값이 무한히 올 수 있다.
+    상한을 넘으면 넘침 버킷으로 접어 바이트 총합은 보존하되 Counter가 무한히 자라지 않게 한다.
+    """
+    if label in seen or len(seen) < limit:
+        return label
+    return TOOL_RESULT_OVERFLOW_LABEL
+
+
+def _tool_result_digest(content: Any) -> str | None:
+    """완전 중복 판정을 위한 SHA-256. 내용은 저장하지 않고 해시만 남긴다."""
+    if isinstance(content, str):
+        raw = content.encode("utf-8", errors="replace")
+    elif content is None:
+        return None
+    else:
+        raw = json_compact(content).encode("utf-8", errors="replace")
+    return hashlib.sha256(raw).hexdigest()
+
+
+@dataclass
+class ToolResultBytesAudit:
+    """tool_result가 컨텍스트로 실어 나른 바이트를 도구/내용종류별로 집계한다.
+
+    토큰 사용량 필드(usage)는 요청 전체의 합계만 알려주므로, 그 바이트가 어느 도구에서
+    왔는지는 알 수 없다. 이 집계는 transcript의 tool_use/tool_result 블록을 직접 세어
+    "어디로 바이트가 갔는가"를 답한다. 절감 주장을 하지 않고 관측된 분포만 보고한다.
+
+    내용은 보관하지 않는다. 크기(int)와 SHA-256 해시만 들고 있으며, 파일 경로는 확장자로만
+    환원한다. 중복 판정과 tool_use 상관은 세션(파일) 단위로 범위를 제한한다.
+    """
+
+    results: int = 0
+    total_bytes: int = 0
+    sizes: list[int] = field(default_factory=list)
+    size_samples_truncated: bool = False
+    by_tool_results: Counter[str] = field(default_factory=Counter)
+    by_tool_bytes: Counter[str] = field(default_factory=Counter)
+    by_extension_results: Counter[str] = field(default_factory=Counter)
+    by_extension_bytes: Counter[str] = field(default_factory=Counter)
+    by_class_results: Counter[str] = field(default_factory=Counter)
+    by_class_bytes: Counter[str] = field(default_factory=Counter)
+    duplicate_results: int = 0
+    duplicate_bytes: int = 0
+    duplicate_tracking_truncated: bool = False
+    unbounded_read_results: int = 0
+    unbounded_read_bytes: int = 0
+    bounded_read_results: int = 0
+    bounded_read_bytes: int = 0
+    correlated_results: int = 0
+    uncorrelated_results: int = 0
+    attribution_truncated: bool = False
+    _current_file: Path | None = field(default=None, init=False, repr=False)
+    _pending_uses: dict[str, tuple[str, bool, str | None]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _seen_hashes: set[str] = field(default_factory=set, init=False, repr=False)
+
+    def start_file(self, file: Path | None) -> None:
+        """세션 경계에서 상관/중복 상태를 비운다.
+
+        tool_use_id와 완전중복은 한 세션 안에서만 의미가 있고, 파일을 넘겨 유지하면
+        메모리도 무한히 자란다. scan()이 파일을 순차 처리하므로 경계에서 비우면 충분하다.
+        """
+        if file == self._current_file:
+            return
+        self._current_file = file
+        self._pending_uses.clear()
+        self._seen_hashes.clear()
+
+    def observe(self, root: Any) -> None:
+        """레코드 하나에서 tool_use와 tool_result 블록을 찾아 집계한다."""
+        for block in _iter_content_blocks(root):
+            block_type = block.get("type")
+            if block_type == "tool_use":
+                self._observe_tool_use(block)
+            elif block_type == "tool_result":
+                self._observe_tool_result(block)
+
+    def _observe_tool_use(self, block: dict[str, Any]) -> None:
+        use_id = block.get("id")
+        name = block.get("name")
+        if not isinstance(use_id, str) or not isinstance(name, str):
+            return
+        if len(self._pending_uses) >= TOOL_RESULT_MAX_PENDING_USES:
+            self.attribution_truncated = True
+            return
+        payload = block.get("input")
+        payload = payload if isinstance(payload, dict) else {}
+        bounded = any(payload.get(key) is not None for key in TOOL_RESULT_RANGE_KEYS)
+        self._pending_uses[use_id] = (
+            sanitize_label(name, 80),
+            bounded,
+            _tool_input_extension(payload),
+        )
+
+    def _observe_tool_result(self, block: dict[str, Any]) -> None:
+        size = _tool_result_byte_length(block.get("content"))
+        if size is None:
+            return
+        self.results += 1
+        self.total_bytes += size
+        if len(self.sizes) < TOOL_RESULT_MAX_SIZE_SAMPLES:
+            self.sizes.append(size)
+        else:
+            self.size_samples_truncated = True
+
+        use_id = block.get("tool_use_id")
+        entry = self._pending_uses.pop(use_id, None) if isinstance(use_id, str) else None
+        if entry is None:
+            self.uncorrelated_results += 1
+            tool_name, bounded, extension = "unattributed", False, None
+        else:
+            self.correlated_results += 1
+            tool_name, bounded, extension = entry
+        tool_name = _bounded_label(
+            tool_name, self.by_tool_bytes, TOOL_RESULT_MAX_TOOL_LABELS
+        )
+        self.by_tool_results[tool_name] += 1
+        self.by_tool_bytes[tool_name] += size
+
+        if extension is not None:
+            extension = _bounded_label(
+                extension, self.by_extension_bytes, TOOL_RESULT_MAX_EXTENSIONS
+            )
+            self.by_extension_results[extension] += 1
+            self.by_extension_bytes[extension] += size
+        content_class = _tool_result_content_class(extension, block.get("content"))
+        self.by_class_results[content_class] += 1
+        self.by_class_bytes[content_class] += size
+
+        if entry is not None and tool_name in FILE_READ_TOOL_NAMES:
+            if bounded:
+                self.bounded_read_results += 1
+                self.bounded_read_bytes += size
+            else:
+                self.unbounded_read_results += 1
+                self.unbounded_read_bytes += size
+
+        self._observe_duplicate(block.get("content"), size)
+
+    def _observe_duplicate(self, content: Any, size: int) -> None:
+        digest = _tool_result_digest(content)
+        if digest is None:
+            return
+        if digest in self._seen_hashes:
+            self.duplicate_results += 1
+            self.duplicate_bytes += size
+        elif len(self._seen_hashes) >= TOOL_RESULT_MAX_DUP_HASHES:
+            self.duplicate_tracking_truncated = True
+        else:
+            self._seen_hashes.add(digest)
+
+
 @dataclass
 class UsageSummary:
     files: int = 0
@@ -203,6 +515,7 @@ class UsageSummary:
     cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     positive_cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
+    tool_result_bytes: ToolResultBytesAudit = field(default_factory=ToolResultBytesAudit)
     usage_reducer_schema: str = REDUCER_SCHEMA
     usage_reducer_counters: Counter[str] = field(default_factory=Counter)
     usage_reducer_partial: bool = False
@@ -736,6 +1049,8 @@ def add_usage(
 ) -> RecordUsage:
     record = RecordUsage()
     summary.prompt_cache_audit.observe(root)
+    summary.tool_result_bytes.start_file(file)
+    summary.tool_result_bytes.observe(root)
     for d in walk(root):
         for key in COST_KEYS:
             val = d.get(key)
@@ -1961,6 +2276,7 @@ def feasibility_json(
         "cache_friendliness": cache_friendliness,
         "cache_diagnostics": cache_diagnostics,
         "cache_layout_advice": cache_layout_advice,
+        "tool_result_bytes": build_tool_result_bytes(summary, top),
         "mac_visibility": mac_visibility,
         "totals": {
             "total_tokens": stable_total_tokens,
@@ -1971,6 +2287,150 @@ def feasibility_json(
         },
         "summary": base,
     }
+
+
+def _share(part: int, whole: int) -> float | None:
+    """비중을 0~1 사이 값으로. 분모가 0이면 None(정의되지 않음)."""
+    return (part / whole) if whole > 0 else None
+
+
+def _counter_pair_rows(
+    counts: Counter[str], byte_counts: Counter[str], total_bytes: int, limit: int
+) -> list[dict[str, Any]]:
+    """바이트 내림차순으로 (라벨, 건수, 바이트, 비중) 행을 만든다."""
+    rows: list[dict[str, Any]] = []
+    for label, measured in byte_counts.most_common(limit):
+        rows.append(
+            {
+                "label": label,
+                "results": counts.get(label, 0),
+                "bytes": measured,
+                "byte_share": _share(measured, total_bytes),
+            }
+        )
+    return rows
+
+
+def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
+    """tool_result 바이트가 어디로 갔는지에 대한 관측 보고를 만든다.
+
+    이 절은 절감을 주장하지 않는다. usage 토큰 필드는 요청 합계만 주므로 도구별 귀속이
+    불가능한데, 여기서는 transcript 블록을 직접 세어 분포/집중도/중복률을 관측값으로만
+    보고한다. 어떤 가드레일을 켤지는 이 분포를 보고 사용자가 정한다.
+    """
+    audit = summary.tool_result_bytes
+    total = audit.total_bytes
+    status = "observed" if audit.results else "unavailable"
+    report: dict[str, Any] = {
+        "schema_version": TOOL_RESULT_BYTES_SCHEMA_VERSION,
+        "status": status,
+        "claim_boundary": (
+            "Observed distribution of bytes stored in transcript tool_result blocks, counted once "
+            "per result. This is not a token count, not a cost estimate, and not a savings claim. "
+            "Provider token accounting is per-request and does not attribute tokens to individual "
+            "tools, and a stored result is re-sent on later requests, so stored bytes are a lower "
+            "bound on context exposure rather than a measure of it. Sizes are measured on a "
+            "canonical serialization, so they approximate rather than reproduce on-disk bytes."
+        ),
+        "results": audit.results,
+        "total_bytes": total,
+        "large_result_threshold_bytes": TOOL_RESULT_LARGE_BYTES,
+        "attribution": {
+            "correlated_results": audit.correlated_results,
+            "uncorrelated_results": audit.uncorrelated_results,
+            "truncated": audit.attribution_truncated,
+            "note": (
+                "Uncorrelated results had no matching tool_use block in the same transcript file "
+                "and are reported under the 'unattributed' label. If truncated is true the "
+                "correlation table filled up, so some results are unattributed for that reason "
+                "rather than because their tool_use was absent."
+            ),
+        },
+    }
+    if not audit.results:
+        report["reason"] = "no tool_result blocks were observed in the scanned transcripts"
+        return report
+
+    sizes = sorted(audit.sizes)
+    if sizes:
+        def percentile(fraction: float) -> int:
+            index = min(len(sizes) - 1, max(0, int(len(sizes) * fraction)))
+            return sizes[index]
+
+        report["size_percentiles_bytes"] = {
+            "p50": percentile(0.50),
+            "p75": percentile(0.75),
+            "p90": percentile(0.90),
+            "p95": percentile(0.95),
+            "p99": percentile(0.99),
+            "max": sizes[-1],
+        }
+        report["size_samples"] = {
+            "counted": len(sizes),
+            "truncated": audit.size_samples_truncated,
+        }
+        large = [size for size in sizes if size >= TOOL_RESULT_LARGE_BYTES]
+        sampled_total = sum(sizes)
+        report["concentration"] = {
+            "large_results": len(large),
+            "large_result_share": _share(len(large), len(sizes)),
+            "large_byte_share": _share(sum(large), sampled_total),
+            "sample_results": len(sizes),
+            "sample_bytes": sampled_total,
+            "sample_truncated": audit.size_samples_truncated,
+            "note": (
+                "Shares here are over the size sample, not over total_bytes as every other share in "
+                "this report is. A small count holding a large byte share means a few results "
+                "dominate. If sample_truncated is true the sample is the first results seen rather "
+                "than a random draw, so concentration may be understated."
+            ),
+        }
+
+    report["by_tool"] = _counter_pair_rows(
+        audit.by_tool_results, audit.by_tool_bytes, total, top
+    )
+    report["by_content_class"] = _counter_pair_rows(
+        audit.by_class_results, audit.by_class_bytes, total, len(audit.by_class_bytes)
+    )
+    if audit.by_extension_bytes:
+        report["by_file_extension"] = _counter_pair_rows(
+            audit.by_extension_results,
+            audit.by_extension_bytes,
+            total,
+            min(top, TOOL_RESULT_MAX_EXTENSIONS),
+        )
+        report["by_file_extension_note"] = (
+            "File extensions only; transcript file paths are never emitted by this section."
+        )
+    report["exact_duplicates"] = {
+        "results": audit.duplicate_results,
+        "bytes": audit.duplicate_bytes,
+        "byte_share": _share(audit.duplicate_bytes, total),
+        "scope": "within a single transcript file",
+        "tracking_truncated": audit.duplicate_tracking_truncated,
+        "note": (
+            "Repeats of an earlier result in the same session, matched on a canonical serialization "
+            "rather than raw bytes, so this is an upper bound on byte-identical repeats. Repeats "
+            "stored by the transcript itself are indistinguishable here from content the model saw "
+            "twice. If tracking_truncated is true the share is understated."
+        ),
+    }
+    read_bytes = audit.unbounded_read_bytes + audit.bounded_read_bytes
+    report["file_read_bounding"] = {
+        "status": "observed" if read_bytes else "unavailable",
+        "unbounded_results": audit.unbounded_read_results,
+        "unbounded_bytes": audit.unbounded_read_bytes,
+        "unbounded_byte_share": _share(audit.unbounded_read_bytes, read_bytes),
+        "bounded_results": audit.bounded_read_results,
+        "bounded_bytes": audit.bounded_read_bytes,
+        "note": (
+            "Bounded means the request carried an explicit range argument (offset/limit/pages). "
+            "This counts how reads were requested, not how much of each file exists: an unranged "
+            "request may still be truncated by the host's own read limits. Only exact-match "
+            "file-reading tool names are counted here, so MCP or custom readers are excluded."
+        ),
+    }
+    return report
 
 
 def recommendation(
@@ -2273,6 +2733,7 @@ def summary_json(
                 )
             },
         },
+        "tool_result_bytes": build_tool_result_bytes(summary, top),
         "cache_metrics": {
             "cache_hit_rate": round(summary.cache_hit_rate, 4),
             "cache_amortization": round(summary.cache_amortization, 4),
@@ -2294,6 +2755,60 @@ def summary_json(
     if include_recommendations:
         data["recommendations"] = build_recommendations(summary, top)
     return data
+
+
+def _format_share(share: float | None) -> str:
+    """비중을 사람이 읽는 퍼센트로. 정의되지 않으면 '-'."""
+    return "-" if share is None else f"{share * 100:.1f}%"
+
+
+def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
+    """tool_result 바이트 분포를 텍스트로 출력한다."""
+    report = build_tool_result_bytes(summary, top)
+    print("\nBytes stored in tool_result blocks")
+    if report["status"] != "observed":
+        print(f"  unavailable: {report.get('reason', 'no tool_result blocks observed')}")
+        return
+    print(f"  results={report['results']} total_bytes={report['total_bytes']:,}")
+    percentiles = report.get("size_percentiles_bytes")
+    if percentiles:
+        print(
+            "  size p50={p50:,}B p90={p90:,}B p99={p99:,}B max={max:,}B".format(**percentiles)
+        )
+    concentration = report.get("concentration")
+    if concentration:
+        print(
+            f"  results >= {report['large_result_threshold_bytes']:,}B: "
+            f"{concentration['large_results']} "
+            f"({_format_share(concentration['large_result_share'])} of results) "
+            f"carrying {_format_share(concentration['large_byte_share'])} of bytes"
+        )
+    for title, key in (
+        ("by tool", "by_tool"),
+        ("by content class", "by_content_class"),
+        ("by file extension", "by_file_extension"),
+    ):
+        rows = report.get(key)
+        if not rows:
+            continue
+        print(f"  {title}:")
+        for row in rows[:top]:
+            print(
+                f"    {row['label'][:44]:44s} {row['results']:>7,} results "
+                f"{row['bytes']:>14,}B {_format_share(row['byte_share']):>7s}"
+            )
+    duplicates = report["exact_duplicates"]
+    print(
+        f"  exact duplicates within a session: {duplicates['results']:,} results, "
+        f"{_format_share(duplicates['byte_share'])} of bytes"
+    )
+    bounding = report["file_read_bounding"]
+    if bounding["status"] == "observed":
+        print(
+            f"  file reads without an explicit range: {bounding['unbounded_results']:,} results, "
+            f"{_format_share(bounding['unbounded_byte_share'])} of read bytes"
+        )
+    print(f"  note: {report['claim_boundary']}")
 
 
 def print_recommendations(summary: UsageSummary, top: int) -> None:
@@ -2471,6 +2986,7 @@ def main() -> int:
     print_counter("Top transcript files", summary.by_file, args.top)
     print_counter("Top command hints observed", summary.by_command, args.top)
     print_counter("Top tools observed", summary.by_tool, args.top)
+    print_tool_result_bytes(summary, args.top)
     if args.recommend:
         print_recommendations(summary, args.top)
     return 0
