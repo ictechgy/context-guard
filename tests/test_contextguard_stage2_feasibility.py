@@ -158,6 +158,8 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/lib/context_pack_rendering.py",
         "plugins/context-guard/lib/context_pack_scanning.py",
         "plugins/context-guard/lib/context_pack_selection.py",
+        "scripts/verify_npm_candidate.py",
+        "tests/test_npm_candidate_verifier.py",
         "tests/test_graph_cache_advisory_hardening.py",
         "tests/test_tool_result_bytes_profile.py",
         "research/bash-hook-zero-command-authority-20260831.md",

@@ -101,6 +101,33 @@ old root still installs its exact old Receipt dependency. Fix the root blocker
 and dispatch only the root job again. Any emergency tag rollback remains a
 separate interactive maintainer action with 2FA, not CI authority.
 
+### Verify a candidate before dispatching the publish
+
+`scripts/verify_npm_candidate.py` checks one downloaded candidate, or the run
+that produced it, against the identity you are about to publish. It re-derives
+the tarball digest, binds the packed `package.json` name/version, checks the
+root's exact Receipt dependency against the Receipt asset shipped beside it, and
+requires the candidate manifest to name the exact commit. Run it on the
+downloaded artifact directory before dispatching `npm-publish.yml`:
+
+```bash
+python3 scripts/verify_npm_candidate.py artifact \
+  --candidate-dir <downloaded candidate directory> \
+  --commit-sha <40-character release commit> \
+  --expected-package @ictechgy/context-guard \
+  --expected-version <exact version> \
+  --expected-sha256 <reviewed tarball sha256> \
+  --expected-receipt-version <exact Receipt version>
+```
+
+`run` takes the producing Actions run instead and additionally requires a
+successful `main` candidate run. Both refuse with a specific reason rather than a
+generic failure: a wrong digest or version reports a package binding mismatch, a
+wrong commit reports a manifest identity mismatch, and a wrong Receipt version
+reports a Receipt exact-asset binding mismatch. This does not replace the
+publish workflow's own checks; it moves the same evidence earlier, where a
+mistake costs a re-dispatch instead of an immutable published version.
+
 ## Clean-install smoke coverage
 
 `release_smoke.py` automates the read-only subset of the clean-install smoke by staging the plugin into a temporary package copy and running:
