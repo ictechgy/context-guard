@@ -1204,8 +1204,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen18(self) -> None:
-        """운영 레코드는 gen2~gen18을 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen19(self) -> None:
+        """운영 레코드는 gen2~gen19을 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1227,11 +1227,12 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen16",
                 "gen17",
                 "gen18",
+                "gen19",
             ),
         )
         (
             gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10,
-            gen11, gen12, gen13, gen14, gen15, gen16, gen17, gen18,
+            gen11, gen12, gen13, gen14, gen15, gen16, gen17, gen18, gen19,
         ) = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
@@ -1859,6 +1860,7 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 # 결정되면 이후 세대가 계속 물려받으므로 리포트에도 계속 나온다.
                 "gen17": ["tests/test_context_guard_kit.py"],
                 "gen18": ["tests/test_context_guard_kit.py"],
+                "gen19": ["tests/test_context_guard_kit.py"],
             },
         )
 
