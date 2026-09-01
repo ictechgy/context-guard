@@ -1204,8 +1204,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen16(self) -> None:
-        """운영 레코드는 gen2~gen16을 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen17(self) -> None:
+        """운영 레코드는 gen2~gen17을 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1225,11 +1225,12 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen14",
                 "gen15",
                 "gen16",
+                "gen17",
             ),
         )
         (
             gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10,
-            gen11, gen12, gen13, gen14, gen15, gen16,
+            gen11, gen12, gen13, gen14, gen15, gen16, gen17,
         ) = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
@@ -1850,7 +1851,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     def test_narrowed_paths_report_names_every_dropped_path(self) -> None:
         report = rollback_proof.narrowed_paths_report()
         self.assertEqual(
-            report, {"gen16": ["tests/test_context_guard_kit.py"]}
+            report,
+            {
+                "gen16": ["tests/test_context_guard_kit.py"],
+                # gen17 은 gen16 의 좁힌 집합을 그대로 이어받는다. 좁히기는 한 번
+                # 결정되면 이후 세대가 계속 물려받으므로 리포트에도 계속 나온다.
+                "gen17": ["tests/test_context_guard_kit.py"],
+            },
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:
