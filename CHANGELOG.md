@@ -4,7 +4,28 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
-_No unreleased changes._
+- Hardened the `--graph-cache` store. The cache holds repo-map/graph-rank output
+  under `~/.cache/context-guard/graph-rank` (or `CONTEXT_GUARD_GRAPH_CACHE_DIR`),
+  a shared location outside the repository, and it was reached by path with none
+  of the safety this repository applies to every other file it reads:
+  - Reads followed symlinks and had no size bound, so a cache entry replaced by a
+    symlink was read through, and one replaced by a huge file was parsed in full
+    before the content hash could reject it.
+  - Writes used `O_WRONLY|O_CREAT|O_TRUNC` without `O_NOFOLLOW` and took no lock,
+    so concurrent runs could interleave a truncate with a read, and eviction
+    raced with itself.
+  - The TTL override accepted any integer, including zero, negative, and values
+    far beyond any useful window.
+  Every cache file is now reached through a directory descriptor opened
+  component-by-component with `O_NOFOLLOW`, and each entry must be a regular
+  file, owned by the caller, with no extra hard link, mode exactly `0600`, and a
+  size within a bound, before it is read. Writes hold a lock. The TTL override is
+  bounded to 1 second through 7 days and rejected at the CLI. Cache-key and
+  record schemas move to `v2`, so entries written by earlier versions are ignored
+  rather than trusted.
+- `--graph-cache --explain` now always reports a `repo_map_cache` receipt, with a
+  reason when the cache was not used. Previously the field was simply absent, so
+  a bypass looked the same as a feature that was never enabled.
 
 ## [0.12.2] - 2026-09-01
 
