@@ -37,14 +37,14 @@ Project scope is the default. `context-guard doctor` and `context-guard setup --
 
 `bash_reference_v1` is a narrower distribution than the ordinary CLI/plugin.
 It accepts only an exact project-local npm topology: root
-`@ictechgy/context-guard@0.12.1` declares
+`@ictechgy/context-guard@0.12.2` declares
 `@ictechgy/context-guard-receipt: 0.4.0`, and the installed Receipt inventory
 must match the SHA-256 trust anchor embedded in the root policy. Hoisted and
 nested npm dependency layouts are supported; global npm, `npx`, Homebrew,
 source-checkout, arbitrary `PATH`, and marketplace-plugin layouts are refused.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.12.1
+npm install --save-exact @ictechgy/context-guard@0.12.2
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```

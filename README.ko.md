@@ -236,7 +236,7 @@ plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 referenc
 사용할 수 없다고 알립니다.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.12.1
+npm install --save-exact @ictechgy/context-guard@0.12.2
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -494,7 +494,7 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
 
 - `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md): 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다.
 - `cache_layout_advice`: 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 신호를 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다.
-- `tool_result_bytes`: 컨텍스트 바이트가 실제로 어디서 왔는지를 대화 기록 **`tool_result` 블록의 내용**에서 세어 보고합니다. 도구별, 내용 종류별(이미지/텍스트), 확장자별 분포와 크기 백분위, 가장 큰 결과들이 차지하는 비중, 중복 비율, 파일 읽기 중 범위를 지정한 비율을 담습니다. `tool_use` 블록은 결과를 도구에 귀속시키는 데만 쓰고 그 입력 바이트는 세지 않으며, 도구 결과 밖의 것도 세지 않습니다. 크기는 정규화된 직렬화 기준이라 디스크 바이트와 정확히 같지 않고, 저장된 결과는 이후 요청에서 다시 전송되므로 이 값은 노출량의 하한입니다. provider의 토큰 집계는 요청 단위여서 도구별 귀속이 불가능하므로 이 절은 바이트 기준이며, 그 경계를 출력 자체에 명시합니다.
+- `tool_result_bytes`: 컨텍스트 바이트가 실제로 어디서 왔는지를 대화 기록 **`tool_result` 블록의 내용**에서 세어 보고합니다. 도구별, 내용 종류별(이미지·텍스트·불명), 확장자별 분포와 크기 백분위, 가장 큰 결과들이 차지하는 비중, 완전 중복 비율, 파일 읽기 바이트 중 범위를 지정한 요청이 차지하는 비중을 담습니다. `tool_use` 블록은 귀속과 확장자·범위 라벨에 쓰지만 그 입력 바이트는 세지 않으며, 도구 결과 밖의 것도 세지 않습니다. 바이트는 내용 블록 단위로 귀속하므로, 이미지와 텍스트를 함께 담은 결과 하나는 두 클래스 모두에 계상됩니다. 확장자 라벨은 알려진 확장자 목록에서만 나옵니다 — 목록에 없는 접미사는 `(not-an-extension)` 이 됩니다. 모양 검사로는 `notes.clientAcme` 같은 파일명 조각이 "확장자" 로 통과하는 것을 막을 수 없기 때문입니다. 흔치 않은 실제 확장자도 함께 접히지만, 잃는 것은 확장자 차원뿐이고 바이트 총합은 그대로입니다. 크기는 정규화된 직렬화 기준이라 디스크 바이트와 정확히 같지 않고, 저장된 결과는 이후 요청에서 다시 전송되므로 이 값은 노출량의 하한입니다. provider의 토큰 집계는 요청 단위여서 도구별 귀속이 불가능하므로 이 절은 바이트 기준이며, 그 경계를 출력 자체에 명시합니다.
 - `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): 로컬 macOS 가시화 surface가 바인딩할 수 있는 계약입니다. 안정적인 top-level field만 가리키며, `summary`는 primary UI binding 대상이 아닙니다.
 
 가드레일도 실행 비용이 있고 모든 프로젝트에서 이득이 되지는 않으므로, 켜기 전에 먼저 측정하세요. 여기 나오는 바이트 비중은 관측값이지 절감량이 아닙니다. 바이트가 어디로 갔는지를 말할 뿐, 그것을 줄였을 때 무엇을 회수하는지는 말하지 않습니다. 읽은 파일 경로는 절대 출력하지 않고 확장자만 집계합니다.

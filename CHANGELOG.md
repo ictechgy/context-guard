@@ -6,6 +6,36 @@ All notable changes for the ContextGuard plugin are documented here.
 
 _No unreleased changes._
 
+## [0.12.2] - 2026-09-01
+
+A second adversarial review of the 0.12.1 follow-ups found that two of the
+guarantees those follow-ups claimed were still not fully held.
+
+- Extension labels are now drawn from a known-extension list. 0.12.1 restricted
+  them by shape, which stopped `notes.client-acme` but not `notes.clientAcme` —
+  a shape check cannot tell a short alphanumeric codename from an extension.
+  Suffixes outside the list become `(not-an-extension)`. Unusual real extensions
+  fold into that bucket too; that costs the extension dimension and never the
+  byte totals.
+- `(not-an-extension)` and `(none)` can no longer be folded into the
+  cardinality-overflow bucket `(other)`. 0.12.1 said the buckets were distinct,
+  but once 200 labels were seen the overflow logic collapsed them — the
+  distinction failed in exactly the case it was introduced for.
+- Content-class bytes are attributed per block. A result holding both an image
+  and text counted entirely as image, so a caption or an error string riding
+  with a screenshot inflated the image share — the very signal used to argue
+  that line-based trimming cannot help those bytes.
+- The truncation note no longer asserts a bias direction. The size sample is the
+  results seen first, not a largest-first draw, so truncation can move
+  concentration either way; saying it is "understated" was a claim the data does
+  not support.
+- The unattributed-results line no longer presents overflow as the sole cause
+  when the correlation table filled up; both causes coexist.
+- Corrected the README in both languages: `tool_use` blocks are also read for
+  the extension and range labels, the content classes include `unknown`, the
+  duplicate share is exact-duplicate, and the read-bounding figure is a share of
+  read bytes.
+
 ## [0.12.1] - 2026-09-01
 
 Follow-ups from an adversarial review of the 0.12.0 byte profiler. No reported
