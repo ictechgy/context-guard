@@ -18,6 +18,7 @@ import heapq
 import importlib.machinery
 import importlib.util
 import json
+import fcntl
 import math
 import os
 import posixpath
@@ -97,8 +98,6 @@ MAX_REPO_MAP_SIGNATURE_ENTRIES = 40
 MAX_REPO_MAP_GRAPH_RANK_ENTRIES = 30
 MAX_REPO_MAP_RETRIEVAL_HINTS = 30
 MAX_REPO_MAP_SECRET_RISK_FILES = 20
-GRAPH_CACHE_TTL_SECONDS = 3600
-GRAPH_CACHE_MAX_ENTRIES = 20
 MAX_ADAPTIVE_K_SCORE_SAMPLES = 200
 MAX_ADAPTIVE_K_SELECTED_EVIDENCE = 12
 MAX_ADAPTIVE_K_OMITTED_EVIDENCE = 12
@@ -4585,6 +4584,43 @@ def repo_map_seed_paths(args: argparse.Namespace, suggest_payload: dict[str, Any
     return seeds
 
 
+GRAPH_CACHE_TTL_SECONDS = 3600
+
+GRAPH_CACHE_MIN_TTL_SECONDS = 1
+
+GRAPH_CACHE_MAX_TTL_SECONDS = 7 * 24 * 60 * 60
+
+GRAPH_CACHE_MAX_ENTRIES = 20
+
+GRAPH_CACHE_MAX_RECORD_BYTES = 2_000_000
+
+GRAPH_CACHE_MAX_DIRECTORY_ENTRIES = 128
+
+GRAPH_CACHE_LOCK_TIMEOUT_SECONDS = 0.5
+
+GRAPH_CACHE_KEY_SCHEMA_VERSION = "contextguard.pack-graph-cache-key.v2"
+
+GRAPH_CACHE_RECORD_SCHEMA_VERSION = "contextguard.pack-graph-cache-record.v2"
+
+GRAPH_CACHE_PAYLOAD_KEYS = frozenset({
+    "caps", "graph", "graph_rank", "omitted_files", "retrieval",
+    "safety", "schema_version", "secret_scan", "signature_index",
+    "summary", "token_tree",
+})
+
+
+def graph_cache_ttl_seconds(value: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("graph-cache TTL must be an integer") from exc
+    if not GRAPH_CACHE_MIN_TTL_SECONDS <= number <= GRAPH_CACHE_MAX_TTL_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"graph-cache TTL must be between {GRAPH_CACHE_MIN_TTL_SECONDS} and {GRAPH_CACHE_MAX_TTL_SECONDS} seconds"
+        )
+    return number
+
+
 def _graph_cache_canonical_json(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
@@ -4593,190 +4629,347 @@ def _graph_cache_content_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_graph_cache_canonical_json(payload)).hexdigest()
 
 
-def _graph_cache_revision(root: Path) -> str | None:
+def _graph_cache_revision_status(root: Path) -> tuple[str | None, str]:
+    """Return one clean git revision or an advisory-only bypass reason."""
     try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).stdout.strip()
-        if not head:
-            return None
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=root,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).stdout
-        if status:
-            detailed_status = subprocess.run(
-                ["git", "status", "--porcelain", "--untracked-files=all"],
-                cwd=root,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            ).stdout
-            generated_only = all(
-                line.startswith("?? .context-guard/packs/")
-                for line in detailed_status.splitlines()
-                if line
-            )
-            if generated_only:
-                status = ""
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return head if not status else None
+        head_rc, head_out, _head_err, head_capped, head_failed = _run_process_capped(
+            guarded_git_command(root, "rev-parse", "--verify", "HEAD"),
+            stdout_cap=128, stderr_cap=1024,
+            timeout_seconds=GIT_DIFF_TIMEOUT_SECONDS,
+            environment=guarded_git_environment(),
+        )
+        if head_rc != 0 or head_capped or head_failed:
+            return None, "git_revision_unavailable"
+        head = head_out.decode("ascii", errors="strict").strip()
+        if re.fullmatch(r"[0-9a-f]{40,64}", head) is None:
+            return None, "git_revision_unavailable"
+        status_rc, status_out, _status_err, status_capped, status_failed = _run_process_capped(
+            guarded_git_command(root, "status", "--porcelain=v1", "--untracked-files=all"),
+            stdout_cap=MAX_GIT_LS_FILES_OUTPUT_BYTES,
+            stderr_cap=MAX_GIT_DIFF_STDERR_BYTES,
+            timeout_seconds=GIT_DIFF_TIMEOUT_SECONDS,
+            environment=guarded_git_environment(),
+        )
+        if status_rc != 0 or status_capped or status_failed:
+            return None, "git_status_unavailable"
+    except (OSError, PackError, UnicodeError):
+        return None, "git_revision_unavailable"
+    status_lines = [line for line in status_out.splitlines() if line]
+    generated_only = bool(status_lines) and all(
+        line.startswith(b"?? .context-guard/packs/") for line in status_lines
+    )
+    if status_lines and not generated_only:
+        return None, "dirty_worktree"
+    return head, "clean_revision"
+
+
+def _graph_cache_revision(root: Path) -> str | None:
+    return _graph_cache_revision_status(root)[0]
+
+
+def _graph_cache_directory_status() -> tuple[Path | None, str]:
+    configured = os.environ.get("CONTEXT_GUARD_GRAPH_CACHE_DIR")
+    raw = configured or os.path.join(
+        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")),
+        "context-guard", "graph-rank",
+    )
+    if not raw or "\0" in raw:
+        return None, "unsafe_cache_directory"
+    path = normalize_allowed_first_absolute_symlink(Path(raw))
+    if not path.is_absolute() or os.path.normpath(str(path)) != str(path):
+        return None, "unsafe_cache_directory"
+    return path, "cache_directory_ready"
 
 
 def _graph_cache_directory() -> Path:
-    configured = os.environ.get("CONTEXT_GUARD_GRAPH_CACHE_DIR")
-    if configured:
-        return Path(configured)
-    cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-    return cache_home / "context-guard" / "graph-rank"
+    path, _reason = _graph_cache_directory_status()
+    return path if path is not None else Path("/") / ".context-guard-invalid-cache"
 
 
-def _graph_cache_path(
-    root: Path,
-    revision: str,
-    seed_paths: set[str],
-    query_terms: set[str],
-) -> Path:
-    key = (
-        revision,
-        tuple(sorted(seed_paths)),
-        tuple(sorted(query_terms)),
-    )
-    digest = hashlib.sha256(_graph_cache_canonical_json(key)).hexdigest()
-    return _graph_cache_directory() / f"{digest}.json"
-
-
-def _graph_cache_loaded_payload(
-    path: Path, *, ttl_seconds: float = GRAPH_CACHE_TTL_SECONDS
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeError):
-        return None
-    if not isinstance(record, dict):
-        return None
-    created_at = record.get("created_at")
-    payload = record.get("payload")
-    content_sha256 = record.get("content_sha256")
-    if (
-        isinstance(created_at, bool)
-        or not isinstance(created_at, (int, float))
-        or not math.isfinite(float(created_at))
-        or not isinstance(payload, dict)
-        or not isinstance(content_sha256, str)
-        or time.time() - float(created_at) > ttl_seconds
+def _graph_cache_open_directory(path: Path) -> int | None:
+    if not (
+        hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid")
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.mkdir in getattr(os, "supports_dir_fd", set())
     ):
         return None
-    if _graph_cache_content_sha256(payload) != content_sha256:
-        return None
-    return payload
-
-
-def _graph_cache_created_at(path: Path) -> float:
+    current_fd = -1
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeError):
-        return float("-inf")
-    created_at = record.get("created_at") if isinstance(record, dict) else None
-    if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
-        return float("-inf")
-    if not math.isfinite(float(created_at)):
-        return float("-inf")
-    return float(created_at)
+        current_fd = open_dir_no_follow(path.anchor)
+        for part in path.parts[1:]:
+            if part in {"", ".", ".."}:
+                return None
+            try:
+                next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        status = os.fstat(current_fd)
+        if not stat.S_ISDIR(status.st_mode) or status.st_uid != os.geteuid():
+            return None
+        if stat.S_IMODE(status.st_mode) != 0o700:
+            os.fchmod(current_fd, 0o700)
+            if stat.S_IMODE(os.fstat(current_fd).st_mode) != 0o700:
+                return None
+        result = current_fd
+        current_fd = -1
+        return result
+    except (OSError, PackError, NotImplementedError):
+        return None
+    finally:
+        if current_fd >= 0:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
 
 
-def _graph_cache_write(path: Path, payload: dict[str, Any]) -> None:
-    cache_dir = path.parent
-    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(cache_dir, 0o700)
-    other_files = [candidate for candidate in cache_dir.glob("*.json") if candidate != path]
-    while len(other_files) >= GRAPH_CACHE_MAX_ENTRIES:
-        oldest = min(other_files, key=_graph_cache_created_at)
-        oldest.unlink()
-        other_files.remove(oldest)
+def _graph_cache_lock(dir_fd: int) -> int | None:
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    lock_fd = -1
+    try:
+        lock_fd = os.open(".graph-cache.lock", flags, 0o600, dir_fd=dir_fd)
+        status = os.fstat(lock_fd)
+        if not stat.S_ISREG(status.st_mode) or status.st_uid != os.geteuid() or status.st_nlink != 1:
+            return None
+        os.fchmod(lock_fd, 0o600)
+        deadline = time.monotonic() + GRAPH_CACHE_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                result = lock_fd
+                lock_fd = -1
+                return result
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return None
+                time.sleep(0.01)
+    except OSError:
+        return None
+    finally:
+        if lock_fd >= 0:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+
+
+def _graph_cache_key_contract(root: Path, args: argparse.Namespace, *, revision: str, seed_paths: set[str], query_terms: set[str], root_arg: str) -> dict[str, Any]:
+    impact_enabled = bool(getattr(args, "graph_impact_scope", False) and getattr(args, "diff", None))
+    depth = getattr(args, "graph_impact_scope_depth", None)
+    if not isinstance(depth, int) or depth < 0:
+        depth = 1
+    changed_paths: list[str] = []
+    if impact_enabled:
+        try:
+            changed_paths = sorted(diff_changed_paths(root, str(args.diff)))
+        except PackError:
+            changed_paths = []
+    return {
+        "graph_impact_scope": {
+            "changed_paths_sha256": hashlib.sha256(_graph_cache_canonical_json(changed_paths)).hexdigest(),
+            "depth": depth,
+            "enabled": impact_enabled,
+        },
+        "query_terms": sorted(query_terms),
+        "repo_map_schema_version": REPO_MAP_SCHEMA_VERSION,
+        "revision": revision,
+        "root_argument_sha256": hashlib.sha256(root_arg.encode("utf-8", errors="surrogatepass")).hexdigest(),
+        "schema_version": GRAPH_CACHE_KEY_SCHEMA_VERSION,
+        "seed_paths": sorted(seed_paths),
+    }
+
+
+def _graph_cache_path(cache_dir: Path, key_contract: dict[str, Any]) -> Path:
+    digest = hashlib.sha256(_graph_cache_canonical_json(key_contract)).hexdigest()
+    return cache_dir / f"{digest}.json"
+
+
+def _graph_cache_payload_valid(payload: object) -> bool:
+    if type(payload) is not dict or set(payload) != GRAPH_CACHE_PAYLOAD_KEYS:
+        return False
+    if payload.get("schema_version") != REPO_MAP_SCHEMA_VERSION:
+        return False
+    try:
+        json_depth(payload)
+    except ReceiptJSONError:
+        return False
+    return True
+
+
+def _graph_cache_safe_file_status(dir_fd: int, filename: str) -> os.stat_result | None:
+    try:
+        status = os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
+    except (FileNotFoundError, OSError, NotImplementedError):
+        return None
+    if (
+        not stat.S_ISREG(status.st_mode) or status.st_uid != os.geteuid()
+        or status.st_nlink != 1 or stat.S_IMODE(status.st_mode) != 0o600
+        or not 0 < status.st_size <= GRAPH_CACHE_MAX_RECORD_BYTES
+    ):
+        return None
+    return status
+
+
+def _graph_cache_read_record(dir_fd: int, filename: str, *, expected_key: str, ttl_seconds: int, allow_expired: bool = False) -> dict[str, Any] | None:
+    before = _graph_cache_safe_file_status(dir_fd, filename)
+    if before is None:
+        return None
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    file_fd = -1
+    try:
+        file_fd = os.open(filename, flags, dir_fd=dir_fd)
+        opened = os.fstat(file_fd)
+        if stat_identity(opened) != stat_identity(before):
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while total <= GRAPH_CACHE_MAX_RECORD_BYTES:
+            chunk = os.read(file_fd, min(65_536, GRAPH_CACHE_MAX_RECORD_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        after = os.fstat(file_fd)
+    except OSError:
+        return None
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+    raw = b"".join(chunks)
+    if len(raw) > GRAPH_CACHE_MAX_RECORD_BYTES or len(raw) != opened.st_size or stat_identity(opened) != stat_identity(after):
+        return None
+    try:
+        record = json.loads(raw.decode("ascii"), object_pairs_hook=strict_json_object, parse_constant=reject_json_constant, parse_int=parse_receipt_int)
+        json_depth(record)
+    except (UnicodeError, json.JSONDecodeError, ReceiptJSONError, ValueError):
+        return None
+    if type(record) is not dict or set(record) != {"cache_key", "content_sha256", "created_at", "payload", "schema_version"}:
+        return None
+    created_at = record.get("created_at")
+    content_sha256 = record.get("content_sha256")
+    payload = record.get("payload")
+    now = time.time()
+    if (
+        record.get("schema_version") != GRAPH_CACHE_RECORD_SCHEMA_VERSION
+        or record.get("cache_key") != expected_key
+        or isinstance(created_at, bool) or not isinstance(created_at, (int, float))
+        or not math.isfinite(float(created_at)) or float(created_at) > now + 5
+        or (not allow_expired and now - float(created_at) > ttl_seconds)
+        or not isinstance(content_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", content_sha256) is None
+        or not _graph_cache_payload_valid(payload)
+        or _graph_cache_content_sha256(payload) != content_sha256
+    ):
+        return None
+    return record
+
+
+def _graph_cache_evict(dir_fd: int, keep_filename: str) -> bool:
+    try:
+        names = sorted(os.listdir(dir_fd))
+    except OSError:
+        return False
+    json_names = [name for name in names if isinstance(name, str) and re.fullmatch(r"[0-9a-f]{64}\.json", name)]
+    if len(names) > GRAPH_CACHE_MAX_DIRECTORY_ENTRIES:
+        return False
+    rows: list[tuple[float, str]] = []
+    for name in json_names:
+        if name == keep_filename:
+            continue
+        key = name[:-5]
+        record = _graph_cache_read_record(dir_fd, name, expected_key=key, ttl_seconds=GRAPH_CACHE_MAX_TTL_SECONDS, allow_expired=True)
+        created_at = float(record["created_at"]) if record is not None else float("-inf")
+        if record is not None or _graph_cache_safe_file_status(dir_fd, name) is not None:
+            rows.append((created_at, name))
+    while len(rows) >= GRAPH_CACHE_MAX_ENTRIES:
+        _created_at, oldest = min(rows)
+        try:
+            os.unlink(oldest, dir_fd=dir_fd)
+        except OSError:
+            return False
+        rows = [row for row in rows if row[1] != oldest]
+    return True
+
+
+def _graph_cache_write_record(dir_fd: int, filename: str, *, cache_key: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if not _graph_cache_evict(dir_fd, filename):
+        return None
     record = {
+        "cache_key": cache_key,
+        "content_sha256": _graph_cache_content_sha256(payload),
         "created_at": time.time(),
         "payload": payload,
-        "content_sha256": _graph_cache_content_sha256(payload),
+        "schema_version": GRAPH_CACHE_RECORD_SCHEMA_VERSION,
     }
-    file_descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-        json.dump(record, handle, sort_keys=True, separators=(",", ":"))
-        handle.write("\n")
-    os.chmod(path, 0o600)
-
-
-def _graph_cache_receipt(
-    cache_path: Path, *, hit: bool, ttl_seconds: float = GRAPH_CACHE_TTL_SECONDS
-) -> dict[str, Any] | None:
+    content = _graph_cache_canonical_json(record).decode("ascii") + "\n"
+    if len(content.encode("ascii")) > GRAPH_CACHE_MAX_RECORD_BYTES:
+        return None
     try:
-        record = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError):
+        write_text_atomic_at(dir_fd, filename, content, mode=0o600, option_name="graph cache")
+    except (OSError, PackError, NotImplementedError):
         return None
-    if not isinstance(record, dict):
-        return None
-    created_at = record.get("created_at")
-    content_sha256 = record.get("content_sha256")
-    if (
-        isinstance(created_at, bool)
-        or not isinstance(created_at, (int, float))
-        or not isinstance(content_sha256, str)
-    ):
-        return None
-    expires_at_iso = time.strftime(
-        "%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(float(created_at) + ttl_seconds)
-    )
-    return {
-        "hit": hit,
-        "graph_cache_key": cache_path.stem,
-        "resolved_content_sha256": content_sha256,
-        "ttl_expires_at": expires_at_iso,
-    }
+    return record
 
 
-def build_cached_repo_map_payload(
-    root: Path,
-    args: argparse.Namespace,
-    suggest_payload: dict[str, Any],
-    build_payload: dict[str, Any],
-    *,
-    root_arg: str,
-    revision: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
+def _graph_cache_receipt(*, active: bool, hit: bool, reason: str, cache_key: str | None = None, record: dict[str, Any] | None = None, ttl_seconds: int = GRAPH_CACHE_TTL_SECONDS) -> dict[str, Any]:
+    receipt: dict[str, Any] = {"active": active, "advisory_only": True, "hit": hit, "reason": reason}
+    if active and cache_key is not None and record is not None:
+        created_at = float(record["created_at"])
+        receipt.update({
+            "graph_cache_key": cache_key,
+            "resolved_content_sha256": record["content_sha256"],
+            "ttl_expires_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(created_at + ttl_seconds)),
+        })
+    return receipt
+
+
+def build_cached_repo_map_payload(root: Path, args: argparse.Namespace, suggest_payload: dict[str, Any], build_payload: dict[str, Any], *, root_arg: str, revision: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     if revision is None:
-        revision = _graph_cache_revision(root)
-    if revision is None or _graph_cache_directory().is_symlink():
-        return (
-            build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg),
-            None,
-        )
-    ttl_seconds = getattr(args, "graph_cache_ttl_seconds", None) or GRAPH_CACHE_TTL_SECONDS
+        revision, revision_reason = _graph_cache_revision_status(root)
+        if revision is None:
+            return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg), _graph_cache_receipt(active=False, hit=False, reason=revision_reason)
+    cache_dir, directory_reason = _graph_cache_directory_status()
+    if cache_dir is None:
+        return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg), _graph_cache_receipt(active=False, hit=False, reason=directory_reason)
+    ttl_value = getattr(args, "graph_cache_ttl_seconds", None)
+    ttl_seconds = GRAPH_CACHE_TTL_SECONDS if ttl_value is None else int(ttl_value)
     seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
     query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
-    cache_path = _graph_cache_path(root, revision, seed_paths, query_terms)
-    cached_payload = _graph_cache_loaded_payload(cache_path, ttl_seconds=ttl_seconds)
-    if cached_payload is not None:
-        return cached_payload, _graph_cache_receipt(cache_path, hit=True, ttl_seconds=ttl_seconds)
-    payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
-    _graph_cache_write(cache_path, payload)
-    return payload, _graph_cache_receipt(cache_path, hit=False, ttl_seconds=ttl_seconds)
+    key_contract = _graph_cache_key_contract(root, args, revision=revision, seed_paths=seed_paths, query_terms=query_terms, root_arg=root_arg)
+    cache_path = _graph_cache_path(cache_dir, key_contract)
+    cache_key = cache_path.stem
+    filename = cache_path.name
+    dir_fd = _graph_cache_open_directory(cache_dir)
+    if dir_fd is None:
+        return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg), _graph_cache_receipt(active=False, hit=False, reason="unsafe_cache_directory")
+    lock_fd = _graph_cache_lock(dir_fd)
+    if lock_fd is None:
+        os.close(dir_fd)
+        return build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg), _graph_cache_receipt(active=False, hit=False, reason="cache_busy_or_unsafe")
+    try:
+        cached_record = _graph_cache_read_record(dir_fd, filename, expected_key=cache_key, ttl_seconds=ttl_seconds)
+        if cached_record is not None:
+            return cached_record["payload"], _graph_cache_receipt(active=True, hit=True, reason="cache_hit", cache_key=cache_key, record=cached_record, ttl_seconds=ttl_seconds)
+        payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+        record = _graph_cache_write_record(dir_fd, filename, cache_key=cache_key, payload=payload)
+        if record is None:
+            return payload, _graph_cache_receipt(active=False, hit=False, reason="cache_write_unavailable")
+        return payload, _graph_cache_receipt(active=True, hit=False, reason="cache_miss", cache_key=cache_key, record=record, ttl_seconds=ttl_seconds)
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(lock_fd)
+        os.close(dir_fd)
 
 
 def build_graph_rank(
@@ -5491,6 +5684,7 @@ def build_auto_explain_payload(
     root_arg: str = ".",
     repo_map_payload: dict[str, Any] | None = None,
     graph_cache_revision: str | None = None,
+    graph_cache_inactive_reason: str | None = None,
 ) -> dict[str, Any]:
     build_sources = [
         item
@@ -5620,6 +5814,10 @@ def build_auto_explain_payload(
     }
     if repo_map_payload is not None:
         explain["repo_map"] = copy.deepcopy(repo_map_payload)
+        if getattr(args, "graph_cache", False):
+            explain["repo_map_cache"] = _graph_cache_receipt(
+                active=False, hit=False, reason="repo_map_already_computed"
+            )
     elif root is not None:
         if getattr(args, "graph_cache", False) and graph_cache_revision is not None:
             repo_map_result, repo_map_cache_receipt = build_cached_repo_map_payload(
@@ -5631,12 +5829,17 @@ def build_auto_explain_payload(
                 revision=graph_cache_revision,
             )
             explain["repo_map"] = repo_map_result
-            if repo_map_cache_receipt is not None:
-                explain["repo_map_cache"] = repo_map_cache_receipt
+            explain["repo_map_cache"] = repo_map_cache_receipt
         else:
             explain["repo_map"] = build_repo_map_payload(
                 root, args, suggest_payload, build_payload, root_arg=root_arg
             )
+            if getattr(args, "graph_cache", False):
+                explain["repo_map_cache"] = _graph_cache_receipt(
+                    active=False,
+                    hit=False,
+                    reason=graph_cache_inactive_reason or "cache_not_applicable",
+                )
     if isinstance(payload.get("graph_application"), dict):
         explain["graph_application"] = copy.deepcopy(payload["graph_application"])
     if isinstance(payload.get("adaptive_k_application"), dict):
@@ -5647,11 +5850,10 @@ def build_auto_explain_payload(
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
-    graph_cache_revision = (
-        _graph_cache_revision(root)
-        if getattr(args, "graph_cache", False)
-        else None
-    )
+    graph_cache_revision: str | None = None
+    graph_cache_inactive_reason: str | None = None
+    if getattr(args, "graph_cache", False):
+        graph_cache_revision, graph_cache_inactive_reason = _graph_cache_revision_status(root)
     plan_only = bool(getattr(args, "selection_plan", False))
     apply_plan_path = getattr(args, "apply_selection_plan", None)
     expected_plan = read_selection_plan(root, apply_plan_path) if apply_plan_path else None
@@ -6202,6 +6404,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             root_arg=root_arg,
             repo_map_payload=repo_map_payload,
             graph_cache_revision=graph_cache_revision,
+            graph_cache_inactive_reason=graph_cache_inactive_reason,
         )
     return payload, rc
 
@@ -6431,7 +6634,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--graph-cache", action="store_true", help="cache clean-revision graph-rank/repo-map explain metadata")
-    auto.add_argument("--graph-cache-ttl-seconds", type=int, default=None, help="override the default graph-cache expiry window for this invocation")
+    auto.add_argument("--graph-cache-ttl-seconds", type=graph_cache_ttl_seconds, default=None, help="override the graph-cache expiry window for this invocation (1 second to 7 days)")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
     auto.add_argument(
         "--apply-adaptive-k",

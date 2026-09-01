@@ -303,7 +303,7 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
             {
                 ".claude-plugin/marketplace.json": "c6204ef2755f26b1822d35e28b39fcaef4ede9d8b0725771606af7cdb4d4db79",
                 "context-guard-kit/benchmark_runner.py": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
-                "context-guard-kit/context_pack.py": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4",
+                "context-guard-kit/context_pack.py": "ddc670f4355d6aadafd2fa41969d0c43884b0f09ab12db661879f16ea73e9b51",
                 "context-guard-kit/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
                 "context-guard-kit/guard_large_read.py": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
                 "context-guard-kit/setup_wizard.py": "15fb086d8a25fc3bfa3a7a3e8a428a9e727c307e030898629487eb88b3a51cd7",
@@ -311,7 +311,7 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
                 "plugins/context-guard/.claude-plugin/plugin.json": "4c43fe0860d394d530f2f18ce44c8bc3c649288e688d5a00e351b057b8cfbdaf",
                 "plugins/context-guard/bin/context-guard-bench": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
                 "plugins/context-guard/bin/context-guard-guard-read": "5fe265f5f133b45c596a6c4f9bbdd1eacbf8bbd4af27cff6399117fb63685dcc",
-                "plugins/context-guard/bin/context-guard-pack": "c00bd44a3b3c3f8f7d1c2efbf61c4b3de6a937d09103cfc86261b1490d277be4",
+                "plugins/context-guard/bin/context-guard-pack": "ddc670f4355d6aadafd2fa41969d0c43884b0f09ab12db661879f16ea73e9b51",
                 "plugins/context-guard/bin/context-guard-setup": "15fb086d8a25fc3bfa3a7a3e8a428a9e727c307e030898629487eb88b3a51cd7",
                 "plugins/context-guard/lib/context_guard_commands.py": "fde5eb288cba120753bf33d60d34bf8bd9d538df388ca40cd7c0bb8633910f9b",
                 "scripts/prepublish_check.py": "6a8e8b1992e9117d9aad2df5fa9032f8b8e7b8fe94dcf60808caffb03156da22",
