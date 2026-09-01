@@ -15,6 +15,7 @@ tool_use/tool_result 블록을 직접 세는 경로가 필요하다.
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import subprocess
@@ -517,6 +518,109 @@ class ToolResultBytesProfileTests(unittest.TestCase):
             self.assertIn("over the size sample, not total_bytes", completed.stdout)
             self.assertIn("exact-match file-reading tools only", completed.stdout)
             self.assertIn("requested no explicit range", completed.stdout)
+
+    def test_extension_shaped_filename_fragments_still_do_not_become_labels(self) -> None:
+        """모양 검사만으로는 부족하다.
+
+        0.12.1 은 하이픈과 숫자 시작을 막았지만 `notes.clientAcme` 의 `clientAcme` 처럼
+        확장자 모양을 한 파일명 조각은 그대로 통과했다. 알려진 확장자 목록을 최종 관문으로
+        둔다.
+        """
+        for path in (
+            "/x/notes.clientAcme",
+            "/x/report.v2",
+            "/x/summary.final",
+            "/x/dump.internaldb",
+            "/x/notes.acme",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    audit._tool_input_extension({"file_path": path}),
+                    audit.TOOL_RESULT_NON_EXTENSION_LABEL,
+                )
+
+    def test_known_extensions_still_survive_the_allowlist(self) -> None:
+        for path, expected in (
+            ("/x/a.py", "py"), ("/x/b.swift", "swift"), ("/x/c.kt", "kt"),
+            ("/x/d.tsx", "tsx"), ("/x/e.png", "png"), ("/x/f.md", "md"),
+            ("/x/g.json", "json"), ("/x/h.yaml", "yaml"), ("/x/i.h", "h"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(audit._tool_input_extension({"file_path": path}), expected)
+
+    def test_reserved_labels_are_never_folded_into_the_overflow_bucket(self) -> None:
+        """sentinel 이 (other) 로 접히면 두 버킷을 구분한다는 약속이 그 순간 깨진다."""
+        seen = collections.Counter(
+            {f"ext{index}": 1 for index in range(audit.TOOL_RESULT_MAX_EXTENSIONS)}
+        )
+        for label in sorted(audit.TOOL_RESULT_RESERVED_LABELS):
+            with self.subTest(label=label):
+                self.assertEqual(
+                    audit._bounded_label(label, seen, audit.TOOL_RESULT_MAX_EXTENSIONS),
+                    label,
+                )
+        # 평범한 라벨은 여전히 접힌다.
+        self.assertEqual(
+            audit._bounded_label("newext", seen, audit.TOOL_RESULT_MAX_EXTENSIONS),
+            audit.TOOL_RESULT_OVERFLOW_LABEL,
+        )
+
+    def test_mixed_image_and_text_result_splits_bytes_per_block(self) -> None:
+        """캡션이 딸린 스크린샷의 텍스트까지 image 로 세면 image 비중이 부풀고,
+        그 비중이 "줄 트리밍으로는 못 줄인다" 는 판단의 근거이므로 결론이 뒤틀린다.
+        """
+        mixed = [
+            {"type": "text", "text": "t" * 100},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "i" * 400}},
+        ]
+        report = profile(
+            {
+                "a.jsonl": [
+                    assistant_row(tool_use("u1", "Read", file_path="/tmp/shot.png")),
+                    user_row(tool_result("u1", mixed)),
+                ]
+            }
+        )
+        classes = {row["label"]: row["bytes"] for row in report["by_content_class"]}
+        self.assertEqual(classes["text"], 100)
+        self.assertEqual(classes["image"], 400)
+        self.assertEqual(sum(classes.values()), report["total_bytes"])
+
+    def test_content_class_bytes_always_sum_to_the_result_total(self) -> None:
+        """블록 합이 결과 크기와 어긋나도 총합은 보존되어야 한다."""
+        for content in (
+            "plain string",
+            [{"type": "text", "text": "abc"}],
+            [{"type": "text", "text": "a"}, {"weird": {"nested": [1, 2, 3]}}],
+            [{"type": "image", "source": {"type": "base64", "data": "QQ"}}, "loose string"],
+        ):
+            with self.subTest(content=repr(content)[:40]):
+                size = audit._tool_result_byte_length(content)
+                split = audit._tool_result_class_bytes(None, content, size)
+                self.assertEqual(sum(split.values()), size)
+
+    def test_truncated_sample_does_not_assert_a_bias_direction(self) -> None:
+        """표본은 시간순 앞부분이라 과대/과소 어느 쪽도 단정할 수 없다."""
+        report = profile({"a.jsonl": rows_for("q", 50)})
+        note = report["concentration"]["note"]
+        self.assertIn("not known", note)
+        for forbidden in ("understated", "overstated"):
+            self.assertNotIn(forbidden, note)
+
+    def test_text_output_names_both_causes_when_attribution_truncated(self) -> None:
+        """귀속 실패 분기는 0.12.1 테스트가 한 번도 실행하지 않았다.
+
+        절단됐더라도 "짝이 없다" 와 "표가 찼다" 는 함께 존재하므로 하나로 단정하면 안 된다.
+        """
+        accumulator = audit.ToolResultBytesAudit()
+        accumulator.start_file(Path("a.jsonl"))
+        accumulator.attribution_truncated = True
+        accumulator.observe(user_row(tool_result("missing", "x" * 40)))
+        summary = audit.UsageSummary()
+        summary.tool_result_bytes = accumulator
+        report = audit.build_tool_result_bytes(summary, 10)
+        self.assertTrue(report["attribution"]["truncated"])
+        self.assertEqual(report["attribution"]["uncorrelated_results"], 1)
 
 
 if __name__ == "__main__":

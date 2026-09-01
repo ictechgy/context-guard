@@ -115,14 +115,50 @@ TOOL_RESULT_MAX_SIZE_SAMPLES = 200_000
 TOOL_RESULT_MAX_PENDING_USES = 20_000
 # 세션 하나에서 완전 중복 판정을 위해 유지하는 해시 상한.
 TOOL_RESULT_MAX_DUP_HASHES = 100_000
-# 확장자 라벨로 허용하는 모양. 경로는 절대 노출하지 않고 확장자만 집계한다.
-TOOL_RESULT_EXTENSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,11}$")
+# 확장자 라벨은 알려진 목록에 있는 것만 내보낸다.
+#
+# 모양 검사로는 "경로가 새지 않는다" 를 보장할 수 없다. 어떤 정규식을 쓰든
+# `notes.clientAcme` 의 `clientAcme` 처럼 확장자 모양을 한 파일명 조각이 통과한다.
+# 목록에 없는 접미사는 (not-an-extension) 으로 접는다. 흔치 않지만 실재하는
+# 확장자가 함께 접히는 손실을 감수한다 - 바이트 총합과 도구별 귀속은 그대로이고
+# 확장자 차원만 뭉개지는 반면, 통과시키면 고객명이 리포트로 나갈 수 있다.
+KNOWN_FILE_EXTENSIONS = frozenset(
+    {
+        # 프로그래밍 언어
+        "c", "cc", "cjs", "clj", "cljs", "cpp", "cs", "cxx", "dart", "el", "erl",
+        "ex", "exs", "fs", "go", "groovy", "h", "hpp", "hs", "hxx", "java", "jl",
+        "js", "jsx", "kt", "kts", "lua", "m", "mjs", "ml", "mm", "php", "pl", "pm",
+        "py", "pyi", "pyx", "r", "rb", "rs", "sc", "scala", "sh", "swift", "tcl",
+        "ts", "tsx", "v", "vb", "vue", "zig", "zsh", "bash", "fish", "ps1", "svelte",
+        # 마크업/문서
+        "adoc", "csv", "htm", "html", "log", "md", "mdx", "org", "pdf", "rst",
+        "tex", "text", "tsv", "txt", "xhtml",
+        # 설정/데이터
+        "cfg", "conf", "env", "gradle", "ini", "json", "json5", "jsonc", "lock",
+        "plist", "properties", "proto", "toml", "xml", "yaml", "yml", "graphql",
+        "gql", "sql", "tf", "tfvars", "xcconfig", "entitlements", "storyboard",
+        "xib", "pbxproj", "resolved", "sum", "mod",
+        # 스타일
+        "css", "less", "sass", "scss", "styl",
+        # 이미지/미디어
+        "avif", "bmp", "gif", "heic", "heif", "ico", "jpeg", "jpg", "mp3", "mp4",
+        "png", "svg", "tif", "tiff", "wav", "webm", "webp",
+        # 그 외 자주 보이는 것
+        "diff", "dockerfile", "gitignore", "ipynb", "makefile", "patch", "snap",
+        "tgz", "zip", "gz", "map", "d",
+    }
+)
 TOOL_RESULT_MAX_EXTENSIONS = 200
 TOOL_RESULT_MAX_TOOL_LABELS = 500
 TOOL_RESULT_OVERFLOW_LABEL = "(other)"
 # 확장자 모양이 아니어서 라벨로 내보내지 않은 경우. 넘침 버킷과 구분해야 리포트를
 # 읽는 쪽이 "종류가 많아 접혔다" 와 "확장자가 아니다" 를 혼동하지 않는다.
 TOOL_RESULT_NON_EXTENSION_LABEL = "(not-an-extension)"
+TOOL_RESULT_NO_EXTENSION_LABEL = "(none)"
+# 넘침 접기에서 면제되는 라벨. 이들이 (other) 로 접히면 구분 자체가 사라진다.
+TOOL_RESULT_RESERVED_LABELS = frozenset(
+    {TOOL_RESULT_OVERFLOW_LABEL, TOOL_RESULT_NON_EXTENSION_LABEL, TOOL_RESULT_NO_EXTENSION_LABEL}
+)
 IMAGE_EXTENSIONS = frozenset(
     {
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
@@ -254,9 +290,9 @@ def _tool_input_extension(payload: dict[str, Any]) -> str | None:
             return None
         base = normalized.rsplit("/", 1)[-1]
         if "." not in base or base.startswith("."):
-            return "(none)"
+            return TOOL_RESULT_NO_EXTENSION_LABEL
         extension = base.rsplit(".", 1)[-1].lower()
-        if TOOL_RESULT_EXTENSION_RE.match(extension):
+        if extension in KNOWN_FILE_EXTENSIONS:
             return extension
         return TOOL_RESULT_NON_EXTENSION_LABEL
     return None
@@ -349,9 +385,52 @@ def _bounded_label(label: str, seen: Counter[str], limit: int) -> str:
     도구 이름과 확장자는 transcript가 정하는 값이므로 서로 다른 값이 무한히 올 수 있다.
     상한을 넘으면 넘침 버킷으로 접어 바이트 총합은 보존하되 Counter가 무한히 자라지 않게 한다.
     """
+    if label in TOOL_RESULT_RESERVED_LABELS:
+        # sentinel 은 넘침 대상이 아니다. 접히면 "종류가 많아 접혔다" 와
+        # "확장자가 아니다" 가 구분되지 않아, 구분한다는 약속이 깨진다.
+        return label
     if label in seen or len(seen) < limit:
         return label
     return TOOL_RESULT_OVERFLOW_LABEL
+
+
+def _tool_result_class_bytes(
+    extension: str | None, content: Any, total_size: int
+) -> dict[str, int]:
+    """결과 하나의 바이트를 내용 종류별로 나눈다.
+
+    결과 전체를 한 클래스로 몰면, 스크린샷에 캡션이나 오류 텍스트가 함께 실릴 때 그
+    텍스트까지 image 로 잡힌다. image 비중은 "이 바이트는 줄 단위 트리밍으로 줄일 수
+    없다" 는 판단의 근거이므로, 부풀면 곧바로 잘못된 결론으로 이어진다.
+
+    블록 목록이면 블록마다 재고, 합이 total_size 와 어긋나면 마지막 클래스에 차이를
+    몰아 총합을 보존한다. 블록 목록이 아니면 기존처럼 결과 전체를 한 클래스로 센다.
+    """
+    if not isinstance(content, list) or not content:
+        return {_tool_result_content_class(extension, content): total_size}
+
+    per_class: dict[str, int] = {}
+    measured = 0
+    for raw_block in content:
+        block_size = _tool_result_byte_length([raw_block]) or 0
+        measured += block_size
+        if isinstance(raw_block, dict) and _tool_result_has_image_block([raw_block]):
+            block_class = "image"
+        elif isinstance(raw_block, str) or (
+            isinstance(raw_block, dict) and raw_block.get("type") in TEXT_BLOCK_TYPES
+        ):
+            block_class = "text"
+        else:
+            block_class = _tool_result_content_class(extension, [raw_block])
+        per_class[block_class] = per_class.get(block_class, 0) + block_size
+    if not per_class:
+        return {_tool_result_content_class(extension, content): total_size}
+    if measured != total_size:
+        # 블록 합과 결과 크기가 어긋나도 총합은 보존해야 by_content_class 가
+        # total_bytes 와 맞는다.
+        last = next(reversed(per_class))
+        per_class[last] += total_size - measured
+    return per_class
 
 
 def _tool_result_digest(content: Any) -> str | None:
@@ -472,9 +551,13 @@ class ToolResultBytesAudit:
             )
             self.by_extension_results[extension] += 1
             self.by_extension_bytes[extension] += size
-        content_class = _tool_result_content_class(extension, block.get("content"))
-        self.by_class_results[content_class] += 1
-        self.by_class_bytes[content_class] += size
+        for content_class, class_bytes in _tool_result_class_bytes(
+            extension, block.get("content"), size
+        ).items():
+            # 결과 하나가 이미지와 텍스트를 함께 담으면 두 클래스 모두에 계상된다.
+            # 따라서 by_class_results 의 합은 results 보다 클 수 있다.
+            self.by_class_results[content_class] += 1
+            self.by_class_bytes[content_class] += class_bytes
 
         if entry is not None and tool_name in FILE_READ_TOOL_NAMES:
             if bounded:
@@ -2387,8 +2470,9 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
             "note": (
                 "Shares here are over the size sample, not over total_bytes as every other share in "
                 "this report is. A small count holding a large byte share means a few results "
-                "dominate. If sample_truncated is true the sample is the first results seen rather "
-                "than a random draw, so concentration may be understated."
+                "dominate. If sample_truncated is true the sample is the results seen first rather "
+                "than a random draw, so it may not represent the whole scan; the direction of the "
+                "difference is not known."
             ),
         }
 
@@ -2397,6 +2481,11 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
     )
     report["by_content_class"] = _counter_pair_rows(
         audit.by_class_results, audit.by_class_bytes, total, len(audit.by_class_bytes)
+    )
+    report["by_content_class_note"] = (
+        "Bytes are attributed per content block, so one result holding both an image and text "
+        "counts into both classes and the result counts here can sum above the result total. "
+        "Byte totals still sum to total_bytes."
     )
     if audit.by_extension_bytes:
         report["by_file_extension"] = _counter_pair_rows(
@@ -2785,7 +2874,7 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
     if concentration:
         basis = " (over the size sample, not total_bytes)"
         if concentration.get("sample_truncated"):
-            basis += "; sample truncated, so concentration may be understated"
+            basis += "; sample truncated to the results seen first, so it may not represent the scan"
         print(
             f"  results >= {report['large_result_threshold_bytes']:,}B: "
             f"{concentration['large_results']} "
@@ -2816,7 +2905,7 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
     attribution = report["attribution"]
     if attribution["uncorrelated_results"]:
         reason = (
-            "correlation table filled up"
+            "no matching tool_use in the same file, or the correlation table filled up"
             if attribution["truncated"]
             else "no matching tool_use in the same file"
         )
