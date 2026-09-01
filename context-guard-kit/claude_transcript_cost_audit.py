@@ -116,10 +116,13 @@ TOOL_RESULT_MAX_PENDING_USES = 20_000
 # 세션 하나에서 완전 중복 판정을 위해 유지하는 해시 상한.
 TOOL_RESULT_MAX_DUP_HASHES = 100_000
 # 확장자 라벨로 허용하는 모양. 경로는 절대 노출하지 않고 확장자만 집계한다.
-TOOL_RESULT_EXTENSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._-]{0,15}$")
+TOOL_RESULT_EXTENSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,11}$")
 TOOL_RESULT_MAX_EXTENSIONS = 200
 TOOL_RESULT_MAX_TOOL_LABELS = 500
 TOOL_RESULT_OVERFLOW_LABEL = "(other)"
+# 확장자 모양이 아니어서 라벨로 내보내지 않은 경우. 넘침 버킷과 구분해야 리포트를
+# 읽는 쪽이 "종류가 많아 접혔다" 와 "확장자가 아니다" 를 혼동하지 않는다.
+TOOL_RESULT_NON_EXTENSION_LABEL = "(not-an-extension)"
 IMAGE_EXTENSIONS = frozenset(
     {
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
@@ -255,7 +258,7 @@ def _tool_input_extension(payload: dict[str, Any]) -> str | None:
         extension = base.rsplit(".", 1)[-1].lower()
         if TOOL_RESULT_EXTENSION_RE.match(extension):
             return extension
-        return "(other)"
+        return TOOL_RESULT_NON_EXTENSION_LABEL
     return None
 
 
@@ -304,8 +307,11 @@ def _tool_result_has_image_block(content: Any) -> bool:
 def _tool_result_content_class(extension: str | None, content: Any) -> str:
     """결과 바이트를 image/text/unknown 중 하나로 분류한다.
 
-    확장자를 우선 보고, 없으면 내용 블록의 이미지 페이로드 여부로 판단한다. 이미지 바이트는
-    줄 단위 트리밍으로 줄일 수 없어 텍스트와 성격이 다르므로 따로 센다.
+    내용을 우선 본다. 이미지 페이로드 블록이 있으면 image, 본문이 평문이거나 텍스트
+    블록뿐이면 text 이고, 확장자는 그 둘로 판정되지 않을 때만 쓰는 보조 신호다. 확장자를
+    먼저 보면 읽기에 실패해 오류 문자열이 돌아온 결과가 이미지 바이트로 잡힌다.
+
+    이미지 바이트는 줄 단위 트리밍으로 줄일 수 없어 텍스트와 성격이 다르므로 따로 센다.
     """
     if _tool_result_has_image_block(content):
         return "image"
@@ -2777,11 +2783,15 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
         )
     concentration = report.get("concentration")
     if concentration:
+        basis = " (over the size sample, not total_bytes)"
+        if concentration.get("sample_truncated"):
+            basis += "; sample truncated, so concentration may be understated"
         print(
             f"  results >= {report['large_result_threshold_bytes']:,}B: "
             f"{concentration['large_results']} "
             f"({_format_share(concentration['large_result_share'])} of results) "
             f"carrying {_format_share(concentration['large_byte_share'])} of bytes"
+            f"{basis}"
         )
     for title, key in (
         ("by tool", "by_tool"),
@@ -2798,15 +2808,28 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
                 f"{row['bytes']:>14,}B {_format_share(row['byte_share']):>7s}"
             )
     duplicates = report["exact_duplicates"]
+    duplicate_note = " (understated: duplicate tracking truncated)" if duplicates["tracking_truncated"] else ""
     print(
-        f"  exact duplicates within a session: {duplicates['results']:,} results, "
-        f"{_format_share(duplicates['byte_share'])} of bytes"
+        f"  duplicate results within a session: {duplicates['results']:,} results, "
+        f"{_format_share(duplicates['byte_share'])} of bytes{duplicate_note}"
     )
+    attribution = report["attribution"]
+    if attribution["uncorrelated_results"]:
+        reason = (
+            "correlation table filled up"
+            if attribution["truncated"]
+            else "no matching tool_use in the same file"
+        )
+        print(
+            f"  results counted as unattributed: {attribution['uncorrelated_results']:,} "
+            f"({reason})"
+        )
     bounding = report["file_read_bounding"]
     if bounding["status"] == "observed":
         print(
-            f"  file reads without an explicit range: {bounding['unbounded_results']:,} results, "
-            f"{_format_share(bounding['unbounded_byte_share'])} of read bytes"
+            f"  file reads that requested no explicit range: {bounding['unbounded_results']:,} "
+            f"results, {_format_share(bounding['unbounded_byte_share'])} of read bytes "
+            f"(exact-match file-reading tools only)"
         )
     print(f"  note: {report['claim_boundary']}")
 

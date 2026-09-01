@@ -404,6 +404,41 @@ class ToolResultBytesProfileTests(unittest.TestCase):
         # 일반적인 "path" 키는 디렉터리를 가리키는 도구가 많아 확장자 집계 대상이 아니다.
         self.assertIsNone(audit._tool_input_extension({"path": "/Users/jane.doe/repo"}))
 
+    def test_only_extension_shaped_suffixes_become_labels(self) -> None:
+        """마지막 점 뒤 조각이 무엇이든 라벨이 되면 파일명이 새어 나간다.
+
+        `notes.client-acme` 의 `client-acme` 는 확장자가 아니라 파일명의 일부다.
+        확장자 모양(영문자로 시작하는 짧은 영숫자)만 라벨로 내보내고 나머지는 접는다.
+        """
+        leaky = (
+            "/x/notes.client-acme",
+            "/x/archive.2026-08-31",
+            "/x/config.prod-eu",
+            "/x/report.2024",
+            "/x/dump.internal_db",
+        )
+        for path in leaky:
+            with self.subTest(path=path):
+                label = audit._tool_input_extension({"file_path": path})
+                self.assertEqual(label, audit.TOOL_RESULT_NON_EXTENSION_LABEL)
+                fragment = path.rsplit(".", 1)[-1]
+                self.assertNotIn(fragment, label)
+        for path, expected in (
+            ("/x/a.py", "py"),
+            ("/x/b.swift", "swift"),
+            ("/x/c.jpeg", "jpeg"),
+            ("/x/d.tsx", "tsx"),
+            ("/x/e.h", "h"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(audit._tool_input_extension({"file_path": path}), expected)
+
+    def test_non_extension_label_is_distinct_from_the_overflow_bucket(self) -> None:
+        """정규식 실패와 카디널리티 넘침이 같은 라벨이면 리포트에서 구분되지 않는다."""
+        self.assertNotEqual(
+            audit.TOOL_RESULT_NON_EXTENSION_LABEL, audit.TOOL_RESULT_OVERFLOW_LABEL
+        )
+
     def test_correlation_table_overflow_is_reported_not_silent(self) -> None:
         accumulator = audit.ToolResultBytesAudit()
         accumulator.start_file(Path("a.jsonl"))
@@ -453,6 +488,35 @@ class ToolResultBytesProfileTests(unittest.TestCase):
         )
         classes = {row["label"] for row in report["by_content_class"]}
         self.assertEqual(classes, {"text"})
+
+    def test_text_output_carries_the_caveats_the_json_carries(self) -> None:
+        """절단·표본 경고가 JSON 에만 있으면, 사람이 보는 쪽에는 경고가 없다.
+
+        텍스트가 주 소비 표면이므로 집중도의 분모가 표본이라는 사실과 파일 읽기 비율의
+        적용 범위가 텍스트에도 드러나야 한다.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            write_transcript(
+                directory,
+                "a.jsonl",
+                [
+                    assistant_row(tool_use("u1", "Read", file_path="/tmp/a.py")),
+                    user_row(tool_result("u1", "x" * 200)),
+                ],
+            )
+            completed = subprocess.run(
+                [sys.executable, str(KIT / "claude_transcript_cost_audit.py"), str(directory)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("over the size sample, not total_bytes", completed.stdout)
+            self.assertIn("exact-match file-reading tools only", completed.stdout)
+            self.assertIn("requested no explicit range", completed.stdout)
 
 
 if __name__ == "__main__":
