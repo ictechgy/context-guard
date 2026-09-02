@@ -483,13 +483,16 @@ class ToolResultBytesAudit:
     _seen_hashes: set[str] = field(default_factory=set, init=False, repr=False)
 
     def start_file(self, file: Path | None) -> None:
-        """세션 경계에서 상관/중복 상태를 비운다.
+        """세션 하나가 시작됨을 알리고 상관/중복 상태를 비운다.
 
         tool_use_id와 완전중복은 한 세션 안에서만 의미가 있고, 파일을 넘겨 유지하면
-        메모리도 무한히 자란다. scan()이 파일을 순차 처리하므로 경계에서 비우면 충분하다.
+        메모리도 무한히 자란다.
+
+        경계는 추론하지 않고 scan()이 파일마다 정확히 한 번 알려준다. 예전에는 레코드
+        마다 불리면서 경로가 직전과 같으면 건너뛰는 방식으로 경계를 추론했는데, 그러면
+        같은 파일을 두 번 넘겼을 때 초기화를 건너뛰어 없는 중복을 만들어냈다. 호출자가
+        경계를 아는데 굳이 추론할 이유가 없다.
         """
-        if file == self._current_file:
-            return
         self._current_file = file
         self._pending_uses.clear()
         self._seen_hashes.clear()
@@ -1138,7 +1141,6 @@ def add_usage(
 ) -> RecordUsage:
     record = RecordUsage()
     summary.prompt_cache_audit.observe(root)
-    summary.tool_result_bytes.start_file(file)
     summary.tool_result_bytes.observe(root)
     for d in walk(root):
         for key in COST_KEYS:
@@ -1260,6 +1262,7 @@ def scan(
             )
             break
         summary.files += 1
+        summary.tool_result_bytes.start_file(file)
         try:
             with open_regular_no_symlink(file) as handle:
                 size = os.fstat(handle.fileno()).st_size
@@ -2400,6 +2403,24 @@ def _counter_pair_rows(
     return rows
 
 
+def _rows_coverage(
+    rows: list[dict[str, Any]], byte_counts: Counter[str], total_bytes: int
+) -> dict[str, Any]:
+    """표에 실제로 나온 행이 전체 라벨과 바이트 중 얼마를 덮는지 보고한다.
+
+    행은 --top 으로 잘린다. 그 사실을 말하지 않으면 독자는 합이 100%에 못 미치는 표를
+    보고 원인을 알 수 없다. 잘렸는지, 몇 개 중 몇 개인지, 보이는 행이 전체 바이트의
+    얼마인지를 함께 낸다.
+    """
+    shown_bytes = sum(row["bytes"] for row in rows)
+    return {
+        "rows_shown": len(rows),
+        "labels_total": len(byte_counts),
+        "truncated": len(rows) < len(byte_counts),
+        "shown_byte_share": _share(shown_bytes, total_bytes),
+    }
+
+
 def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
     """tool_result 바이트가 어디로 갔는지에 대한 관측 보고를 만든다.
 
@@ -2479,6 +2500,9 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
     report["by_tool"] = _counter_pair_rows(
         audit.by_tool_results, audit.by_tool_bytes, total, top
     )
+    report["by_tool_coverage"] = _rows_coverage(
+        report["by_tool"], audit.by_tool_bytes, total
+    )
     report["by_content_class"] = _counter_pair_rows(
         audit.by_class_results, audit.by_class_bytes, total, len(audit.by_class_bytes)
     )
@@ -2494,8 +2518,15 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
             total,
             min(top, TOOL_RESULT_MAX_EXTENSIONS),
         )
+        report["by_file_extension_coverage"] = _rows_coverage(
+            report["by_file_extension"], audit.by_extension_bytes, total
+        )
         report["by_file_extension_note"] = (
-            "File extensions only; transcript file paths are never emitted by this section."
+            "File extensions only; transcript file paths are never emitted by this section. "
+            "Shares here are of total_bytes, but rows exist only for results whose tool_use "
+            "named a file to read, so they are not a partition of it: everything read by other "
+            "tools, and every result with no matching tool_use, is outside these rows. See "
+            "by_file_extension_coverage for how much of total_bytes the rows shown do cover."
         )
     report["exact_duplicates"] = {
         "results": audit.duplicate_results,
@@ -2895,6 +2926,12 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
             print(
                 f"    {row['label'][:44]:44s} {row['results']:>7,} results "
                 f"{row['bytes']:>14,}B {_format_share(row['byte_share']):>7s}"
+            )
+        coverage = report.get(f"{key}_coverage")
+        if coverage and coverage["truncated"]:
+            print(
+                f"    ... {coverage['rows_shown']} of {coverage['labels_total']} labels shown, "
+                f"covering {_format_share(coverage['shown_byte_share'])} of bytes"
             )
     duplicates = report["exact_duplicates"]
     duplicate_note = " (understated: duplicate tracking truncated)" if duplicates["tracking_truncated"] else ""
