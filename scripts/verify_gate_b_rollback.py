@@ -128,6 +128,10 @@ GEN19_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen19 second byte p
 GEN19_B1_SUBJECT = "proof: reapply Gate-B nudge component gen19 second byte profiler review"
 GEN19_B2_SUBJECT = "proof: reapply Gate-B usage component gen19 second byte profiler review"
 GEN19_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen19 second byte profiler review"
+GEN20_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen20 table coverage disclosure"
+GEN20_B1_SUBJECT = "proof: reapply Gate-B nudge component gen20 table coverage disclosure"
+GEN20_B2_SUBJECT = "proof: reapply Gate-B usage component gen20 table coverage disclosure"
+GEN20_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen20 table coverage disclosure"
 
 B1_PATHS = frozenset(
     {
@@ -537,6 +541,23 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen20: 표 절단 공개와 파일 경계 신호 이동이 다시 B2 의
+    # claude_transcript_cost_audit.py 와 그 미러를 바꾼다. gen17 이후와 같은 이유로
+    # freeze 가 실제 blocker 이고, 같은 이유로 경로 집합을 좁히지 않는다 - Gate-B
+    # 마커 transcript_usage_reducer 의 소유 경로가 이 파일이다.
+    Generation(
+        name="gen20",
+        bless_subject=GEN20_BLESS_SUBJECT,
+        b1_subject=GEN20_B1_SUBJECT,
+        b2_subject=GEN20_B2_SUBJECT,
+        shared_subject=GEN20_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=GEN16_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -564,6 +585,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "6998b9c0f6f0113ad98253864bb89890d7e29f4f2077e69f8b13f209e19583c5",
     "407498e07b17349893b863b98f3d5bc20954019d68d771145d6ccaca5dc58717",
     "c6421839ef6f201a5d280b2843fa55d98385de9b3584d777a3102e7165383d5a",
+    "b895c7ae60d63ad5b5fe569349ffa7cb5cc324d37e3c18f62e6b3ba9686f7ddd",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 

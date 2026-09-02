@@ -623,5 +623,98 @@ class ToolResultBytesProfileTests(unittest.TestCase):
         self.assertEqual(report["attribution"]["uncorrelated_results"], 1)
 
 
+    def test_start_file_resets_even_when_the_path_repeats(self) -> None:
+        """같은 경로로 두 번 불려도 상태를 비워야 한다.
+
+        예전에는 경로가 같으면 건너뛰어, 같은 파일을 두 번 넘기면 없는 중복이 생겼다.
+        지금 유일한 호출자는 그렇게 부르지 않지만, 그 보장은 다른 함수에 있으므로
+        이 메서드가 스스로 docstring 을 지켜야 한다.
+        """
+        accumulator = audit.ToolResultBytesAudit()
+        payload = "identical payload"
+        for _ in range(2):
+            accumulator.start_file(Path("a.jsonl"))
+            accumulator.observe(assistant_row(tool_use("u1", "Bash", command="ls")))
+            accumulator.observe(user_row(tool_result("u1", payload)))
+        self.assertEqual(accumulator.results, 2)
+        self.assertEqual(accumulator.duplicate_results, 0)
+        self.assertEqual(accumulator.uncorrelated_results, 0)
+
+    def test_start_file_resets_across_repeated_none(self) -> None:
+        accumulator = audit.ToolResultBytesAudit()
+        payload = "identical payload"
+        for _ in range(2):
+            accumulator.start_file(None)
+            accumulator.observe(user_row(tool_result("missing", payload)))
+        self.assertEqual(accumulator.duplicate_results, 0)
+
+    def test_truncated_tables_disclose_how_much_they_cover(self) -> None:
+        """표는 --top 으로 잘린다. 그 사실을 말하지 않으면 합이 100%에 못 미치는
+        이유를 독자가 알 수 없다."""
+        rows: list[dict] = []
+        for index in range(12):
+            rows.append(assistant_row(tool_use(f"u{index}", f"Tool{index:02d}")))
+            rows.append(user_row(tool_result(f"u{index}", "x" * 100)))
+        report = profile({"a.jsonl": rows}, top=3)
+        coverage = report["by_tool_coverage"]
+        self.assertEqual(coverage["rows_shown"], 3)
+        self.assertEqual(coverage["labels_total"], 12)
+        self.assertTrue(coverage["truncated"])
+        self.assertAlmostEqual(coverage["shown_byte_share"], 0.25)
+        self.assertEqual(len(report["by_tool"]), 3)
+
+    def test_untruncated_tables_report_no_truncation(self) -> None:
+        report = profile({"a.jsonl": rows_for("q", 40)}, top=15)
+        coverage = report["by_tool_coverage"]
+        self.assertFalse(coverage["truncated"])
+        self.assertEqual(coverage["rows_shown"], coverage["labels_total"])
+        self.assertAlmostEqual(coverage["shown_byte_share"], 1.0)
+
+    def test_extension_note_explains_why_its_rows_are_not_a_partition(self) -> None:
+        """확장자 행은 파일을 읽은 결과에만 존재하므로 total_bytes 를 분할하지 않는다."""
+        report = profile(
+            {
+                "a.jsonl": [
+                    assistant_row(tool_use("u1", "Read", file_path="/tmp/a.py")),
+                    user_row(tool_result("u1", "a" * 100)),
+                    assistant_row(tool_use("u2", "Bash", command="ls")),
+                    user_row(tool_result("u2", "b" * 900)),
+                ]
+            }
+        )
+        note = report["by_file_extension_note"]
+        self.assertIn("not a partition", note)
+        self.assertIn("by_file_extension_coverage", note)
+        coverage = report["by_file_extension_coverage"]
+        self.assertFalse(coverage["truncated"])
+        # Bash 바이트는 확장자 행 밖에 있으므로 커버리지는 1.0 미만이어야 한다.
+        self.assertAlmostEqual(coverage["shown_byte_share"], 0.1)
+
+    def test_text_output_names_the_truncation_it_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            rows: list[dict] = []
+            for index in range(12):
+                rows.append(assistant_row(tool_use(f"u{index}", f"Tool{index:02d}")))
+                rows.append(user_row(tool_result(f"u{index}", "x" * 100)))
+            write_transcript(directory, "a.jsonl", rows)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT / "claude_transcript_cost_audit.py"),
+                    str(directory),
+                    "--top",
+                    "3",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("3 of 12 labels shown", completed.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
