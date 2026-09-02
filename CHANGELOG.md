@@ -6,6 +6,28 @@ All notable changes for the ContextGuard plugin are documented here.
 
 _No unreleased changes._
 
+## [0.12.4] - 2026-09-01
+
+- `tool_result_bytes` now says how much of each table the reader is seeing.
+  Tables are cut to `--top`, so a run could render five rows out of seventy-one
+  labels whose shares summed to a fraction of the whole, with nothing to say
+  whether the missing mass was truncation or unattributed bytes.
+  `by_tool_coverage` and `by_file_extension_coverage` report rows shown, labels
+  total, whether the table was truncated, and what share of bytes the rows shown
+  do cover; the text output carries the same line. On a real corpus this reads
+  `5 of 71 labels shown, covering 99.4% of bytes` — which is what tells you the
+  top few are effectively everything.
+- The `by_file_extension` note now says why its rows are not a partition of
+  `total_bytes`: they exist only for results whose `tool_use` named a file to
+  read, so bytes carried by every other tool are outside the table from the
+  start. The note previously covered only path privacy.
+- Transcript-file boundaries are now signalled by the scan rather than inferred.
+  `start_file` was called per record and skipped its reset when the path matched
+  the previous one, so passing the same file twice would have kept correlation
+  and duplicate state across the boundary and reported duplicates that were not
+  there. The production scan never did that, but the boundary is the caller's to
+  declare, not the accumulator's to guess.
+
 ## [0.12.3] - 2026-09-01
 
 - Hardened the `--graph-cache` store. The cache holds repo-map/graph-rank output
