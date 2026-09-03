@@ -2714,5 +2714,105 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     )
 
 
+class HookReviewFollowupTests(unittest.TestCase):
+    """세 번째 적대적 리뷰가 짚고 실측으로 확인된 세 결함의 회귀 고정."""
+
+    def hook_decision(self, command: str) -> str:
+        proc = run_rewrite(REWRITE_SCRIPTS[0], {"tool_input": {"command": command}})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        response = json.loads(proc.stdout)
+        hook_output = response.get("hookSpecificOutput")
+        if not isinstance(hook_output, dict):
+            return "noop"
+        if hook_output.get("permissionDecision") == "deny":
+            return "deny"
+        if hook_output.get("permissionDecision") == "ask":
+            return "ask"
+        if "updatedInput" in hook_output:
+            return "rewrite"
+        return "noop"
+
+    def test_glued_separator_does_not_slip_a_side_effecting_find_past_the_ask_gate(self) -> None:
+        """`find . -delete;true` 는 ask 여야 한다.
+
+        shlex 는 따옴표 밖의 `;` 를 단어에 붙여 두므로 `-delete;true` 가 한 토큰이
+        되어 정확 일치를 빗나갔고, 이어서 MiniShell 이 `;` 를 거부해 통과시켰다.
+        문자 다섯 개로 제품에 남은 유일한 사용자 브레이크가 사라졌다. 이 게이트는
+        파싱 성공 여부와 무관하게 되돌릴 수 없는 삭제를 사람에게 물어야 한다.
+        """
+        for command in (
+            "find . -delete",
+            "find . -delete;true",
+            "find . -delete&&true",
+            "find . -delete && true",
+            "find . -delete|true",
+            "find . -name '*.env' -delete;true",
+            "find . -fprint out.txt;true",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.hook_decision(command), "ask", command)
+
+    def test_ask_gate_stays_off_commands_that_only_look_like_deletion(self) -> None:
+        for command in (
+            "find . -name '*.deleted' -print",
+            "find . -name 'delete-me' -print",
+            "grep -r delete .",
+        ):
+            with self.subTest(command=command):
+                self.assertNotEqual(self.hook_decision(command), "ask", command)
+
+    def test_tail_followers_are_not_wrapped_wherever_the_flag_sits(self) -> None:
+        """GNU tail 은 옵션을 순열한다. `tail a.log -f` 도 follower 다.
+
+        옵션 훑기를 첫 위치인자에서 멈추면 그 형태가 안전으로 판정되어 래핑되고,
+        자식이 끝나지 않아 워치독까지 턴이 멈춘다. 같은 함정을 이 파일은 sed 와
+        shortlog 에서 이미 고쳤고 head/tail 만 빠져 있었다.
+        """
+        for command in (
+            "tail -f a.log",
+            "tail a.log -f",
+            "tail a.log -n +1 -f",
+            "tail -F a.log",
+            "tail a.log -F",
+            "tail -fn 20 a.log",
+            "tail --follow=name a.log",
+            "tail a.log --retry",
+        ):
+            with self.subTest(command=command):
+                self.assertNotEqual(self.hook_decision(command), "rewrite", command)
+
+    def test_ordinary_head_and_tail_still_route(self) -> None:
+        """`--` 뒤의 `-f` 는 파일 이름이다. follow 검사가 거기까지 가면 안 된다."""
+        for command in (
+            "tail -n 20 a.log",
+            "tail a.log",
+            "tail -- -f",
+            "head -n 5 a.txt",
+            "head a.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.hook_decision(command), "rewrite", command)
+
+    def test_is_already_wrapped_recognises_what_the_classifier_recognises(self) -> None:
+        """예전에는 분류기가 한 번도 돌려주지 않는 `"exact"` 를 확인해 항상 False 였다.
+
+        유일한 호출자가 `assertFalse` 라 그 사실이 드러나지 않았다. 여기서는 True 가
+        되어야 하는 입력을 함께 고정해, 헬퍼가 다시 죽으면 실패하게 한다.
+        """
+        namespace = runpy.run_path(
+            str(REWRITE_SCRIPTS[0]), run_name="context_guard_already_wrapped"
+        )
+        is_already_wrapped = namespace["is_already_wrapped"]
+        self.assertTrue(
+            is_already_wrapped(
+                ["context-guard-sanitize-output", "--max-lines", "220", "--", "bash", "-c", "ls"]
+            )
+        )
+        self.assertFalse(
+            is_already_wrapped(["python3", "/tmp/context-guard-sanitize-output", "--", "cmd"])
+        )
+        self.assertFalse(is_already_wrapped(["ls", "-la"]))
+
+
 if __name__ == "__main__":
     unittest.main()
