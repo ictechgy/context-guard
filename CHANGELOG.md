@@ -6,6 +6,26 @@ All notable changes for the ContextGuard plugin are documented here.
 
 _No unreleased changes._
 
+## [0.12.5] - 2026-09-03
+
+- The `find` confirmation gate no longer misses an action glued to a separator.
+  `find . -delete;true` ran with no prompt: shlex keeps an unquoted `;` attached
+  to the word, so `-delete;true` was one token that missed the exact-token match,
+  and the parser then refused the `;` and declined — passing the command through
+  untouched. Five characters removed the only user-visible brake the product has
+  left. The gate now also reads separator-split pieces of a token, which is where
+  it belongs: it exists to ask about an irreversible delete whether or not the
+  command parses.
+- `tail` followers are recognized wherever the flag sits. GNU `tail` permutes its
+  options, but the safety check stopped scanning at the first operand, so
+  `tail a.log -f` was judged safe and wrapped — and a wrapped follower never
+  exits, hanging the turn until the watchdog. This repository had already fixed
+  the same trap for `sed` and `git shortlog`; `head`/`tail` was missed. Operands
+  after `--` are still operands, so `tail -- -f` reads a file named `-f`.
+- `is_already_wrapped` reports what the classifier actually recognizes. It tested
+  for a status the classifier never returns, so it answered False for every
+  input, and its only caller asserted False — which passed for the wrong reason.
+
 ## [0.12.4] - 2026-09-01
 
 - `tool_result_bytes` now says how much of each table the reader is seeing.
