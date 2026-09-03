@@ -548,6 +548,38 @@ def _raw_command_is_side_effecting_find(command: str) -> bool:
     return _tokens_carry_side_effecting_find(tokens)
 
 
+# shlex 는 따옴표 밖의 `;` `&` `|` 를 단어에 붙여 둔다. `find . -delete;true` 는
+# `-delete;true` 한 토큰이 되어 정확 일치를 빗나갔고, 이어서 MiniShell 이 `;` 를
+# 거부해 decline → 원본 그대로 실행됐다. 문자 다섯 개로 ask 게이트가 사라진 것이다.
+# 이 게이트의 취지는 파싱 성공 여부와 무관하게 되돌릴 수 없는 삭제를 사람에게
+# 물어보는 것이므로, 구분자를 떼어낸 조각으로도 본다.
+# 공백류는 넣지 않는다. shlex 는 따옴표 밖 공백에서 이미 나누므로, 토큰 안에 남은
+# 개행은 구분자가 아니라 이스케이프나 따옴표에서 온 것이다. `find . $\<개행>-exec …`
+# 를 개행으로 쪼개면 `-exec` 가 나오지만 bash 는 그 줄 연결을 지워 `$-exec` 로 읽어
+# 실제로는 -exec 를 실행하지 않는다. 쪼개면 없는 위험을 물어보게 된다.
+_FIND_TOKEN_SEPARATORS = ";&|()"
+
+
+def _token_action_candidates(token: str) -> list[str]:
+    """토큰에서 구분자를 떼어낸 조각들. `-delete;true` → `-delete`, `true`."""
+    pieces = [token]
+    for separator in _FIND_TOKEN_SEPARATORS:
+        expanded: list[str] = []
+        for piece in pieces:
+            expanded.extend(piece.split(separator))
+        pieces = expanded
+    return [piece for piece in pieces if piece]
+
+
+def _follower_is_side_effecting_action(follower: str) -> bool:
+    """토큰 자체나 구분자로 잘린 조각이 부수효과 액션인지 본다."""
+    if follower in _FIND_SIDE_EFFECT_ACTIONS:
+        return True
+    return any(
+        piece in _FIND_SIDE_EFFECT_ACTIONS for piece in _token_action_candidates(follower)
+    )
+
+
 def _tokens_carry_side_effecting_find(tokens: list[str], depth: int = 0) -> bool:
     for index, token in enumerate(tokens):
         # `bash -c "find . -delete"` 는 스크립트 본문이 토큰 하나로 남아 겉에서는
@@ -574,7 +606,7 @@ def _tokens_carry_side_effecting_find(tokens: list[str], depth: int = 0) -> bool
         if os.path.basename(token) != "find":
             continue
         if any(
-            follower in _FIND_SIDE_EFFECT_ACTIONS
+            _follower_is_side_effecting_action(follower)
             for follower in tokens[index + 1:]
         ):
             return True
@@ -1397,13 +1429,19 @@ def classify_incoming_wrapper(
 
 
 def is_already_wrapped(argv: list[str]) -> bool:
-    """Compatibility helper: only exact CGW1 argv counts as already wrapped."""
+    """이 argv 가 이미 CGW1 실행 봉투를 지고 있는지 본다.
+
+    예전에는 `"exact"` 상태를 확인했는데 `classify_incoming_wrapper` 는 그 값을
+    한 번도 돌려주지 않는다 - `None`, `"incoming_wrapper_denied"`,
+    `"nested_wrapper_denied"` 뿐이다. 그래서 이 헬퍼는 입력과 무관하게 항상
+    False 였고, 유일한 호출자인 테스트가 `assertFalse` 라 그 사실이 드러나지
+    않았다. 분류기가 봉투로 인정한 것을 그대로 인정한다.
+    """
     command = shell_join(argv)
     parsed = parse_minishell(command)
     if parsed.denial_reason is not None:
         return False
-    wrapper = classify_incoming_wrapper(parsed)
-    return wrapper is not None and wrapper[0] == "exact"
+    return classify_incoming_wrapper(parsed) is not None
 
 
 def is_sanitizable_output_command(argv: list[str]) -> bool:
@@ -1783,6 +1821,29 @@ def _wc_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     return allow_files or operands == 0
 
 
+def _tail_follows_forever(argv: tuple[str, ...]) -> bool:
+    """tail 인자 어디에든 follow 옵션이 있는지 본다.
+
+    GNU tail 은 옵션을 순열한다. `tail some.log -f` 도 follower 다. 옵션 훑기를 첫
+    위치인자에서 멈추면 그 형태가 안전으로 판정되어 래핑되고, 자식이 끝나지 않아
+    워치독까지 턴이 멈춘다. 같은 함정을 이 파일은 sed 와 shortlog 에서 이미 고쳤다.
+
+    `--` 뒤는 전부 피연산자다. `tail -- -f` 의 `-f` 는 파일 이름이므로 보지 않는다.
+    """
+    for argument in argv[1:]:
+        if argument == "--":
+            return False
+        if argument.startswith("--"):
+            if argument.split("=", 1)[0] in {"--follow", "--retry"}:
+                return True
+            continue
+        if argument.startswith("-") and len(argument) > 1:
+            # 짧은 옵션은 묶일 수 있다: `-fn 20`, `-qf`. 묶음 안의 f/F 도 follow 다.
+            if any(letter in {"f", "F"} for letter in argument[1:]):
+                return True
+    return False
+
+
 def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     """head/tail 인자가 안전한 라우팅 대상인지 판정한다.
 
@@ -1794,6 +1855,8 @@ def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     trim 예산 단위는 줄(line)이라 바이트 상한과 섞일 수 없다.
     """
     first = command_basename(argv[0])
+    if first == "tail" and _tail_follows_forever(argv):
+        return False
     index = 1
     count_seen = False
     while index < len(argv):
