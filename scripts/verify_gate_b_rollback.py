@@ -132,6 +132,10 @@ GEN20_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen20 table coverag
 GEN20_B1_SUBJECT = "proof: reapply Gate-B nudge component gen20 table coverage disclosure"
 GEN20_B2_SUBJECT = "proof: reapply Gate-B usage component gen20 table coverage disclosure"
 GEN20_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen20 table coverage disclosure"
+GEN21_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen21 bash hook review followups"
+GEN21_B1_SUBJECT = "proof: reapply Gate-B nudge component gen21 bash hook review followups"
+GEN21_B2_SUBJECT = "proof: reapply Gate-B usage component gen21 bash hook review followups"
+GEN21_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen21 bash hook review followups"
 
 B1_PATHS = frozenset(
     {
@@ -558,6 +562,22 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen21: Bash 훅의 find ask 게이트·tail 순열·죽은 헬퍼 수정이 다시 B2 의
+    # rewrite_bash_for_token_budget.py 와 그 미러를 바꾼다. gen17 이후와 같은
+    # 이유로 freeze 가 실제 blocker 이고, 같은 이유로 경로 집합을 좁히지 않는다.
+    Generation(
+        name="gen21",
+        bless_subject=GEN21_BLESS_SUBJECT,
+        b1_subject=GEN21_B1_SUBJECT,
+        b2_subject=GEN21_B2_SUBJECT,
+        shared_subject=GEN21_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=GEN16_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -586,6 +606,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "407498e07b17349893b863b98f3d5bc20954019d68d771145d6ccaca5dc58717",
     "c6421839ef6f201a5d280b2843fa55d98385de9b3584d777a3102e7165383d5a",
     "b895c7ae60d63ad5b5fe569349ffa7cb5cc324d37e3c18f62e6b3ba9686f7ddd",
+    "8ad2bbb5827d53ea6fb83a96d2c440e46bed99882edb9ebc940b7eed404e89be",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
