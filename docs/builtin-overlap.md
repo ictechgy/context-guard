@@ -7,7 +7,8 @@ Claude Code user does not have to guess "isn't this already built in?".
 
 Built-in behaviors below were checked against the official Claude Code docs on
 2026-09-05 (`code.claude.com/docs`). Defaults change; re-check before relying on a
-number. Nothing on this page is a savings claim.
+number. Version-sensitive items: the `/usage` cache statistics (v2.1.251+), the
+`autoCompactWindow` sizes, and the per-model effort defaults. Nothing on this page is a savings claim.
 
 | ContextGuard feature | Claude Code built-in | Relationship | What ContextGuard adds, if anything |
 | --- | --- | --- | --- |
@@ -19,7 +20,7 @@ number. Nothing on this page is a savings claim.
 | `failed_attempt_nudge` (one-line hint after the same Bash command fails twice; off by default) | None. | **Not built in**, but its false-positive rate is unmeasured, which is why it is opt-in (`--profile max`). | A hint, not a savings mechanism. |
 | Compaction, `context-guard-compress` | Auto-compaction near the model's window (`autoCompactWindow`, e.g. ~967K on Sonnet 5, ~200K on other models), `/compact`, `/clear`. | **Built-in wins.** ContextGuard's compressor is explicit-invocation only and structural (JSON compaction, log collapse); it does not replace conversation compaction. | Prefer the built-in. Use `context-guard-artifact` for lossless retrieval instead of compressing history. |
 | Brief mode / quiet narration rule blocks | `/effort` and `effortLevel` (default `high`; `xhigh` on Opus 4.7) control reasoning depth, not answer length. `MAX_THINKING_TOKENS` bounds thinking on fixed-budget models. | **Different axis.** The rule blocks ask for shorter answers; effort controls thinking. The blocks cost ~1.5 KB on every request and their benefit is not enforced (see the standing-cost table in [safety-reference.md](safety-reference.md)). | Measure before installing; for short sessions the block can cost more than it saves. |
-| Prompt cache friendliness diagnostics (`cache_friendliness`, `cost preflight`) | Prompt caching is automatic (`cache_control` breakpoints on the system prompt, project context, conversation; TTL 1 h on subscription, 5 min on API keys; `DISABLE_PROMPT_CACHING*`). Enabling or disabling plugins or MCP servers invalidates the prefix unless tools are deferred. | **Complement.** Claude Code caches; ContextGuard only reports when the observed usage suggests the prefix is being rewritten. | A warning, never a change to the request. |
+| Prompt cache friendliness diagnostics (`cache_friendliness`, `cost preflight`) | Prompt caching is automatic (`cache_control` breakpoints on the system prompt, project context, conversation; TTL per Claude Code docs: 1 h for subscription plan usage, 5 min for API-key usage, configurable with `promptCacheTtl`; `DISABLE_PROMPT_CACHING*`). Enabling or disabling plugins or MCP servers invalidates the prefix unless tools are deferred. | **Complement.** Claude Code caches; ContextGuard only reports when the observed usage suggests the prefix is being rewritten. | A warning, never a change to the request. |
 | Hook journal + `context-guard hooks off` | Hooks themselves are built in (`PreToolUse` `updatedInput` and `permissionDecision`, `PostToolUse` `additionalContext`). There is no built-in per-hook cost journal or temporary disable switch. | **Not built in.** | Records what each hook did and cost; lets a user pause one hook for a project without editing settings. |
 
 ## What this means for a default Claude Code install
@@ -44,7 +45,7 @@ Claude Code 에는 자체 컨텍스트 관리 기능이 있습니다. 이 문서
 | `failed_attempt_nudge`(기본 off) | 없음. | **내장에 없음.** 오탐률이 측정되지 않아 opt-in. | 힌트일 뿐 절감 메커니즘이 아님. |
 | 컴팩션, `context-guard-compress` | 자동 컴팩션(`autoCompactWindow`), `/compact`, `/clear`. | **내장이 우선.** ContextGuard 압축기는 명시 호출 전용의 구조적 압축이며 대화 컴팩션을 대체하지 않음. | 내장을 쓰고, 무손실 재조회는 `context-guard-artifact` 로. |
 | brief 모드 / 조용한 진행 설명 | `/effort`, `effortLevel`(기본 `high`), `MAX_THINKING_TOKENS`. | **다른 축.** 규칙 블록은 답변 길이를, effort 는 사고 깊이를 다룸. 블록은 요청마다 약 1.5KB 가 확정 비용이고 이득은 강제되지 않음. | 설치 전에 측정할 것. 짧은 세션에서는 손해일 수 있음. |
-| 캐시 친화도 진단, `cost preflight` | 프롬프트 캐싱 자동(구독 1시간, API 키 5분 TTL). 플러그인/MCP 변경은 접두사를 무효화함. | **보완.** Claude Code 가 캐시하고, ContextGuard 는 접두사가 다시 쓰이는 징후만 보고함. | 경고일 뿐 요청을 바꾸지 않음. |
+| 캐시 친화도 진단, `cost preflight` | 프롬프트 캐싱 자동(Claude Code 문서 기준 TTL: 구독 플랜 사용량 1시간, API 키 5분, `promptCacheTtl` 로 조정). 플러그인/MCP 변경은 접두사를 무효화함. | **보완.** Claude Code 가 캐시하고, ContextGuard 는 접두사가 다시 쓰이는 징후만 보고함. | 경고일 뿐 요청을 바꾸지 않음. |
 | 훅 저널 + `context-guard hooks off` | 훅 자체는 내장. 훅별 비용 저널이나 임시 해제 스위치는 없음. | **내장에 없음.** | 각 훅이 무엇을 했고 얼마를 썼는지 기록하고, 설정을 고치지 않고 훅 하나를 프로젝트 단위로 잠시 끔. |
 
 **기본 Claude Code 설치에서의 결론.** 유지: audit, Read 가드, (sanitize 된 재조회나 다른 에이전트가 필요하면) Bash escrow, deny 규칙. 선택: statusline, nudge, brief 모드. Claude Code 에서는 건너뜀: `tool-prune`, `compress`. `--profile minimal` 이 "내장이 못 하는 것만"에 가장 가깝습니다.

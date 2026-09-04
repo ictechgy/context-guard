@@ -467,7 +467,7 @@ class TokenCalibration(unittest.TestCase):
     def test_calibration_never_claims_savings(self) -> None:
         section = full_report(self._corpus(turns=40, result_bytes=8_000, created=2_000))["tool_result_bytes"]["token_calibration"]
         self.assertFalse(section["claim_boundary"]["token_or_cost_savings_claim_allowed"])
-        self.assertIn("floor", section["note"])
+        self.assertIn("not a bound", section["note"])
 
 
 class GuardCoverage(unittest.TestCase):
