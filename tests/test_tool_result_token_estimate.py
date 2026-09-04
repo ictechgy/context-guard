@@ -332,5 +332,81 @@ class NewBytesPerTurn(unittest.TestCase):
         self.assertFalse(boundary["token_or_cost_savings_claim_allowed"])
 
 
+class NewTokensByPrecedingTool(unittest.TestCase):
+    """턴의 cache_creation 이 직전 tool_result 의 도구에 귀속되는지 고정한다."""
+
+    def _rows(self) -> list[dict]:
+        return [
+            usage_row(50, 0),  # 선행 도구 결과 없음 → no_tool_result
+            assistant_row(tool_use("u1", "Read", file_path="a.py")),
+            user_row(tool_result("u1", "x" * 400)),
+            usage_row(1000, 1),
+            assistant_row(tool_use("u2", "Bash", command="ls")),
+            user_row(tool_result("u2", "y" * 40)),
+            usage_row(100, 2),
+            assistant_row(tool_use("u3", "Read", file_path="b.py")),
+            user_row(tool_result("u3", "z" * 400)),
+            usage_row(3000, 3),
+        ]
+
+    def test_each_turn_is_attributed_to_the_most_recent_tool_result(self) -> None:
+        section = full_report(self._rows())["new_tokens_per_turn"]["by_preceding_tool"]
+        by_label = {row["label"]: row for row in section["rows"]}
+        self.assertEqual(by_label["Read"]["cache_creation_tokens"], 4000)
+        self.assertEqual(by_label["Read"]["turns"], 2)
+        self.assertEqual(by_label["Bash"]["cache_creation_tokens"], 100)
+        self.assertEqual(by_label["no_tool_result"]["cache_creation_tokens"], 50)
+        self.assertEqual(section["rows"][0]["label"], "Read")
+        self.assertEqual(section["total_cache_creation_tokens"], 4150)
+
+    def test_attribution_resets_at_a_session_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = [assistant_row(tool_use("u1", "Read", file_path="a.py")), user_row(tool_result("u1", "x" * 400))]
+            second = [usage_row(700, 9)]
+            for name, rows in (("one.jsonl", first), ("two.jsonl", second)):
+                with (root / name).open("w", encoding="utf-8") as handle:
+                    for row in rows:
+                        handle.write(json.dumps(row) + "\n")
+            section = audit.build_new_tokens_per_turn(audit.scan([str(root)]))["by_preceding_tool"]
+        self.assertEqual([row["label"] for row in section["rows"]], ["no_tool_result"])
+
+    def test_section_never_claims_savings_and_says_it_is_observational(self) -> None:
+        section = full_report(self._rows())["new_tokens_per_turn"]["by_preceding_tool"]
+        self.assertFalse(section["claim_boundary"]["token_or_cost_savings_claim_allowed"])
+        self.assertIn("not a causal proof", section["note"])
+
+    def test_recommendation_names_the_dominant_preceding_tool(self) -> None:
+        rows = []
+        for index in range(10):
+            rows.append(assistant_row(tool_use(f"u{index}", "Read", file_path="a.py")))
+            rows.append(user_row(tool_result(f"u{index}", "x" * 100)))
+            rows.append(usage_row(10_000, index))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "session.jsonl").open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row) + "\n")
+            recs = audit.build_recommendations(audit.scan([str(root)]), 15)
+        aim = [rec for rec in recs if rec["id"] == "aim-at-new-token-source"]
+        self.assertEqual(len(aim), 1)
+        self.assertEqual(aim[0]["evidence"]["label"], "Read")
+        self.assertIn("read-symbol", aim[0]["action"])
+
+    def test_no_recommendation_when_new_tokens_are_spread_out(self) -> None:
+        rows = []
+        for index, tool in enumerate(("Read", "Bash", "Grep", "Glob") * 5):
+            rows.append(assistant_row(tool_use(f"u{index}", tool, x=1)))
+            rows.append(user_row(tool_result(f"u{index}", "x" * 100)))
+            rows.append(usage_row(10_000, index))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "session.jsonl").open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row) + "\n")
+            recs = audit.build_recommendations(audit.scan([str(root)]), 15)
+        self.assertEqual([rec for rec in recs if rec["id"] == "aim-at-new-token-source"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -674,14 +674,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
         )
         self.assertEqual(set(COMMAND_MANIFEST.NPM_BINS), {bin_name for _kit, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS})
         self.assertIsNot(COMMAND_MANIFEST.NPM_BINS, COMMAND_MANIFEST.IMPLEMENTATION_PAIRS)
-        self.assertTrue(
-            set(COMMAND_MANIFEST.LEGACY_WRAPPERS).isdisjoint(set(COMMAND_MANIFEST.NPM_BINS)),
-            "legacy compatibility wrappers ship as package files but are not npm bin links",
-        )
-        for wrapper in COMMAND_MANIFEST.LEGACY_WRAPPERS:
-            self.assertNotIn(wrapper, package["bin"])
+        # 레거시 `claude-*` 래퍼는 삭제됐다. 이름만 남아 있어야 하고 항목은 없어야 한다.
+        self.assertEqual(COMMAND_MANIFEST.LEGACY_WRAPPERS, ())
         self.assertEqual(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS), set(COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES))
-        self.assertTrue(set(COMMAND_MANIFEST.LEGACY_WRAPPERS).issubset(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS)))
 
         prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_manifest_test")
         self.assertIs(
@@ -694,7 +689,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
         expected_from_literals = {
             *(f"plugins/context-guard/bin/{bin_name}" for _kit_name, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS),
             *(f"plugins/context-guard/{plugin_rel}" for _kit_name, plugin_rel in COMMAND_MANIFEST.HELPER_PAIRS),
-            *(f"plugins/context-guard/bin/{wrapper}" for wrapper in COMMAND_MANIFEST.LEGACY_WRAPPERS),
         }
         self.assertEqual(set(COMMAND_MANIFEST.EXPECTED_COMMAND_PACK_FILES), expected_from_literals)
         for rel in COMMAND_MANIFEST.EXPECTED_COMMAND_PACK_FILES:
@@ -2064,7 +2058,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             str(script),
                             "--digest",
                             "json",
-                            "--artifact-receipt",
+                            "--artifact-receipt", "--digest-always",
                             "--artifact-dir",
                             str(artifact_dir),
                             "--",
@@ -5862,8 +5856,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_static_relevance_docs_parity(self):
         docs = (
-            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
-            PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",
         )
         for doc in docs:
@@ -7246,11 +7239,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_learned_compression_docs_surface_boundary(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-            PLUGIN_DIR / "README.ko.md",
-            KIT_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "docs" / "experimental-benchmark-fixtures.md",
             ROOT / "docs" / "index.html",
         )
@@ -10238,11 +10227,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-            PLUGIN_DIR / "README.ko.md",
-            KIT_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "docs" / "benchmark-workflow-examples.md",
             ROOT / "docs" / "index.html",
         )
@@ -10262,9 +10247,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_image_context_pack_docs_examples_match_cli(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
         )
         canonical_flags = (
             "--exact-text-fallback-receipt",
@@ -10317,11 +10300,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_semantic_checkpoint_docs_examples_match_cli(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-            PLUGIN_DIR / "README.ko.md",
-            KIT_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",
         )
         canonical_flags = (
@@ -10379,11 +10358,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_proof_carrying_context_docs_examples_match_cli(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-            PLUGIN_DIR / "README.ko.md",
-            KIT_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",
         )
         canonical_flags = (
@@ -10510,8 +10485,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_semantic_gc_docs_parity(self):
         docs = (
-            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
-            PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",
         )
         for doc in docs:
@@ -10535,11 +10509,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_local_proxy_docs_surface_boundary(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-            PLUGIN_DIR / "README.ko.md",
-            KIT_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "docs" / "index.html",
         )
         boundary_docs = docs + (
@@ -10578,11 +10548,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_experimental_image_context_pack_docs_surface_boundary(self):
         docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-            PLUGIN_DIR / "README.ko.md",
-            KIT_DIR / "README.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",
         )
         for doc in docs:
@@ -12626,6 +12592,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             KIT_DIR / "README.md",
             PLUGIN_DIR / "README.md",
             PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "docs" / "index.html",
         ]
         forbidden_claim_patterns = [
@@ -15042,441 +15009,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 help_text = self._run_pack(script, ROOT, command, "--help").stdout
                 self.assertIn("--delta-from-pack-id PACK_ID", help_text)
                 self.assertRegex(help_text, r"--no-artifact requires\s+--json")
-
-    def test_context_pack_sketch_duplicate_veto_exact_priority_canonical_and_prebudget_identity(self):
-        for index, script in enumerate(PACK_SCRIPTS):
-            with self.subTest(script=script):
-                module = load_python_script_module(script, f"_context_pack_sketch_exact_{index}")
-                with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    repeated = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu\n"
-                    (root / "winner.txt").write_text(repeated, encoding="utf-8")
-                    (root / "duplicate.txt").write_text(repeated, encoding="utf-8")
-                    (root / "unique.txt").write_text("different evidence\n", encoding="utf-8")
-
-                    base = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".",
-                        "--source", "path=winner.txt,priority=20",
-                        "--source", "path=duplicate.txt,priority=10",
-                        "--budget-bytes", "12000", "--json", "--no-artifact",
-                    ).stdout)
-                    flagged = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".",
-                        "--source", "path=winner.txt,priority=20",
-                        "--source", "path=duplicate.txt,priority=10",
-                        "--budget-bytes", "12000", "--json", "--no-artifact",
-                        "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertEqual(flagged["sources"], {"total": 2, "included": 1, "partial": 0, "omitted": 1})
-                    self.assertEqual(flagged["omitted_sources"][0]["reason"], "sketch_duplicate_source")
-                    self.assertEqual(flagged["omitted_sources"][0]["path"], "duplicate.txt")
-                    self.assertIn("--path duplicate.txt", flagged["omitted_sources"][0]["retrieval_cli"])
-                    self.assertNotEqual(flagged["content_address"], base["content_address"])
-                    self.assertNotEqual(flagged["pack_id"], base["pack_id"])
-
-                    reverse_ranked = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".",
-                        "--source", "path=duplicate.txt,priority=1",
-                        "--source", "path=winner.txt,priority=999",
-                        "--json", "--no-artifact", "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertEqual(
-                        [(item["path"], item["priority"], item["input_index"])
-                         for item in reverse_ranked["included_sources"]],
-                        [("winner.txt", 999, 1)],
-                    )
-                    self.assertEqual(
-                        [(item["path"], item["priority"], item["input_index"], item["reason"])
-                         for item in reverse_ranked["omitted_sources"]],
-                        [("duplicate.txt", 1, 0, "sketch_duplicate_source")],
-                    )
-
-                    zero_base = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "winner.txt",
-                        "--source", "duplicate.txt", "--budget-bytes", "0", "--json", "--no-artifact",
-                    ).stdout)
-                    zero_flagged = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "winner.txt",
-                        "--source", "duplicate.txt", "--budget-bytes", "0", "--json", "--no-artifact",
-                        "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertEqual(zero_flagged["pack"], zero_base["pack"])
-                    self.assertEqual(zero_flagged["content_address"], zero_base["content_address"])
-                    self.assertEqual(zero_flagged["sources"]["omitted"], zero_base["sources"]["omitted"])
-                    self.assertNotEqual(zero_flagged["pack_id"], zero_base["pack_id"])
-                    self.assertEqual(
-                        sorted(item["reason"] for item in zero_flagged["omitted_sources"]),
-                        ["budget_exhausted", "sketch_duplicate_source"],
-                    )
-
-                    path_duplicate = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".",
-                        "--source", "path=winner.txt,priority=1",
-                        "--source", "path=winner.txt,priority=999",
-                        "--source", "path=unique.txt,priority=2",
-                        "--json", "--no-artifact", "--sketch-duplicate-veto",
-                    ).stdout)
-                    path_rows = [item for item in path_duplicate["omitted_sources"] if item["path"] == "winner.txt"]
-                    self.assertEqual([(item["priority"], item["reason"]) for item in path_rows], [(999, "duplicate_source")])
-                    same_path_included = [
-                        item for item in path_duplicate["included_sources"] if item["path"] == "winner.txt"
-                    ]
-                    self.assertEqual(
-                        [(item["priority"], item["input_index"]) for item in same_path_included],
-                        [(1, 0)],
-                    )
-
-                    signatures = {
-                        "winner.txt": module._DuplicateSignature(b"a" * 32, frozenset(bytes([n]) for n in range(12))),
-                        "duplicate.txt": module._DuplicateSignature(b"b" * 32, frozenset(bytes([n]) for n in range(12))),
-                        "unique.txt": module._DuplicateSignature(b"b" * 32, frozenset(bytes([n]) for n in range(40, 52))),
-                    }
-                    def controlled_signature(lines, *, include_sketch):
-                        name = lines[0].strip()
-                        value = signatures[name]
-                        return module._DuplicateSignature(value.exact_digest, value.sketch if include_sketch else None)
-
-                    for name in signatures:
-                        (root / name).write_text(name + "\n", encoding="utf-8")
-                    with mock.patch.object(module, "_sketch_duplicate_signature", side_effect=controlled_signature):
-                        controlled = module.build_pack(
-                            root,
-                            [
-                                module.SourceSpec(path="winner.txt", priority=30),
-                                module.SourceSpec(path="duplicate.txt", priority=20),
-                                module.SourceSpec(path="unique.txt", priority=10),
-                            ],
-                            budget_bytes=12000,
-                            root_arg=".",
-                            store_artifact=False,
-                            sketch_duplicate_veto=True,
-                        )
-                    self.assertEqual([item["path"] for item in controlled["included_sources"]], ["winner.txt", "unique.txt"])
-                    self.assertEqual(
-                        [(item["path"], item["reason"]) for item in controlled["omitted_sources"]],
-                        [("duplicate.txt", "sketch_duplicate_source")],
-                    )
-
-                    original_signature = module._sketch_duplicate_signature
-                    def forced_digest_collision(lines, *, include_sketch):
-                        value = original_signature(lines, include_sketch=include_sketch)
-                        return module._DuplicateSignature(b"x" * 32, value.sketch)
-                    (root / "winner.txt").write_text("left\n", encoding="utf-8")
-                    (root / "duplicate.txt").write_text("right\n", encoding="utf-8")
-                    with mock.patch.object(module, "_sketch_duplicate_signature", side_effect=forced_digest_collision):
-                        collision = module.build_pack(
-                            root,
-                            [module.SourceSpec(path="winner.txt"), module.SourceSpec(path="duplicate.txt")],
-                            budget_bytes=12000,
-                            root_arg=".",
-                            store_artifact=False,
-                            sketch_duplicate_veto=True,
-                        )
-                    self.assertEqual(collision["sources"]["included"], 2)
-                    self.assertFalse(collision["omitted_sources"])
-
-    def test_context_pack_sketch_duplicate_veto_encoding_jaccard_kway_cap_and_privacy(self):
-        for index, script in enumerate(PACK_SCRIPTS):
-            with self.subTest(script=script):
-                module = load_python_script_module(script, f"_context_pack_sketch_bounds_{index}")
-                self.assertEqual(
-                    module._sketch_duplicate_shingle_digest(("strasse", "café", "ωmega", "四", "five")).hex(),
-                    "0f01f505103d69b68f0123ea367832ad2fd6ec24eb4cfac8b45301bafacd2f49",
-                )
-                cross_line = module._sketch_duplicate_signature(
-                    ["Straße café\n", "ΩMEGA 四 five six seven\n"], include_sketch=True,
-                )
-                self.assertIn(
-                    module._sketch_duplicate_shingle_digest(("strasse", "café", "ωmega", "四", "five")),
-                    cross_line.sketch,
-                )
-                many = module._sketch_duplicate_signature(
-                    [" ".join(f"token{number}" for number in range(300))], include_sketch=True,
-                )
-                self.assertEqual(len(many.sketch), 64)
-                left = frozenset(bytes([number]) for number in range(18))
-                self.assertTrue(module._sketch_sets_match(left, frozenset(bytes([number]) for number in range(20))))
-                self.assertFalse(module._sketch_sets_match(
-                    frozenset(bytes([number]) for number in range(17)),
-                    frozenset(bytes([number]) for number in range(19)),
-                ))
-                twelve = frozenset(bytes([number]) for number in range(12))
-                self.assertTrue(module._sketch_sets_match(twelve, frozenset(bytes([number]) for number in range(13))))
-                self.assertFalse(module._sketch_sets_match(twelve, frozenset(bytes([number]) for number in range(14))))
-                postings = {b"a": [0, 2, 4], b"b": [1, 2, 3], b"c": [0, 3, 5]}
-                self.assertEqual(list(module._ordered_sketch_winner_ids(frozenset(postings), postings)), [0, 1, 2, 3, 4, 5])
-
-                with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    for name in ("a", "b", "c", "d"):
-                        (root / f"{name}.txt").write_text(name + "\n", encoding="utf-8")
-                    sketches = {
-                        "a": frozenset([b"anchor"] + [f"a{n}".encode() for n in range(11)]),
-                        "b": frozenset(f"b{n}".encode() for n in range(64)),
-                        "c": frozenset([b"anchor"] + [f"b{n}".encode() for n in range(63)]),
-                        "d": frozenset([b"anchor"] + [f"d{n}".encode() for n in range(11)]),
-                    }
-                    self.assertFalse(module._sketch_sets_match(sketches["a"], sketches["c"]))
-                    self.assertTrue(module._sketch_sets_match(sketches["b"], sketches["c"]))
-                    include_calls: list[tuple[str, bool]] = []
-                    def bounded_signature(lines, *, include_sketch):
-                        name = lines[0].strip()
-                        include_calls.append((name, include_sketch))
-                        return module._DuplicateSignature(name.encode().ljust(32, b"_"), sketches[name] if include_sketch else None)
-                    with mock.patch.object(module, "SKETCH_DUPLICATE_COMPARISON_CAP", 1), mock.patch.object(
-                        module, "_sketch_duplicate_signature", side_effect=bounded_signature,
-                    ), mock.patch.object(
-                        module, "_sketch_sets_match", wraps=module._sketch_sets_match,
-                    ) as match_mock:
-                        capped = module.build_pack(
-                            root,
-                            [module.SourceSpec(path=f"{name}.txt", input_index=offset) for offset, name in enumerate(("a", "b", "c", "d"))],
-                            budget_bytes=12000,
-                            root_arg=".",
-                            store_artifact=False,
-                            sketch_duplicate_veto=True,
-                        )
-                    self.assertTrue(capped["sketch_duplicate_veto"]["comparison_cap_reached"])
-                    self.assertEqual(include_calls, [("a", True), ("b", True), ("c", True), ("d", False)])
-                    match_mock.assert_called_once_with(sketches["c"], sketches["a"])
-                    self.assertEqual(capped["sources"]["included"], 4)
-                    self.assertEqual(
-                        [item["path"] for item in capped["included_sources"]],
-                        ["a.txt", "b.txt", "c.txt", "d.txt"],
-                    )
-                    serialized = json.dumps(capped, ensure_ascii=False)
-                    for forbidden in ("winner_id", "exact_digest", "overlap", "similarity_score", "token_window"):
-                        self.assertNotIn(forbidden, serialized)
-
-                    include_calls.clear()
-                    with mock.patch.object(module, "SKETCH_DUPLICATE_COMPARISON_CAP", 1), mock.patch.object(
-                        module, "_sketch_duplicate_signature", side_effect=bounded_signature,
-                    ):
-                        exact_limit = module.build_pack(
-                            root,
-                            [module.SourceSpec(path="a.txt"), module.SourceSpec(path="c.txt")],
-                            budget_bytes=12000,
-                            root_arg=".",
-                            store_artifact=False,
-                            sketch_duplicate_veto=True,
-                        )
-                    self.assertFalse(exact_limit["sketch_duplicate_veto"]["comparison_cap_reached"])
-
-                    short_signatures = {
-                        "a": module._DuplicateSignature(b"a" * 32, frozenset(bytes([n]) for n in range(11))),
-                        "b": module._DuplicateSignature(b"b" * 32, frozenset(bytes([n]) for n in range(11))),
-                    }
-                    with mock.patch.object(
-                        module, "_sketch_duplicate_signature",
-                        side_effect=lambda lines, include_sketch: short_signatures[lines[0].strip()],
-                    ), mock.patch.object(module, "_ordered_sketch_winner_ids") as ordered_winner_ids:
-                        short = module.build_pack(
-                            root,
-                            [module.SourceSpec(path="a.txt"), module.SourceSpec(path="b.txt")],
-                            budget_bytes=12000,
-                            root_arg=".",
-                            store_artifact=False,
-                            sketch_duplicate_veto=True,
-                        )
-                    ordered_winner_ids.assert_not_called()
-                    self.assertEqual(short["sources"]["included"], 2)
-
-    def test_context_pack_sketch_duplicate_veto_default_auto_help_docs_and_receipt_contract(self):
-        for index, script in enumerate(PACK_SCRIPTS):
-            with self.subTest(script=script):
-                module = load_python_script_module(script, f"_context_pack_sketch_contract_{index}")
-                for command in ("build", "auto"):
-                    help_text = self._run_pack(script, ROOT, command, "--help").stdout
-                    self.assertIn("--sketch-duplicate-veto", help_text)
-                    normalized_help = " ".join(help_text.split())
-                    for term in (
-                        "fixed 100,000 verified-pair cap", "fail open", "sketch_comparison_cap_reached=true|false",
-                        "sketch_duplicate_veto.comparison_cap_reached",
-                    ):
-                        self.assertIn(term, normalized_help)
-                suggest_help = self._run_pack(script, ROOT, "suggest", "--help").stdout
-                for term in (
-                    "--sketch-duplicate-veto", "sketch_comparison_cap_reached",
-                    "sketch_duplicate_veto.comparison_cap_reached",
-                ):
-                    self.assertNotIn(term, suggest_help)
-
-                with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    (root / "a.txt").write_text("alpha beta gamma delta epsilon\n", encoding="utf-8")
-                    (root / "b.txt").write_text("different local evidence\n", encoding="utf-8")
-                    specs = [module.SourceSpec(path="a.txt"), module.SourceSpec(path="b.txt")]
-                    with mock.patch.object(
-                        module, "_sketch_duplicate_signature", wraps=module._sketch_duplicate_signature,
-                    ) as signature_mock:
-                        module.build_pack(root, specs, budget_bytes=12000, root_arg=".", store_artifact=False)
-                    signature_mock.assert_not_called()
-
-                    base = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "a.txt", "--source", "b.txt",
-                        "--json", "--no-artifact",
-                    ).stdout)
-                    flagged = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "a.txt", "--source", "b.txt",
-                        "--json", "--no-artifact", "--sketch-duplicate-veto",
-                    ).stdout)
-                    telemetry = flagged.pop("sketch_duplicate_veto")
-                    self.assertEqual(telemetry, {"comparison_cap_reached": False})
-                    for payload in (base, flagged):
-                        payload.pop("created_at", None)
-                    self.assertEqual(flagged, base)
-
-                    build_text = self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "a.txt",
-                        "--no-artifact", "--sketch-duplicate-veto",
-                    )
-                    self.assertRegex(build_text.stderr, r" omitted=0 sketch_comparison_cap_reached=false\n$")
-                    stored_build_text = self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "a.txt",
-                        "--sketch-duplicate-veto",
-                    )
-                    self.assertRegex(
-                        stored_build_text.stderr,
-                        r" omitted=0 sketch_comparison_cap_reached=false\n$",
-                    )
-                    stored = json.loads(self._run_pack(
-                        script, root, "build", "--root", ".", "--source", "a.txt",
-                        "--json", "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertTrue(stored["artifact"]["stored"])
-                    self.assertEqual(stored["sketch_duplicate_veto"], {"comparison_cap_reached": False})
-                    receipt = json.loads((root / ".context-guard" / "packs" / f"{stored['pack_id']}.json").read_text(encoding="utf-8"))
-                    self.assertEqual(receipt["sketch_duplicate_veto"], {"comparison_cap_reached": False})
-
-                    auto_json = json.loads(self._run_pack(
-                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--json", "--no-artifact",
-                        "--explain", "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertNotIn("sketch_duplicate_veto", auto_json)
-                    self.assertEqual(auto_json["build"]["sketch_duplicate_veto"], {"comparison_cap_reached": False})
-                    self.assertNotIn("sketch_duplicate_veto", auto_json["explain"])
-                    self.assertNotIn("comparison_cap_reached", auto_json["explain"])
-                    self.assertFalse(auto_json["build"]["artifact"]["stored"])
-                    auto_stored = json.loads(self._run_pack(
-                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--json",
-                        "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertNotIn("sketch_duplicate_veto", auto_stored)
-                    self.assertTrue(auto_stored["build"]["artifact"]["stored"])
-                    self.assertEqual(
-                        auto_stored["build"]["sketch_duplicate_veto"],
-                        {"comparison_cap_reached": False},
-                    )
-                    auto_receipt = json.loads(
-                        (root / auto_stored["build"]["artifact"]["path"]).read_text(encoding="utf-8")
-                    )
-                    self.assertEqual(
-                        auto_receipt["sketch_duplicate_veto"],
-                        {"comparison_cap_reached": False},
-                    )
-                    auto_text = self._run_pack(
-                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--no-artifact",
-                        "--sketch-duplicate-veto",
-                    )
-                    self.assertRegex(auto_text.stdout.splitlines()[0], r" sketch_comparison_cap_reached=false$")
-                    stored_auto_text = self._run_pack(
-                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt",
-                        "--sketch-duplicate-veto",
-                    )
-                    self.assertRegex(
-                        stored_auto_text.stdout.splitlines()[0],
-                        r" sketch_comparison_cap_reached=false$",
-                    )
-
-                    unsafe = root / "unsafe"
-                    unsafe.mkdir()
-                    (unsafe / "a.txt").write_text("evidence\n", encoding="utf-8")
-                    (unsafe / ".context-guard").write_text("not a directory", encoding="utf-8")
-                    unsafe_text = self._run_pack(
-                        script, unsafe, "build", "--root", ".", "--source", "a.txt", "--sketch-duplicate-veto",
-                    )
-                    self.assertIn("sketch_comparison_cap_reached=false", unsafe_text.stderr)
-                    unsafe_build_json = json.loads(self._run_pack(
-                        script, unsafe, "build", "--root", ".", "--source", "a.txt", "--json",
-                        "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertEqual(unsafe_build_json["artifact"]["error"], "unsafe_artifact_dir")
-                    self.assertEqual(
-                        unsafe_build_json["sketch_duplicate_veto"],
-                        {"comparison_cap_reached": False},
-                    )
-                    unsafe_auto_json = json.loads(self._run_pack(
-                        script, unsafe, "auto", "--root", ".", "--files", "a.txt", "--json",
-                        "--sketch-duplicate-veto",
-                    ).stdout)
-                    self.assertNotIn("sketch_duplicate_veto", unsafe_auto_json)
-                    self.assertEqual(unsafe_auto_json["build"]["artifact"]["error"], "unsafe_artifact_dir")
-                    self.assertEqual(
-                        unsafe_auto_json["build"]["sketch_duplicate_veto"],
-                        {"comparison_cap_reached": False},
-                    )
-                    unsafe_auto_text = self._run_pack(
-                        script, unsafe, "auto", "--root", ".", "--files", "a.txt", "--sketch-duplicate-veto",
-                    )
-                    self.assertRegex(
-                        unsafe_auto_text.stdout.splitlines()[0],
-                        r" sketch_comparison_cap_reached=false$",
-                    )
-
-                    oversized = copy.deepcopy(stored)
-                    oversized["omitted_sources"] = [
-                        {"path": f"path-{number}-" + ("x" * 200), "reason": "budget_exhausted", "preview": "y" * 500}
-                        for number in range(400)
-                    ]
-                    shrunk, _capped = module.shrink_receipt_for_write(oversized)
-                    self.assertEqual(shrunk["sketch_duplicate_veto"], {"comparison_cap_reached": False})
-
-                    with mock.patch.object(module, "MAX_RECEIPT_BYTES", 512):
-                        capped_build = module.build_pack(
-                            root,
-                            specs,
-                            budget_bytes=12000,
-                            root_arg=".",
-                            store_artifact=True,
-                            sketch_duplicate_veto=True,
-                        )
-                        auto_args = module.build_parser().parse_args([
-                            "auto", "--root", ".", "--files", "a.txt,b.txt", "--json",
-                            "--sketch-duplicate-veto",
-                        ])
-                        capped_auto, rc = module.auto_pack(root, auto_args, root_arg=".")
-                    self.assertEqual(rc, 0)
-                    for capped_payload in (capped_build, capped_auto["build"]):
-                        self.assertEqual(
-                            capped_payload["sketch_duplicate_veto"],
-                            {"comparison_cap_reached": False},
-                        )
-                        self.assertFalse(capped_payload["artifact"]["stored"])
-                        self.assertTrue(capped_payload["artifact"]["capped"])
-                        self.assertEqual(
-                            capped_payload["artifact"]["error"],
-                            "receipt_metadata_too_large",
-                        )
-                    self.assertNotIn("sketch_duplicate_veto", capped_auto)
-
-        required_doc_terms = (
-            "--sketch-duplicate-veto", "sketch-set Jaccard", "bottom 64", "100,000",
-            "exact retrieval", "sketch_duplicate_source", "sketch_duplicate_veto.comparison_cap_reached",
-            "sketch_comparison_cap_reached=true|false", "provider token/cost savings claim",
-        )
-        required_doc_patterns = (
-            r"(?:minimum(?: cardinality)?|양쪽 최소(?: cardinality)?) 12",
-            r"inclusive 0\.90",
-        )
-        for doc in (
-            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
-            PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
-        ):
-            text = doc.read_text(encoding="utf-8")
-            for term in required_doc_terms:
-                self.assertIn(term, text, f"{doc}: {term}")
-            for pattern in required_doc_patterns:
-                self.assertRegex(text, pattern, f"{doc}: {pattern}")
 
     def test_context_pack_delta_from_pack_id_reports_bounded_rolling_diagnostics_without_changing_build(self):
         for index, script in enumerate(PACK_SCRIPTS):
@@ -20772,7 +20304,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                             "50000",
                             "--digest",
                             "json",
-                            "--artifact-receipt",
+                            "--artifact-receipt", "--digest-always",
                             "--artifact-dir",
                             str(artifact_dir),
                             "--artifact-max-bytes",
@@ -21677,7 +21209,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             self.assertFalse(data["applied"])
             self.assertTrue(data["changed"])
             self.assertIn("enabled token statusline", data["actions"])
-            self.assertTrue(any("failed-attempt /clear nudge" in action for action in data["actions"]))
+            self.assertFalse(any("failed-attempt nudge" in action for action in data["actions"]))  # nudge 는 opt-in
             self.assertIsNone(data["diet_scan"])
             self.assertFalse((root / ".claude" / "settings.json").exists())
 
@@ -21692,7 +21224,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                             str(script),
                             "--root",
                             str(root),
-                            "--yes",
+                            "--yes", "--profile", "max",
                             "--no-backup",
                             "--json",
                         ],
@@ -21728,7 +21260,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         ), f"{event} 에 nudge hook 이 추가되어야 한다 (got {hooks})")
 
                     again = subprocess.run(
-                        [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--json"],
+                        [sys.executable, str(script), "--root", str(root), "--yes", "--profile", "max", "--no-backup", "--json"],
                         text=True,
                         capture_output=True,
                         check=True,
@@ -22339,8 +21871,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertIn("plugins/context-guard/bin/context-guard-statusline-merged", command)
         self.assertNotEqual(command, "context-guard-statusline-merged")
 
-    def test_setup_wizard_allows_disabling_failed_attempt_nudge_default(self):
-        """recommended setup 은 nudge 를 켜고, --no-failed-attempt-nudge 로만 제외한다."""
+    def test_setup_wizard_failed_attempt_nudge_is_opt_in(self):
+        """recommended setup 은 nudge 를 끄고, --failed-attempt-nudge 나 --profile max 로만 켠다."""
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -22356,14 +21888,48 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         check=True,
                     )
                     settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
-                    post = settings["hooks"]["PostToolUse"]
+                    default_commands = json.dumps(settings)
+                    self.assertNotIn("context-guard-failed-nudge", default_commands)
+                    self.assertNotIn("failed_attempt_nudge.py", default_commands)
+
+                    max_root = root / "max"
+                    max_root.mkdir()
+                    max_profile = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(max_root),
+                            "--yes", "--no-backup", "--json",
+                            "--profile", "max",
+                        ],
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertTrue(json.loads(max_profile.stdout)["choices"]["failed_attempt_nudge"])
+                    max_settings = json.loads((max_root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+                    post = max_settings["hooks"]["PostToolUse"]
                     self.assertTrue(any(
                         entry.get("matcher") == "Bash"
                         and any("context-guard-failed-nudge" in (h.get("command") or "")
                                 or "failed_attempt_nudge.py" in (h.get("command") or "")
                                 for h in entry.get("hooks", []))
                         for entry in post
-                    ), f"PostToolUse 에 nudge hook 이 추가되어야 한다 (got {post})")
+                    ), f"--profile max 는 PostToolUse 에 nudge hook 을 추가해야 한다 (got {post})")
+
+                    minimal_root = root / "minimal"
+                    minimal_root.mkdir()
+                    minimal = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(minimal_root),
+                            "--yes", "--no-backup", "--json",
+                            "--profile", "minimal",
+                        ],
+                        text=True, capture_output=True, check=True,
+                    )
+                    minimal_choices = json.loads(minimal.stdout)["choices"]
+                    self.assertEqual(
+                        {key: minimal_choices[key] for key in ("denies", "read_guard", "statusline", "bash_hook", "failed_attempt_nudge")},
+                        {"denies": True, "read_guard": True, "statusline": False, "bash_hook": False, "failed_attempt_nudge": False},
+                    )
 
                     # 같은 옵션으로 재실행해도 중복 추가되지 않아야 한다.
                     again = subprocess.run(
@@ -22386,7 +21952,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                             sys.executable, str(script),
                             "--root", str(disabled_root),
                             "--yes", "--no-backup", "--json",
-                            "--no-failed-attempt-nudge",
+                            "--profile", "max", "--no-failed-attempt-nudge",
                         ],
                         text=True,
                         capture_output=True,
@@ -22424,7 +21990,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                             for entry in explicit_settings["hooks"][event]
                         ))
 
-    def test_setup_wizard_upgrade_adds_default_failed_attempt_nudge_to_existing_settings(self):
+    def test_setup_wizard_upgrade_keeps_failed_attempt_nudge_off_by_default(self):
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -22456,19 +22022,15 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     data = json.loads(proc.stdout)
                     self.assertTrue(data["changed"])
-                    self.assertTrue(data["choices"]["failed_attempt_nudge"])
+                    self.assertFalse(data["choices"]["failed_attempt_nudge"])
                     settings = json.loads(settings_path.read_text(encoding="utf-8"))
                     hooks_json = json.dumps(settings["hooks"])
                     self.assertIn("existing-bash-wrapper", hooks_json)
                     self.assertIn("existing-read-guard", hooks_json)
-                    for event in ("PostToolUse", "PostToolUseFailure"):
-                        self.assertTrue(any(
-                            entry.get("matcher") == "Bash"
-                            and any("context-guard-failed-nudge" in (h.get("command") or "")
-                                    or "failed_attempt_nudge.py" in (h.get("command") or "")
-                                    for h in entry.get("hooks", []))
-                            for entry in settings["hooks"][event]
-                        ))
+                    # nudge 는 opt-in 이므로 upgrade 가 조용히 추가하면 안 된다.
+                    self.assertNotIn("context-guard-failed-nudge", hooks_json)
+                    self.assertNotIn("failed_attempt_nudge.py", hooks_json)
+                    self.assertNotIn("PostToolUseFailure", settings["hooks"])
 
                     again = subprocess.run(
                         [
@@ -23015,7 +22577,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         encoding="utf-8",
                     )
                     subprocess.run(
-                        [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--no-diet-scan"],
+                        [sys.executable, str(script), "--root", str(root), "--yes", "--profile", "max", "--no-backup", "--no-diet-scan"],
                         text=True,
                         capture_output=True,
                         check=True,
@@ -23195,7 +22757,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
 
         with mock.patch.object(setup, "helper_command", side_effect=lambda helper, _script, **_kwargs: helper):
             settings = {"statusLine": {"type": "command", "command": "custom-statusline"}}
-            actions = setup.apply_choices(settings, setup.Choices())
+            actions = setup.apply_choices(settings, setup.Choices(failed_attempt_nudge=True))
         self.assertEqual(settings["statusLine"]["command"], "custom-statusline")
         self.assertEqual(settings["model"], setup.DEFAULT_MODEL)
         self.assertEqual(settings["effortLevel"], setup.DEFAULT_EFFORT)
@@ -23682,7 +23244,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 hook = hook_json(KIT_REWRITE, command)["hookSpecificOutput"]
                 self.assertEqual(hook["permissionDecision"], "ask")
                 self.assertNotIn("updatedInput", hook)
-                self.assertIn("CONTEXT_GUARD_DISABLE=1", hook["permissionDecisionReason"])
+                self.assertIn("context-guard hooks off bash", hook["permissionDecisionReason"])
         for command in trim_targets:
             with self.subTest(command=command):
                 out = hook_json(KIT_REWRITE, command)
@@ -23733,7 +23295,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn("hookSpecificOutput", data)
                     hook_out = data["hookSpecificOutput"]
                     self.assertEqual(hook_out["hookEventName"], "PostToolUseFailure")
-                    self.assertIn("/clear", hook_out["additionalContext"])
+                    self.assertTrue(hook_out["additionalContext"].startswith("[context-guard]"))
+                    self.assertIn("context-guard hooks off nudge", hook_out["additionalContext"])
                     state_files = list((cwd / ".context-guard").glob("failures-*.json"))
                     self.assertEqual(len(state_files), 1)
                     mode = state_files[0].stat().st_mode & 0o777
@@ -23759,7 +23322,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         for index in range(3)
                     ]
                     self.assertEqual(outputs[0], {})
-                    self.assertIn("/clear", outputs[1]["hookSpecificOutput"]["additionalContext"])
+                    self.assertIn("context-guard hooks off nudge", outputs[1]["hookSpecificOutput"]["additionalContext"])
                     self.assertEqual(outputs[2], {})
                     state = json.loads(
                         (cwd / ".context-guard" / "failures-v2.json").read_text(encoding="utf-8")
@@ -24570,9 +24133,9 @@ for malformed in malformed_values:
                     self.assertNotIn("ghp_", secret_label)
 
                     ladder = guard.progressive_read_ladder(safe, "src/safe.py", 5000, 10, "context-guard-read-symbol")
-                    self.assertIn("Progressive read ladder", ladder)
-                    self.assertIn("line 1: function target", ladder)
-                    self.assertIn("Read with offset=0 limit=", ladder)
+                    self.assertIn("[context-guard] Read blocked:", ladder)
+                    self.assertNotIn("line 1: function target", ladder)  # outline 은 한 줄 사유에서 제외
+                    self.assertIn("Read with offset/limit <=", ladder)
                     self.assertNotIn(str(root), ladder)
 
                     first_fp = guard.read_guard_fingerprint(safe, "src/safe.py", safe.stat().st_size)
@@ -24700,7 +24263,7 @@ for malformed in malformed_values:
                         bounded_reason = json.loads(bounded_stdout)["hookSpecificOutput"][
                             "permissionDecisionReason"
                         ]
-                        self.assertIn("content_budget_exceeded", bounded_reason)
+                        self.assertIn("[context-guard] Read blocked:", bounded_reason)
                         guard.record_read_guard_attempt = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("state busy"))
                         rc, stdout, stderr = invoke(
                             json.dumps({"tool_name": "Read", "tool_input": {"file_path": "big.py"}}),
@@ -24712,7 +24275,7 @@ for malformed in malformed_values:
                     self.assertEqual(rc, 0)
                     self.assertEqual(stderr, "")
                     reason = json.loads(stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-                    self.assertIn("Large Read blocked", reason)
+                    self.assertIn("[context-guard] Read blocked:", reason)
                     self.assertNotIn("Repeated-read dedup", reason)
 
     def test_large_read_guard_blocks_large_whole_file_reads(self):
@@ -24726,11 +24289,9 @@ for malformed in malformed_values:
                     data = json.loads(proc.stdout)
                     hook = data["hookSpecificOutput"]
                     self.assertEqual(hook["permissionDecision"], "deny")
-                    self.assertIn("Large Read blocked", hook["permissionDecisionReason"])
-                    self.assertIn("Progressive read ladder", hook["permissionDecisionReason"])
-                    self.assertIn("Top-level outline", hook["permissionDecisionReason"])
-                    self.assertIn("line 1: function target", hook["permissionDecisionReason"])
-                    self.assertIn("Read with offset=0 limit=", hook["permissionDecisionReason"])
+                    self.assertIn("[context-guard] Read blocked:", hook["permissionDecisionReason"])
+                    self.assertIn("context-guard hooks off read", hook["permissionDecisionReason"])
+                    self.assertIn("Read with offset/limit <=", hook["permissionDecisionReason"])
                     self.assertIn("context-guard-read-symbol", hook["permissionDecisionReason"])
                     self.assertNotIn(str(root), hook["permissionDecisionReason"])
 
@@ -24790,7 +24351,7 @@ for malformed in malformed_values:
                     env["CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"] = "1000000000000"
                     proc = run_hook_payload(script, {"tool_input": {"file_path": "big.py"}}, cwd=root, env=env)
                     reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-                    self.assertIn("1000001 bytes > 1000000 byte guard", reason)
+                    self.assertIn("is 1,000,001B (> 1,000,000B)", reason)
 
                     env = os.environ.copy()
                     env["CLAUDE_TOKEN_READ_GUARD_MAX_LINES"] = "1000000000000"
@@ -24826,10 +24387,9 @@ for malformed in malformed_values:
                     )
                     proc = run_hook_payload(script, {"tool_input": {"file_path": "notes.md"}}, cwd=root)
                     reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-                    self.assertIn("Progressive read ladder", reason)
-                    self.assertIn("Top-level outline: line 1: heading <heading>", reason)
+                    self.assertIn("[context-guard] Read blocked:", reason)
                     self.assertNotIn("Ignore previous instructions", reason)
-                    self.assertIn("Read with offset=0 limit=", reason)
+                    self.assertIn("Read with offset/limit <=", reason)
 
     def test_large_read_guard_repeated_read_dedup_signal_after_retry(self):
         for script in READ_GUARD_SCRIPTS:
@@ -24866,7 +24426,7 @@ for malformed in malformed_values:
                     proc = run_hook_payload(script, {"tool_input": {"file_path": "big.py"}}, cwd=root)
                     hook = json.loads(proc.stdout)["hookSpecificOutput"]
                     self.assertEqual(hook["permissionDecision"], "deny")
-                    self.assertIn("Large Read blocked", hook["permissionDecisionReason"])
+                    self.assertIn("[context-guard] Read blocked:", hook["permissionDecisionReason"])
 
     def test_large_read_guard_state_temp_file_uses_exclusive_nofollow(self):
         for index, script in enumerate(READ_GUARD_SCRIPTS):
@@ -24986,7 +24546,7 @@ for malformed in malformed_values:
                 canonical_proc = run_hook_payload(script, {"tool_input": {"file_path": str(canonical_target)}}, cwd=ROOT, env=env)
                 canonical_hook = json.loads(canonical_proc.stdout)["hookSpecificOutput"]
                 self.assertEqual(canonical_hook["permissionDecision"], "deny")
-                self.assertIn("Large Read blocked", canonical_hook["permissionDecisionReason"])
+                self.assertIn("Read blocked", canonical_hook["permissionDecisionReason"])
 
     def test_large_read_guard_size_probe_rejects_symlinks_and_fifos(self):
         if not hasattr(os, "mkfifo"):
@@ -28058,7 +27618,7 @@ for malformed in malformed_values:
             self.assertIn("top_hypothesis", proc.stdout)
             self.assertIn("ttl_status", proc.stdout)
             self.assertIn("headroom_status", proc.stdout)
-            self.assertLess(proc.stdout.count("{"), 5)
+            self.assertLess(proc.stdout.count("{"), 6)  # 권고당 evidence 한 줄; aim-at-new-token-source 추가
             self.assertNotIn(secret, proc.stdout)
             self.assertNotIn("volatile branch diff", proc.stdout)
             self.assertNotIn("Stable instruction tail", proc.stdout)
@@ -30568,8 +30128,8 @@ class ZeroCommandAuthorityTest(unittest.TestCase):
             with self.subTest(script=script):
                 hook = hook_json(script, "find . -name '*.tmp' -delete")["hookSpecificOutput"]
                 self.assertEqual(hook["permissionDecision"], "ask")
-                self.assertIn("ContextGuard", hook["permissionDecisionReason"])
-                self.assertIn("CONTEXT_GUARD_DISABLE=1", hook["permissionDecisionReason"])
+                self.assertIn("[context-guard]", hook["permissionDecisionReason"])
+                self.assertIn("context-guard hooks off bash", hook["permissionDecisionReason"])
 
     def test_side_effecting_find_inside_a_shell_c_body_still_asks(self):
         """모델이 일상적으로 쓰는 `bash -c '...'` 안에 숨어도 잡아야 한다."""
