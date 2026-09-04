@@ -84,6 +84,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         # 2026-09 비용 도구 재조준(외부 리뷰 5개 항목): 설계 문서, 실험 문서 분리, 훅 테스트.
         "docs/experiments.md",
         "docs/builtin-overlap.md",
+        "tests/test_standing_cost_documentation.py",
         # R3 문서 점진적 공개: README 에서 옮겨온 전체 가이드와 안전 경계 참조.
         "docs/guide.md",
         "docs/safety-reference.md",
