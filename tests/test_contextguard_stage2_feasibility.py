@@ -162,6 +162,7 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_npm_candidate_verifier.py",
         "tests/test_graph_cache_advisory_hardening.py",
         "tests/test_tool_result_bytes_profile.py",
+        "tests/test_tool_result_token_estimate.py",
         "research/bash-hook-zero-command-authority-20260831.md",
         "research/receipt-install-shape-boundary-20260831.md",
         "research/benchmark-plan.md",
