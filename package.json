@@ -24,6 +24,7 @@
     "context-guard-trim-output": "plugins/context-guard/bin/context-guard-trim-output",
     "context-guard-sanitize-output": "plugins/context-guard/bin/context-guard-sanitize-output",
     "context-guard-filter": "plugins/context-guard/bin/context-guard-filter",
+    "context-guard-hooks": "plugins/context-guard/bin/context-guard-hooks",
     "context-guard-artifact": "plugins/context-guard/bin/context-guard-artifact",
     "context-guard-task-memory": "plugins/context-guard/bin/context-guard-task-memory",
     "context-guard-pack": "plugins/context-guard/bin/context-guard-pack",
