@@ -14,7 +14,6 @@ import ast
 from collections import Counter, deque
 import copy
 import hashlib
-import heapq
 import importlib.machinery
 import importlib.util
 import json
@@ -58,14 +57,6 @@ SELF_FINANCING_SELECTION_SCHEMA_VERSION = "contextguard.pack-self-financing-sele
 SELECTION_PLAN_SCHEMA_VERSION = "contextguard.pack-selection-plan.v1"
 CONTENT_ADDRESS_SCHEMA_VERSION = "contextguard.pack-content-address.v1"
 ROLLING_DELTA_SCHEMA_VERSION = "contextguard.pack-rolling-delta.v1"
-SKETCH_DUPLICATE_SHINGLE_WIDTH = 5
-SKETCH_DUPLICATE_RETAINED_DIGESTS = 64
-SKETCH_DUPLICATE_MIN_CARDINALITY = 12
-SKETCH_DUPLICATE_THRESHOLD_NUMERATOR = 9
-SKETCH_DUPLICATE_THRESHOLD_DENOMINATOR = 10
-SKETCH_DUPLICATE_COMPARISON_CAP = 100_000
-SKETCH_DUPLICATE_SHINGLE_DOMAIN = b"context-guard-pack/sketch-duplicate-veto/shingle/v1\x00"
-SKETCH_DUPLICATE_TOKEN_RE = re.compile(r"\w+")
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -298,12 +289,6 @@ class _SourceSnapshotCache:
 class _PairedCandidate:
     source: ResolvedSource
     canonical: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class _DuplicateSignature:
-    exact_digest: bytes
-    sketch: frozenset[bytes] | None
 
 
 @dataclass
@@ -606,180 +591,6 @@ def token_proxy(text: str) -> int:
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
-
-
-def _sketch_duplicate_shingle_digest(tokens: tuple[str, ...]) -> bytes:
-    if len(tokens) != SKETCH_DUPLICATE_SHINGLE_WIDTH:
-        raise ValueError("sketch duplicate shingles require exactly five tokens")
-    digest = hashlib.sha256()
-    digest.update(SKETCH_DUPLICATE_SHINGLE_DOMAIN)
-    for token in tokens:
-        encoded = token.encode("utf-8", errors="strict")
-        digest.update(len(encoded).to_bytes(8, "big", signed=False))
-        digest.update(encoded)
-    return digest.digest()
-
-
-def _retain_bottom_sketch_digest(heap: list[tuple[int, bytes]], retained: set[bytes], digest: bytes) -> None:
-    if digest in retained:
-        return
-    number = int.from_bytes(digest, "big", signed=False)
-    if len(heap) < SKETCH_DUPLICATE_RETAINED_DIGESTS:
-        heapq.heappush(heap, (-number, digest))
-        retained.add(digest)
-        return
-    largest = heap[0][1]
-    if digest >= largest:
-        return
-    _negative, removed = heapq.heapreplace(heap, (-number, digest))
-    retained.remove(removed)
-    retained.add(digest)
-
-
-def _sketch_duplicate_signature(lines: list[str], *, include_sketch: bool) -> _DuplicateSignature:
-    exact = hashlib.sha256()
-    if not include_sketch:
-        for line in lines:
-            exact.update(line.encode("utf-8", errors="replace"))
-        return _DuplicateSignature(exact.digest(), None)
-
-    token_window: deque[str] = deque(maxlen=SKETCH_DUPLICATE_SHINGLE_WIDTH)
-    heap: list[tuple[int, bytes]] = []
-    retained: set[bytes] = set()
-    for line in lines:
-        exact.update(line.encode("utf-8", errors="replace"))
-        for match in SKETCH_DUPLICATE_TOKEN_RE.finditer(line.casefold()):
-            token_window.append(match.group(0))
-            if len(token_window) == SKETCH_DUPLICATE_SHINGLE_WIDTH:
-                digest = _sketch_duplicate_shingle_digest(tuple(token_window))
-                _retain_bottom_sketch_digest(heap, retained, digest)
-    return _DuplicateSignature(exact.digest(), frozenset(retained))
-
-
-def _sanitized_source_bytes_equal(left: ResolvedSource, right: ResolvedSource) -> bool:
-    if len(left.selected_lines) != len(right.selected_lines):
-        return False
-    return all(
-        left_line.encode("utf-8", errors="replace") == right_line.encode("utf-8", errors="replace")
-        for left_line, right_line in zip(left.selected_lines, right.selected_lines)
-    )
-
-
-def _sketch_sets_match(left: frozenset[bytes], right: frozenset[bytes]) -> bool:
-    intersection = len(left & right)
-    union = len(left) + len(right) - intersection
-    return (
-        union > 0
-        and SKETCH_DUPLICATE_THRESHOLD_DENOMINATOR * intersection
-        >= SKETCH_DUPLICATE_THRESHOLD_NUMERATOR * union
-    )
-
-
-def _ordered_sketch_winner_ids(
-    sketch: frozenset[bytes],
-    postings: dict[bytes, list[int]],
-) -> Any:
-    heap: list[tuple[int, int, int, list[int]]] = []
-    for ordinal, digest in enumerate(sorted(sketch)):
-        winner_ids = postings.get(digest)
-        if winner_ids:
-            heapq.heappush(heap, (winner_ids[0], ordinal, 0, winner_ids))
-    last_yielded: int | None = None
-    while heap:
-        winner_id, ordinal, index, winner_ids = heapq.heappop(heap)
-        next_index = index + 1
-        if next_index < len(winner_ids):
-            heapq.heappush(heap, (winner_ids[next_index], ordinal, next_index, winner_ids))
-        if winner_id != last_yielded:
-            last_yielded = winner_id
-            yield winner_id
-
-
-def _sketch_duplicate_omission(source: ResolvedSource, *, root_arg: str) -> dict[str, Any]:
-    requested = source.requested_lines or LineRange(1, source.total_lines)
-    item = omission(
-        source.spec,
-        "sketch_duplicate_source",
-        path=source.display_path,
-        redacted_path=source.redacted_path,
-    )
-    item["requested_lines"] = requested.as_dict()
-    retrieval, retrieval_omitted_reason = retrieval_for(
-        root_arg,
-        source.display_path,
-        requested,
-        redacted_path=source.redacted_path,
-    )
-    if retrieval:
-        item["retrieval_cli"] = retrieval
-        item.pop("retrieval_omitted_reason", None)
-    elif retrieval_omitted_reason:
-        item["retrieval_omitted_reason"] = retrieval_omitted_reason
-    return item
-
-
-def _apply_sketch_duplicate_veto(
-    candidates: list[_PairedCandidate],
-    omitted: list[dict[str, Any]],
-    *,
-    root_arg: str,
-) -> tuple[list[ResolvedSource], bool]:
-    winners: list[_PairedCandidate] = []
-    exact_winners: dict[bytes, list[int]] = {}
-    winner_sketches: dict[int, frozenset[bytes]] = {}
-    postings: dict[bytes, list[int]] = {}
-    comparisons_remaining = SKETCH_DUPLICATE_COMPARISON_CAP
-    comparison_cap_reached = False
-
-    for candidate in candidates:
-        signature = _sketch_duplicate_signature(
-            candidate.source.selected_lines,
-            include_sketch=not comparison_cap_reached,
-        )
-        duplicate = False
-        for winner_id in exact_winners.get(signature.exact_digest, ()):
-            if _sanitized_source_bytes_equal(candidate.source, winners[winner_id].source):
-                duplicate = True
-                break
-
-        skipped_pair = False
-        sketch = signature.sketch
-        if (
-            not duplicate
-            and not comparison_cap_reached
-            and sketch is not None
-            and len(sketch) >= SKETCH_DUPLICATE_MIN_CARDINALITY
-        ):
-            for winner_id in _ordered_sketch_winner_ids(sketch, postings):
-                if comparisons_remaining == 0:
-                    comparison_cap_reached = True
-                    skipped_pair = True
-                    sketch = None
-                    break
-                comparisons_remaining -= 1
-                if _sketch_sets_match(sketch, winner_sketches[winner_id]):
-                    duplicate = True
-                    break
-
-        if duplicate:
-            candidate.canonical["status"] = "sketch_duplicate_source"
-            omitted.append(_sketch_duplicate_omission(candidate.source, root_arg=root_arg))
-            continue
-
-        winner_id = len(winners)
-        winners.append(candidate)
-        exact_winners.setdefault(signature.exact_digest, []).append(winner_id)
-        if (
-            not skipped_pair
-            and not comparison_cap_reached
-            and sketch is not None
-            and len(sketch) >= SKETCH_DUPLICATE_MIN_CARDINALITY
-        ):
-            winner_sketches[winner_id] = sketch
-            for digest in sketch:
-                postings.setdefault(digest, []).append(winner_id)
-
-    return [candidate.source for candidate in winners], comparison_cap_reached
 
 
 def pack_id_arg(value: str) -> str:
@@ -2265,7 +2076,6 @@ def build_pack(
     root_arg: str,
     store_artifact: bool,
     delta_from_pack_id: str | None = None,
-    sketch_duplicate_veto: bool = False,
     _source_cache: _SourceSnapshotCache | None = None,
     _input_budget: _SourceInputBudget | None = None,
     _required_snapshot_sources: set[tuple[str, str]] | None = None,
@@ -2359,15 +2169,7 @@ def build_pack(
         paired_candidates.append(_PairedCandidate(source, canonical))
     paired_candidates.sort(key=lambda item: (-item.source.spec.priority, item.source.spec.input_index, item.source.display_path))
     all_resolved = resolved
-    comparison_cap_reached = False
-    if sketch_duplicate_veto:
-        resolved, comparison_cap_reached = _apply_sketch_duplicate_veto(
-            paired_candidates,
-            omitted,
-            root_arg=root_arg,
-        )
-    else:
-        resolved = [item.source for item in paired_candidates]
+    resolved = [item.source for item in paired_candidates]
     header = "# Context Pack\n\nGenerated by context-guard-pack. Token counts are estimated proxies; byte counts are observed.\n\n"
     parts: list[str] = []
     included: list[dict[str, Any]] = []
@@ -2446,8 +2248,6 @@ def build_pack(
         "artifact": {"stored": False, "path": None, "bytes": 0, "capped": False, "cap_bytes": MAX_RECEIPT_BYTES},
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    if sketch_duplicate_veto:
-        result["sketch_duplicate_veto"] = {"comparison_cap_reached": comparison_cap_reached}
     if delta_from_pack_id is not None:
         result["rolling_delta"] = rolling_delta_from_receipt(
             root,
@@ -5895,7 +5695,6 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             budget_bytes=bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES),
             root_arg=root_arg,
             store_artifact=False,
-            sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
             _source_cache=source_cache,
             _input_budget=input_budget,
         )
@@ -5930,7 +5729,6 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         root_arg=root_arg,
         store_artifact=False,
         delta_from_pack_id=args.delta_from_pack_id,
-        sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
         _source_cache=source_cache,
         _input_budget=input_budget,
     )
@@ -6132,7 +5930,6 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
                 trial_build = build_pack(
                     root, manifest_to_source_specs(trial_manifest), budget_bytes=max(MIN_BUDGET_BYTES, ordinary_ceiling),
                     root_arg=root_arg, store_artifact=False,
-                    sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
                     _source_cache=source_cache, _input_budget=input_budget,
                     _required_snapshot_sources=frozen_candidate_sources,
                     _expected_source_identities=repo_map_source_identities,
@@ -6287,7 +6084,6 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
             root_arg=root_arg,
             store_artifact=False,
             delta_from_pack_id=args.delta_from_pack_id,
-            sketch_duplicate_veto=getattr(args, "sketch_duplicate_veto", False),
             _source_cache=source_cache,
             _input_budget=input_budget,
             _required_snapshot_sources=graph_snapshot_sources,
@@ -6478,15 +6274,9 @@ def print_suggest_text(payload: dict[str, Any]) -> None:
 
 
 def print_auto_text(payload: dict[str, Any]) -> None:
-    build_payload = payload.get("build", {}) if isinstance(payload.get("build"), dict) else {}
-    sketch_duplicate = build_payload.get("sketch_duplicate_veto")
-    sketch_suffix = ""
-    if isinstance(sketch_duplicate, dict):
-        cap_reached = str(bool(sketch_duplicate.get("comparison_cap_reached"))).lower()
-        sketch_suffix = f" sketch_comparison_cap_reached={cap_reached}"
     print(
         f"context-guard-pack auto: {payload['sources']['suggested']} suggested source(s), "
-        f"pack {payload['pack_bytes']}/{payload['budget_bytes']} bytes{sketch_suffix}"
+        f"pack {payload['pack_bytes']}/{payload['budget_bytes']} bytes"
     )
     explain = payload.get("explain")
     if isinstance(explain, dict):
@@ -6560,15 +6350,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--json", action="store_true", help="emit JSON payload")
     build.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
     build.add_argument(
-        "--sketch-duplicate-veto",
-        action="store_true",
-        help=(
-            "omit later rank-stable sanitized exact/sketch-set duplicates; use a fixed 100,000 verified-pair cap, "
-            "then fail open; when enabled report sketch_comparison_cap_reached=true|false in text and "
-            "sketch_duplicate_veto.comparison_cap_reached in JSON"
-        ),
-    )
-    build.add_argument(
         "--delta-from-pack-id",
         type=pack_id_arg,
         metavar="PACK_ID",
@@ -6614,15 +6395,6 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--pack-out", help="write the built Markdown pack to this relative path under root")
     auto.add_argument("--json", action="store_true", help="emit JSON payload")
     auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
-    auto.add_argument(
-        "--sketch-duplicate-veto",
-        action="store_true",
-        help=(
-            "omit later rank-stable sanitized exact/sketch-set duplicates; use a fixed 100,000 verified-pair cap, "
-            "then fail open; when enabled report sketch_comparison_cap_reached=true|false in text and "
-            "sketch_duplicate_veto.comparison_cap_reached in JSON"
-        ),
-    )
     auto.add_argument(
         "--delta-from-pack-id",
         type=pack_id_arg,
@@ -6693,22 +6465,15 @@ def main(argv: list[str] | None = None) -> int:
                 root_arg=str(args.root),
                 store_artifact=not args.no_artifact,
                 delta_from_pack_id=args.delta_from_pack_id,
-                sketch_duplicate_veto=args.sketch_duplicate_veto,
             )
             if args.json:
                 json.dump(result, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
                 sys.stdout.write("\n")
             else:
                 sys.stdout.write(str(result["pack"]))
-                sketch_suffix = ""
-                sketch_duplicate = result.get("sketch_duplicate_veto")
-                if isinstance(sketch_duplicate, dict):
-                    cap_reached = str(bool(sketch_duplicate.get("comparison_cap_reached"))).lower()
-                    sketch_suffix = f" sketch_comparison_cap_reached={cap_reached}"
                 print(
                     f"[context-guard-pack] pack_id={result['pack_id']} bytes={result['pack_bytes']}/{result['budget_bytes']} "
-                    f"included={result['sources']['included']} partial={result['sources']['partial']} omitted={result['sources']['omitted']}"
-                    f"{sketch_suffix}",
+                    f"included={result['sources']['included']} partial={result['sources']['partial']} omitted={result['sources']['omitted']}",
                     file=sys.stderr,
                 )
             return 0

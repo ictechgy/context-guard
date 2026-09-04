@@ -69,15 +69,13 @@ PATH_OVERRIDE_ENVS = (
     "CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR",
 )
 BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^)]*)\)")
-PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:(?:context-guard|claude-token)-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
+PLUGIN_HELPER_COMMAND_RE = re.compile(r"^context-guard-")
 FORBIDDEN_SKILL_ALLOWED_HELPERS = {
     # These wrappers intentionally execute an arbitrary trailing command. They
     # are useful as examples but are too broad for skill frontmatter grants.
     "context-guard-trim-output",
     "context-guard-sanitize-output",
     "context-guard-filter",
-    "claude-trim-output",
-    "claude-sanitize-output",
 }
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
