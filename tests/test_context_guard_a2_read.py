@@ -339,7 +339,10 @@ class ReadA2ContractTests(unittest.TestCase):
                         cwd=root,
                     )
                     self.assertEqual(decision(stdout), "deny")
-                    self.assertIn("invalid_read_range", reason(stdout))
+                    # 거부 사유는 한 줄이 되면서 내부 outcome 코드를 더 이상 싣지 않는다.
+                    # 에이전트에게 필요한 것은 진단 코드가 아니라 다음 행동이다.
+                    self.assertIn("[context-guard] Read blocked:", reason(stdout))
+                    self.assertIn("offset/limit", reason(stdout))
 
                 _, stdout, _ = invoke_guard(
                     guard,
@@ -370,7 +373,8 @@ class ReadA2ContractTests(unittest.TestCase):
                     cwd=root,
                 )
                 self.assertEqual(decision(stdout), "deny")
-                self.assertIn("content_budget_exceeded", reason(stdout))
+                # 사유가 한 줄이 되면서 내부 outcome 코드는 더 이상 실리지 않는다.
+                self.assertIn("[context-guard] Read blocked:", reason(stdout))
 
                 (root / "proof-boundary.bin").write_bytes(
                     b"x" * (guard.MIN_READ_PROOF_BYTES + 1)
@@ -389,7 +393,7 @@ class ReadA2ContractTests(unittest.TestCase):
                     proof_bytes=guard.MIN_READ_PROOF_BYTES,
                 )
                 self.assertEqual(decision(stdout), "deny")
-                self.assertIn("proof_budget_exhausted", reason(stdout))
+                self.assertIn("[context-guard] Read blocked:", reason(stdout))
 
                 _, stdout, _ = invoke_guard(
                     guard,
@@ -698,7 +702,9 @@ class ReadA2ContractTests(unittest.TestCase):
                     output = hook_result(stdout)["hookSpecificOutput"]
                     with self.subTest(round=round_number):
                         self.assertNotIn("updatedInput", output)
-                        self.assertIn("Progressive read ladder", output["permissionDecisionReason"])
+                        ladder_reason = output["permissionDecisionReason"]
+                        self.assertIn("[context-guard] Read blocked:", ladder_reason)
+                        self.assertIn("context-guard-read-symbol", ladder_reason)
 
                 for round_number in range(3, 7):
                     _, stdout, _ = invoke_guard(guard, payload, cwd=root)
@@ -710,7 +716,7 @@ class ReadA2ContractTests(unittest.TestCase):
                         self.assertIn("Large Read blocked", denial_reason)
                         self.assertIn("byte guard", denial_reason)
                         self.assertNotIn("escape valve exhausted", denial_reason)
-                        self.assertNotIn("Progressive read ladder", denial_reason)
+                        self.assertNotIn("context-guard-read-symbol", denial_reason)
                         self.assertLess(len(denial_reason.encode("utf-8")), 200)
 
                 # 에이전트가 직접 실패하는 범위를 지정해도(자체 outcome=content_budget_exceeded)

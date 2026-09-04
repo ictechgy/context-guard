@@ -4184,6 +4184,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             KIT_DIR / "README.md",
             PLUGIN_DIR / "README.md",
             PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "experiments.md",
             ROOT / "docs" / "benchmark-workflow-examples.md",
             ROOT / "research" / "benchmark-plan.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",

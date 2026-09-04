@@ -10,6 +10,8 @@ not mistaken for billing-authoritative data.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import datetime as _dt
 import errno
 import hashlib
@@ -19,11 +21,12 @@ import os
 import re
 import shlex
 import stat
+import struct
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable
+from typing import Any, BinaryIO, Iterable, Iterator
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REDUCER_DIR = _SCRIPT_DIR
@@ -107,6 +110,28 @@ USER_PROMPT_ROLES = {"user", "human"}
 TEXT_BLOCK_TYPES = {"text", "input_text"}
 
 TOOL_RESULT_BYTES_SCHEMA_VERSION = "contextguard.tool-result-bytes.v1"
+TOOL_RESULT_TOKEN_ESTIMATE_SCHEMA_VERSION = "contextguard.tool-result-token-estimate.v1"
+NEW_TOKENS_PER_TURN_SCHEMA_VERSION = "contextguard.new-tokens-per-turn.v1"
+# 이미지 토큰 공식. 제공자가 공표한 계산식이며 관측값이 아니다.
+#
+# 바이트 점유는 이미지에 대해 비용 신호가 아니다. 제공자는 장변을 상한으로 줄인 뒤
+# 면적으로 과금하므로 장당 토큰에 상한이 있고, 텍스트는 상한 없이 바이트에 비례한다.
+# 두 클래스를 바이트로만 비교하면 이미지가 실제 토큰 비용의 여러 배로 보인다.
+#
+# 식별자에 버전을 박는다. 공식이 바뀌면 새 id를 쓰고 옛 리포트는 자기가 어떤 식으로
+# 계산됐는지 계속 밝힐 수 있어야 한다. 만료 날짜는 두지 않는다 - 날짜로 만료하는
+# 제공자 상수는 코드 변경 없이 빌드를 깨뜨린 전례가 있다.
+IMAGE_TOKEN_FORMULA_ID = "anthropic.image-tokens.area-div-750.v1"
+IMAGE_LONG_EDGE_CAP_PX = 1568
+IMAGE_TOKEN_AREA_DIVISOR = 750
+# 크기를 읽기 위해 디코드하는 최대 바이트. PNG는 헤더 24바이트면 충분하고 JPEG는
+# SOF 세그먼트까지 훑어야 하므로 상한을 둔다. 상한 밖의 SOF는 못 읽은 것으로 센다.
+IMAGE_HEADER_MAX_BYTES = 32_768
+# 텍스트 토큰 추정 제수. 이미지 쪽 공식과 달리 이건 거친 대리값이다.
+TEXT_TOKEN_PROXY_DIVISOR = 4
+# 턴당 cache_creation 표본의 상한. 정수만 담으므로 내용은 남지 않는다.
+NEW_TOKENS_MAX_SAMPLES = 200_000
+NEW_TOKENS_BY_PRECEDING_TOOL_SCHEMA_VERSION = "contextguard.new-tokens-by-preceding-tool.v1"
 # 큰 결과의 기준. 이 값 이상만 상위 목록과 집중도 분모에 쓴다.
 TOOL_RESULT_LARGE_BYTES = 20_000
 # 백분위 계산을 위해 보관하는 크기 표본의 상한. 크기(int)만 담으므로 내용은 남지 않는다.
@@ -159,6 +184,10 @@ TOOL_RESULT_NO_EXTENSION_LABEL = "(none)"
 TOOL_RESULT_RESERVED_LABELS = frozenset(
     {TOOL_RESULT_OVERFLOW_LABEL, TOOL_RESULT_NON_EXTENSION_LABEL, TOOL_RESULT_NO_EXTENSION_LABEL}
 )
+# 헤더에서 크기를 읽을 수 있는 media type만 시도한다. GIF/WebP는 파서가 없으므로
+# 크기 미상으로 세고, 추측하지 않는다.
+IMAGE_DIMENSION_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/jpg"})
+
 IMAGE_EXTENSIONS = frozenset(
     {
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
@@ -340,6 +369,125 @@ def _tool_result_has_image_block(content: Any) -> bool:
     return False
 
 
+def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
+    """PNG 시그니처 뒤 IHDR에서 폭/높이를 읽는다.
+
+    IHDR는 규격상 첫 청크이므로 앞 24바이트만 보면 된다. 시그니처와 청크 타입을 모두
+    확인해 이미지가 아닌 바이트가 우연히 크기처럼 읽히는 일을 막는다.
+    """
+    if len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    if raw[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", raw[16:24])
+    return width, height
+
+
+def _jpeg_dimensions(raw: bytes) -> tuple[int, int] | None:
+    """JPEG 세그먼트를 훑어 SOF에서 폭/높이를 읽는다.
+
+    SOF 위치는 고정이 아니라 앞선 세그먼트 개수에 따라 달라지므로 마커 체인을 따라간다.
+    상한(IMAGE_HEADER_MAX_BYTES) 안에서 SOF를 못 만나면 못 읽은 것으로 처리한다. 크기를
+    추측하지 않는 편이, 추측한 값으로 토큰을 세는 것보다 낫다.
+    """
+    if len(raw) < 4 or not raw.startswith(b"\xff\xd8"):
+        return None
+    offset = 2
+    limit = len(raw)
+    while offset + 4 <= limit:
+        if raw[offset] != 0xFF:
+            return None
+        marker = raw[offset + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            # 길이 필드가 없는 마커.
+            offset += 2
+            continue
+        if marker == 0xD9 or marker == 0xDA:
+            # 이미지 끝 또는 스캔 시작. 이 뒤에는 SOF가 없다.
+            return None
+        segment_length = struct.unpack(">H", raw[offset + 2 : offset + 4])[0]
+        if segment_length < 2:
+            return None
+        # SOF0..SOF15 중 DHT(0xC4), JPG(0xC8), DAC(0xCC)는 크기 세그먼트가 아니다.
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if offset + 9 > limit:
+                return None
+            height, width = struct.unpack(">HH", raw[offset + 5 : offset + 9])
+            return width, height
+        offset += 2 + segment_length
+    return None
+
+
+def image_pixel_dimensions(media_type: str | None, data: str | None) -> tuple[int, int] | None:
+    """base64 이미지 페이로드의 픽셀 크기를 헤더에서만 읽는다.
+
+    앞부분만 디코드한다. 전체를 디코드하면 스크린샷 하나에 수백 KB를 쓰게 되고, 크기는
+    어차피 헤더에만 있다. 손상되었거나 상한 밖에 헤더가 있는 페이로드는 None이며,
+    호출자는 이를 "없음"이 아니라 "못 읽음"으로 따로 세야 한다.
+    """
+    if not isinstance(media_type, str) or not isinstance(data, str):
+        return None
+    if media_type not in IMAGE_DIMENSION_MEDIA_TYPES:
+        return None
+    # base64 4문자가 3바이트가 되므로 필요한 바이트에 맞춰 문자 수를 자른다.
+    prefix = data[: ((IMAGE_HEADER_MAX_BYTES + 2) // 3) * 4]
+    # 잘린 조각이 4의 배수가 아니면 디코더가 거부하므로 경계에 맞춘다.
+    prefix = prefix[: len(prefix) - (len(prefix) % 4)]
+    if not prefix:
+        return None
+    try:
+        raw = base64.b64decode(prefix, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if media_type == "image/png":
+        return _png_dimensions(raw)
+    return _jpeg_dimensions(raw)
+
+
+def image_token_estimate(width: int, height: int) -> int | None:
+    """제공자 공식으로 이미지 하나의 토큰을 추정한다.
+
+    장변이 상한을 넘으면 제공자가 먼저 줄이므로, 그 위로는 픽셀을 더 실어도 토큰이 늘지
+    않는다. 이 상한이 "바이트 점유는 이미지 비용 신호가 아니다"의 근거다.
+
+    정수 연산만 쓴다. 부동소수점을 쓰면 같은 입력이 기계에 따라 다른 값을 낼 수 있어
+    결정성이 깨진다. 올림을 쓰는 것은 추정을 낮게 잡아 절감처럼 보이게 하지 않기 위해서다.
+    """
+    if not isinstance(width, int) or not isinstance(height, int):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    long_edge = max(width, height)
+    if long_edge > IMAGE_LONG_EDGE_CAP_PX:
+        width = max(1, width * IMAGE_LONG_EDGE_CAP_PX // long_edge)
+        height = max(1, height * IMAGE_LONG_EDGE_CAP_PX // long_edge)
+    area = width * height
+    return -(-area // IMAGE_TOKEN_AREA_DIVISOR)
+
+
+def _iter_image_payloads(content: Any) -> Iterator[tuple[str | None, str | None]]:
+    """내용 블록에서 이미지 페이로드의 (media_type, base64 data)를 뽑는다.
+
+    페이로드가 없는 이미지 참조 블록(`{"type": "image", "file": ...}`)도 (None, None)으로
+    내보낸다. 이런 블록을 건너뛰면 이미지 개수가 조용히 줄어, 크기를 못 읽은 이미지가
+    추정에서 사라진 것을 독자가 알 수 없게 된다.
+    """
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        source = block.get("source")
+        if isinstance(source, dict):
+            media = source.get("media_type")
+            if isinstance(media, str) and media.startswith("image/"):
+                data = source.get("data")
+                yield media, data if isinstance(data, str) else None
+                continue
+        if block.get("type") == "image":
+            yield None, None
+
+
 def _tool_result_content_class(extension: str | None, content: Any) -> str:
     """결과 바이트를 image/text/unknown 중 하나로 분류한다.
 
@@ -476,11 +624,22 @@ class ToolResultBytesAudit:
     correlated_results: int = 0
     uncorrelated_results: int = 0
     attribution_truncated: bool = False
+    image_payloads: int = 0
+    image_dimensions_parsed: int = 0
+    image_dimensions_unavailable: int = 0
+    image_downscaled_to_cap: int = 0
+    image_tokens: int = 0
+    repeat_read_results: int = 0
+    repeat_read_bytes: int = 0
     _current_file: Path | None = field(default=None, init=False, repr=False)
     _pending_uses: dict[str, tuple[str, bool, str | None]] = field(
         default_factory=dict, init=False, repr=False
     )
     _seen_hashes: set[str] = field(default_factory=set, init=False, repr=False)
+    _seen_read_hashes: set[str] = field(default_factory=set, init=False, repr=False)
+    # 현재 파일에서 가장 최근에 본 tool_result 의 (도구, 바이트). 다음 assistant 턴의
+    # cache_creation 을 "직전에 들어온 도구 결과"에 귀속하는 데 쓴다.
+    last_result: tuple[str, int] | None = field(default=None, init=False, repr=False)
 
     def start_file(self, file: Path | None) -> None:
         """세션 하나가 시작됨을 알리고 상관/중복 상태를 비운다.
@@ -496,6 +655,8 @@ class ToolResultBytesAudit:
         self._current_file = file
         self._pending_uses.clear()
         self._seen_hashes.clear()
+        self._seen_read_hashes.clear()
+        self.last_result = None
 
     def observe(self, root: Any) -> None:
         """레코드 하나에서 tool_use와 tool_result 블록을 찾아 집계한다."""
@@ -547,6 +708,7 @@ class ToolResultBytesAudit:
         )
         self.by_tool_results[tool_name] += 1
         self.by_tool_bytes[tool_name] += size
+        self.last_result = (tool_name, size)
 
         if extension is not None:
             extension = _bounded_label(
@@ -569,8 +731,50 @@ class ToolResultBytesAudit:
             else:
                 self.unbounded_read_results += 1
                 self.unbounded_read_bytes += size
+            self._observe_repeat_read(block.get("content"), size)
 
+        self._observe_images(block.get("content"))
         self._observe_duplicate(block.get("content"), size)
+
+    def _observe_images(self, content: Any) -> None:
+        """이미지 페이로드마다 픽셀 크기와 추정 토큰을 센다.
+
+        크기를 못 읽은 페이로드도 센다. 세지 않으면 추정 토큰이 "이 코퍼스의 이미지 비용"
+        처럼 읽히지만 실제로는 읽을 수 있었던 일부만의 합이 된다.
+        """
+        for media_type, data in _iter_image_payloads(content):
+            self.image_payloads += 1
+            dimensions = image_pixel_dimensions(media_type, data)
+            if dimensions is None:
+                self.image_dimensions_unavailable += 1
+                continue
+            width, height = dimensions
+            tokens = image_token_estimate(width, height)
+            if tokens is None:
+                self.image_dimensions_unavailable += 1
+                continue
+            self.image_dimensions_parsed += 1
+            self.image_tokens += tokens
+            if max(width, height) > IMAGE_LONG_EDGE_CAP_PX:
+                self.image_downscaled_to_cap += 1
+
+    def _observe_repeat_read(self, content: Any, size: int) -> None:
+        """같은 세션에서 같은 내용을 다시 읽었는지 센다.
+
+        완전중복(_observe_duplicate)은 모든 도구를 대상으로 하지만, 재읽기는 파일 읽기
+        도구로 좁힌다. 이미 컨텍스트에 있는 파일을 다시 실어 나른 바이트가 얼마인지가
+        묻고 싶은 질문이고, 같은 명령을 두 번 돌려 같은 출력이 나온 것은 다른 현상이다.
+        """
+        digest = _tool_result_digest(content)
+        if digest is None:
+            return
+        if digest in self._seen_read_hashes:
+            self.repeat_read_results += 1
+            self.repeat_read_bytes += size
+        elif len(self._seen_read_hashes) < TOOL_RESULT_MAX_DUP_HASHES:
+            self._seen_read_hashes.add(digest)
+        else:
+            self.duplicate_tracking_truncated = True
 
     def _observe_duplicate(self, content: Any, size: int) -> None:
         digest = _tool_result_digest(content)
@@ -604,6 +808,12 @@ class UsageSummary:
     by_tool: Counter[str] = field(default_factory=Counter)
     token_field_presence: Counter[str] = field(default_factory=Counter)
     cost_field_count: int = 0
+    cache_creation_per_turn: list[int] = field(default_factory=list)
+    cache_creation_zero_turns: int = 0
+    # 턴의 cache_creation 을 직전 tool_result 의 도구에 귀속한 합계와 턴 수.
+    cache_creation_by_preceding_tool: Counter[str] = field(default_factory=Counter)
+    cache_creation_turns_by_preceding_tool: Counter[str] = field(default_factory=Counter)
+    cache_creation_samples_truncated: bool = False
     cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     positive_cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
@@ -1175,12 +1385,16 @@ def parse_json_line(line: str) -> Any:
     return json.loads(line)
 
 
+NO_PRECEDING_TOOL_LABEL = "no_tool_result"
+
+
 def _apply_usage_reduction(
     summary: UsageSummary,
     reducer: UsageReducer,
     row_metadata: dict[int, tuple[Path, str]],
     *,
     show_paths: bool,
+    row_preceding_result: dict[int, tuple[str, int] | None] | None = None,
 ) -> None:
     reduction = reducer.finalize()
     summary.usage_reducer_schema = reduction.schema
@@ -1200,6 +1414,20 @@ def _apply_usage_reduction(
             if local_tokens:
                 summary.by_query_source[query_source].update(local_tokens)
                 summary.by_file[path_label(file, show_paths=show_paths)] += sum(local_tokens.values())
+        created = selection.tokens.get("cache_creation", 0)
+        if isinstance(created, int) and created > 0:
+            if len(summary.cache_creation_per_turn) < NEW_TOKENS_MAX_SAMPLES:
+                summary.cache_creation_per_turn.append(created)
+            else:
+                summary.cache_creation_samples_truncated = True
+            # 귀속은 "이 턴 직전에 컨텍스트에 들어온 도구 결과"에 한다. 사용자 프롬프트나
+            # 시스템 변경으로 새 토큰이 생긴 턴은 no_tool_result 로 남겨 도구 탓을 하지 않는다.
+            preceding = (row_preceding_result or {}).get(selection.row_ordinal)
+            label = preceding[0] if preceding is not None else NO_PRECEDING_TOOL_LABEL
+            summary.cache_creation_by_preceding_tool[label] += created
+            summary.cache_creation_turns_by_preceding_tool[label] += 1
+        elif "cache_creation" in selection.present_buckets:
+            summary.cache_creation_zero_turns += 1
         cache_present = bool({"cache_read", "cache_creation"} & set(selection.present_buckets))
         positive_cache = (
             selection.tokens.get("cache_read", 0) > 0
@@ -1221,6 +1449,7 @@ def scan(
     summary = UsageSummary()
     reducer = UsageReducer()
     row_metadata: dict[int, tuple[Path, str]] = {}
+    row_preceding_result: dict[int, tuple[str, int] | None] = {}
     file_identities: dict[Path, str] = {}
     next_ordinal = 0
 
@@ -1249,6 +1478,8 @@ def scan(
         )
         if accepted:
             row_metadata[ordinal] = (file, query_source)
+            # usage 행(assistant)이 관측되기 *전*의 마지막 tool_result 가 이 턴의 선행 결과다.
+            row_preceding_result[ordinal] = summary.tool_result_bytes.last_result
         add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
 
     for file in iter_jsonl_files(paths):
@@ -1333,7 +1564,9 @@ def scan(
             summary.skipped_files += 1
             summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
             continue
-    _apply_usage_reduction(summary, reducer, row_metadata, show_paths=show_paths)
+    _apply_usage_reduction(
+        summary, reducer, row_metadata, show_paths=show_paths, row_preceding_result=row_preceding_result
+    )
     return summary
 
 
@@ -2421,6 +2654,166 @@ def _rows_coverage(
     }
 
 
+def build_new_tokens_per_turn(summary: UsageSummary) -> dict[str, Any]:
+    """턴당 신규 토큰(cache_creation)의 분포를 보고한다.
+
+    prompt cache가 켜진 세션에서 청구 대상은 컨텍스트 총량이 아니라 그 턴에 새로 쓴
+    부분이다. 합계만 보면 "매 턴 조금씩"과 "한 턴에 몰아서"가 구분되지 않는데, 두
+    상황의 처방이 정반대이므로 분포로 보고한다.
+
+    0인 턴은 분포에서 빼고 따로 센다. 섞으면 백분위가 0 쪽으로 끌려가 실제로 새 바이트를
+    쓴 턴의 크기를 읽을 수 없다.
+    """
+    samples = sorted(summary.cache_creation_per_turn)
+    report: dict[str, Any] = {
+        "schema_version": NEW_TOKENS_PER_TURN_SCHEMA_VERSION,
+        "turns": len(samples),
+        "zero_cache_creation_turns": summary.cache_creation_zero_turns,
+        "total_cache_creation_tokens": sum(samples),
+        "samples_truncated": summary.cache_creation_samples_truncated,
+        "note": (
+            "Under prompt caching the billable input for a turn is roughly the newly written "
+            "prefix plus discounted cached reads, so new tokens per turn — not total context — is "
+            "the quantity that moves cost. Turns reporting zero cache_creation are counted "
+            "separately rather than folded into the percentiles, which would drag them toward zero."
+        ),
+        "claim_boundary": {
+            "provider_measured": True,
+            "token_or_cost_savings_claim_allowed": False,
+            "note": (
+                "These are provider usage fields, so the token counts are observed rather than "
+                "estimated. Observing where new tokens land is still not evidence that any change "
+                "reduced them; that requires a matched before/after comparison."
+            ),
+        },
+    }
+    if samples:
+        def percentile(fraction: float) -> int:
+            index = min(len(samples) - 1, max(0, int(len(samples) * fraction)))
+            return samples[index]
+
+        report["percentiles"] = {
+            "p50": percentile(0.50),
+            "p75": percentile(0.75),
+            "p90": percentile(0.90),
+            "p95": percentile(0.95),
+            "p99": percentile(0.99),
+        }
+        report["max"] = samples[-1]
+    report["by_preceding_tool"] = build_new_tokens_by_preceding_tool(summary)
+    return report
+
+
+def build_new_tokens_by_preceding_tool(summary: UsageSummary) -> dict[str, Any]:
+    """턴의 cache_creation 을 직전 tool_result 의 도구별로 합산해 보고한다.
+
+    이것이 "어느 표면을 겨냥할지"를 말해주는 표다. tool_result 바이트 표는 결과가 얼마나
+    큰지를 말하지만 청구 단위는 그 결과가 만든 새 토큰이므로, 둘은 다를 수 있다.
+    귀속은 순서 기반 관측이지 인과 증명이 아니다 — 같은 턴에 사용자 입력이나 규칙 파일
+    변경이 함께 들어왔을 수 있다. 그래서 claim_boundary 를 붙인다.
+    """
+    totals = summary.cache_creation_by_preceding_tool
+    turns = summary.cache_creation_turns_by_preceding_tool
+    grand_total = sum(totals.values())
+    rows = [
+        {
+            "label": label,
+            "turns": turns.get(label, 0),
+            "cache_creation_tokens": tokens,
+            "token_share": _share(tokens, grand_total),
+            "tokens_per_turn": tokens // max(1, turns.get(label, 0)),
+        }
+        for label, tokens in totals.most_common()
+    ]
+    return {
+        "schema_version": NEW_TOKENS_BY_PRECEDING_TOOL_SCHEMA_VERSION,
+        "total_cache_creation_tokens": grand_total,
+        # 이 표는 모든 턴을 합산하고, 위의 분포는 NEW_TOKENS_MAX_SAMPLES 로 표본을 자른다.
+        # 표본이 잘리면 두 총계가 달라지며, 그 사실을 여기 적어 두 표를 나란히 읽게 한다.
+        "covers_all_turns": True,
+        "distribution_samples_truncated": summary.cache_creation_samples_truncated,
+        "rows": rows,
+        "note": (
+            "Each turn's cache_creation is attributed to the most recent tool_result that entered the "
+            f"context before it; turns with no preceding tool_result are labelled {NO_PRECEDING_TOOL_LABEL!r} "
+            "(user prompts, rule-file or tool-catalog changes). This is an ordering observation, not a "
+            "causal proof."
+        ),
+        "claim_boundary": {
+            "provider_measured": True,
+            "token_or_cost_savings_claim_allowed": False,
+        },
+    }
+
+
+def _build_token_estimate(audit: ToolResultBytesAudit) -> dict[str, Any]:
+    """바이트를 토큰 단위로 다시 세어 클래스별로 보고한다.
+
+    두 클래스의 추정 방법이 다르므로 행마다 method를 밝힌다. 이미지는 제공자 공식을
+    파싱한 픽셀 크기에 적용한 값이고, 텍스트는 바이트/4라는 거친 대리값이다. 둘을
+    "토큰"이라는 같은 이름으로 부르되 근거가 다름을 숨기지 않는다.
+    """
+    class_tokens: dict[str, int] = {}
+    class_method: dict[str, str] = {}
+    for label, class_bytes in audit.by_class_bytes.items():
+        if label == "image":
+            class_tokens[label] = audit.image_tokens
+            class_method[label] = "image_formula"
+        else:
+            class_tokens[label] = class_bytes // TEXT_TOKEN_PROXY_DIVISOR
+            class_method[label] = "bytes_div_4"
+    total_tokens = sum(class_tokens.values())
+    rows = [
+        {
+            "label": label,
+            "tokens": class_tokens[label],
+            "token_share": _share(class_tokens[label], total_tokens),
+            "method": class_method[label],
+        }
+        for label in sorted(class_tokens, key=lambda name: (-class_tokens[name], name))
+    ]
+    return {
+        "schema_version": TOOL_RESULT_TOKEN_ESTIMATE_SCHEMA_VERSION,
+        "total_tokens": total_tokens,
+        "by_content_class": rows,
+        "image_formula": {
+            "id": IMAGE_TOKEN_FORMULA_ID,
+            "long_edge_cap_px": IMAGE_LONG_EDGE_CAP_PX,
+            "area_divisor": IMAGE_TOKEN_AREA_DIVISOR,
+            "rounding": "ceil",
+            "note": (
+                "Images are resized to the long-edge cap before area pricing, so an image's token "
+                "cost stops growing above the cap no matter how large the payload is. Text has no "
+                "such cap. Comparing the two in bytes therefore overstates images."
+            ),
+        },
+        "images": {
+            "payloads": audit.image_payloads,
+            "dimensions_parsed": audit.image_dimensions_parsed,
+            "dimensions_unavailable": audit.image_dimensions_unavailable,
+            "downscaled_to_cap": audit.image_downscaled_to_cap,
+            "bytes": audit.by_class_bytes.get("image", 0),
+            "tokens": audit.image_tokens,
+            "note": (
+                "dimensions_unavailable covers payloads whose header could not be read: a media "
+                "type with no parser here (GIF, WebP), a reference block carrying no inline data, "
+                "or a header past the decode bound. Their tokens are not estimated, so the image "
+                "token total is a lower bound whenever this is non-zero."
+            ),
+        },
+        "claim_boundary": {
+            "provider_measured": False,
+            "token_or_cost_savings_claim_allowed": False,
+            "note": (
+                "These are estimates, not billed amounts. The image figure applies a published "
+                "provider formula to parsed pixel dimensions; the text figure is a bytes/4 proxy "
+                "that under-counts dense source code. Use them to compare classes against each "
+                "other, never as a measurement of what a provider charged."
+            ),
+        },
+    }
+
+
 def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
     """tool_result 바이트가 어디로 갔는지에 대한 관측 보고를 만든다.
 
@@ -2457,6 +2850,9 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
             ),
         },
     }
+    # 결과가 없어도 공식 스탬프는 남긴다. 소비자가 "이 리포트가 어떤 공식으로 말하는가"
+    # 를 결과 유무와 무관하게 읽을 수 있어야 한다.
+    report["token_estimate"] = _build_token_estimate(audit)
     if not audit.results:
         report["reason"] = "no tool_result blocks were observed in the scanned transcripts"
         return report
@@ -2506,6 +2902,21 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
     report["by_content_class"] = _counter_pair_rows(
         audit.by_class_results, audit.by_class_bytes, total, len(audit.by_class_bytes)
     )
+    report["repeat_reads"] = {
+        "results": audit.repeat_read_results,
+        "bytes": audit.repeat_read_bytes,
+        "share_of_read_bytes": _share(
+            audit.repeat_read_bytes,
+            audit.bounded_read_bytes + audit.unbounded_read_bytes,
+        ),
+        "tracking_truncated": audit.duplicate_tracking_truncated,
+        "note": (
+            "A repeat read is a file-read result whose exact content was already seen in the "
+            "same session. Scope is the session, so the same file read in two sessions is not a "
+            "repeat here. Content-identical reads of different files also count, and a file that "
+            "changed between reads does not."
+        ),
+    }
     report["by_content_class_note"] = (
         "Bytes are attributed per content block, so one result holding both an image and text "
         "counts into both classes and the result counts here can sum above the result total. "
@@ -2577,6 +2988,55 @@ def recommendation(
     }
 
 
+AIM_MIN_SHARE = 0.4
+AIM_MIN_TOKENS = 50_000
+AIM_ACTIONS: dict[str, str] = {
+    "Read": "Keep the large-Read guard on and prefer context-guard-read-symbol or offset/limit ranges before whole-file reads.",
+    "Bash": "Keep the Bash escrow wrapper on so outputs over the line budget land in a local artifact instead of the context.",
+    "Grep": "Narrow grep patterns and paths; large search results enter the context as new tokens each time.",
+    "Glob": "Glob listings are cheap individually; if they dominate, the working tree is being listed repeatedly.",
+    NO_PRECEDING_TOOL_LABEL: (
+        "New tokens arrive without a preceding tool result: look at rule files (CLAUDE.md/AGENTS.md), "
+        "MCP tool catalogs, and long user pastes rather than at hooks."
+    ),
+}
+
+
+def _aim_at_new_token_source(summary: UsageSummary) -> dict[str, Any] | None:
+    """cache_creation 이 한 선행 도구에 집중돼 있으면 그 표면을 가리키는 권고 하나를 만든다.
+
+    임계값은 보수적이다: 전체의 40% 이상이고 절대량이 5만 토큰을 넘을 때만 낸다.
+    그 아래에서는 분산돼 있어 한 표면을 지목해도 처방이 되지 않는다.
+    """
+    section = build_new_tokens_by_preceding_tool(summary)
+    rows = section["rows"]
+    if not rows or section["total_cache_creation_tokens"] < AIM_MIN_TOKENS:
+        return None
+    lead = rows[0]
+    if lead["token_share"] < AIM_MIN_SHARE:
+        return None
+    label = lead["label"]
+    action = AIM_ACTIONS.get(label, f"Inspect what the {label} tool returns; its results precede most new tokens.")
+    return recommendation(
+        "aim-at-new-token-source",
+        f"Most new tokens per turn follow {label} results",
+        (
+            f"{_format_share(lead['token_share'])} of cache_creation tokens landed in turns whose "
+            f"preceding tool_result came from {label} (~{lead['tokens_per_turn']:,} tokens per such turn). "
+            "Under prompt caching this, not total context, is what is billed."
+        ),
+        action,
+        "P1",
+        {
+            "label": label,
+            "turns": lead["turns"],
+            "cache_creation_tokens": lead["cache_creation_tokens"],
+            "token_share": lead["token_share"],
+            "attribution": "preceding tool_result ordering; observational, not causal",
+        },
+    )
+
+
 def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any]]:
     recs: list[dict[str, Any]] = []
     total = max(0, summary.total_tokens)
@@ -2590,6 +3050,10 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
             {"files_scanned": summary.files, "records": summary.records},
         ))
         return recs
+
+    aim = _aim_at_new_token_source(summary)
+    if aim is not None:
+        recs.append(aim)
 
     output_tokens = summary.tokens.get("output", 0)
     input_tokens = summary.tokens.get("input", 0)
@@ -2860,6 +3324,7 @@ def summary_json(
             },
         },
         "tool_result_bytes": build_tool_result_bytes(summary, top),
+        "new_tokens_per_turn": build_new_tokens_per_turn(summary),
         "cache_metrics": {
             "cache_hit_rate": round(summary.cache_hit_rate, 4),
             "cache_amortization": round(summary.cache_amortization, 4),
@@ -2886,6 +3351,31 @@ def summary_json(
 def _format_share(share: float | None) -> str:
     """비중을 사람이 읽는 퍼센트로. 정의되지 않으면 '-'."""
     return "-" if share is None else f"{share * 100:.1f}%"
+
+
+def print_new_tokens_per_turn(summary: UsageSummary, top: int) -> None:
+    """턴당 신규 토큰 분포와 선행 도구별 귀속을 사람이 읽는 형태로 낸다."""
+    report = build_new_tokens_per_turn(summary)
+    print("\nNew tokens per turn (cache_creation; the quantity that moves cost under prompt caching)")
+    if not report["turns"]:
+        print("  no turns with cache_creation observed")
+        return
+    percentiles = report.get("percentiles", {})
+    print(
+        f"  turns={report['turns']:,} zero_turns={report['zero_cache_creation_turns']:,} "
+        f"total={report['total_cache_creation_tokens']:,} tok "
+        f"p50={percentiles.get('p50', 0):,} p90={percentiles.get('p90', 0):,} "
+        f"p99={percentiles.get('p99', 0):,} max={report.get('max', 0):,}"
+    )
+    rows = report["by_preceding_tool"]["rows"]
+    if rows:
+        print("  by preceding tool_result (observed ordering, not causation):")
+        for row in rows[:top]:
+            print(
+                f"    {row['label'][:44]:44s} {row['turns']:>7,} turns "
+                f"{row['cache_creation_tokens']:>14,} tok {_format_share(row['token_share']):>7s} "
+                f"~{row['tokens_per_turn']:,}/turn"
+            )
 
 
 def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
@@ -2933,6 +3423,33 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
                 f"    ... {coverage['rows_shown']} of {coverage['labels_total']} labels shown, "
                 f"covering {_format_share(coverage['shown_byte_share'])} of bytes"
             )
+    estimate = report.get("token_estimate")
+    if estimate and estimate["total_tokens"]:
+        print("  by content class, in estimated tokens:")
+        for row in estimate["by_content_class"][:top]:
+            print(
+                f"    {row['label'][:44]:44s} {row['tokens']:>14,} tok "
+                f"{_format_share(row['token_share']):>7s} ({row['method']})"
+            )
+        images = estimate["images"]
+        if images["payloads"]:
+            unread = images["dimensions_unavailable"]
+            unread_note = f", {unread} with unreadable dimensions" if unread else ""
+            print(
+                f"    images: {images['payloads']} payloads, "
+                f"{images['downscaled_to_cap']} over the {estimate['image_formula']['long_edge_cap_px']}px "
+                f"long-edge cap{unread_note}"
+            )
+        print(
+            "    token shares are estimates, not billed amounts; images use a published provider "
+            "formula and text uses a bytes/4 proxy"
+        )
+    repeats = report.get("repeat_reads")
+    if repeats and repeats["results"]:
+        print(
+            f"  repeat file reads within a session: {repeats['results']:,} results, "
+            f"{repeats['bytes']:,}B ({_format_share(repeats['share_of_read_bytes'])} of read bytes)"
+        )
     duplicates = report["exact_duplicates"]
     duplicate_note = " (understated: duplicate tracking truncated)" if duplicates["tracking_truncated"] else ""
     print(
@@ -3135,6 +3652,7 @@ def main() -> int:
     print_counter("Top transcript files", summary.by_file, args.top)
     print_counter("Top command hints observed", summary.by_command, args.top)
     print_counter("Top tools observed", summary.by_tool, args.top)
+    print_new_tokens_per_turn(summary, args.top)
     print_tool_result_bytes(summary, args.top)
     if args.recommend:
         print_recommendations(summary, args.top)

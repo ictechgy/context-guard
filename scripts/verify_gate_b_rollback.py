@@ -136,6 +136,10 @@ GEN21_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen21 bash hook rev
 GEN21_B1_SUBJECT = "proof: reapply Gate-B nudge component gen21 bash hook review followups"
 GEN21_B2_SUBJECT = "proof: reapply Gate-B usage component gen21 bash hook review followups"
 GEN21_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen21 bash hook review followups"
+GEN22_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen22 cost tool triage"
+GEN22_B1_SUBJECT = "proof: reapply Gate-B nudge component gen22 cost tool triage"
+GEN22_B2_SUBJECT = "proof: reapply Gate-B usage component gen22 cost tool triage"
+GEN22_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen22 cost tool triage"
 
 B1_PATHS = frozenset(
     {
@@ -578,6 +582,25 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen22: 외부 리뷰(GLM/Grok/agy) 합의 5개 항목. nudge 를 opt-in 으로 바꾸고 힌트를
+    # 한 줄로 줄이며 세션 스위치를 읽는다(B1). audit 이 턴별 cache_creation 을 선행
+    # tool_result 의 도구에 귀속한다(B2). setup 에 --profile 과 doctor 훅 저널 요약을
+    # 넣고, manifest 에서 legacy 래퍼를 빼고 hooks 서브커맨드를 더하며, release_smoke
+    # 의 sketch veto 스모크를 걷어낸다(통합). 마커 소유 경로는 모두 유지하므로 좁히지
+    # 않는다. 잔여물은 gen21 bless 와 같다.
+    Generation(
+        name="gen22",
+        bless_subject=GEN22_BLESS_SUBJECT,
+        b1_subject=GEN22_B1_SUBJECT,
+        b2_subject=GEN22_B2_SUBJECT,
+        shared_subject=GEN22_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=GEN16_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -607,6 +630,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "c6421839ef6f201a5d280b2843fa55d98385de9b3584d777a3102e7165383d5a",
     "b895c7ae60d63ad5b5fe569349ffa7cb5cc324d37e3c18f62e6b3ba9686f7ddd",
     "8ad2bbb5827d53ea6fb83a96d2c440e46bed99882edb9ebc940b7eed404e89be",
+    "99791d5bdc02ddd4d411f1486885d3ea214ac75c6171e299b58daed3f3a244ce",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 

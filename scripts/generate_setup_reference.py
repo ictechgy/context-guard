@@ -89,7 +89,8 @@ def flag_rows(setup: Any) -> list[str]:
     parser = setup.build_parser()
     rows: list[str] = []
     for action in parser._actions:
-        if not action.option_strings or "--help" in action.option_strings:
+        # help=SUPPRESS 인 플래그(숨긴 deprecated alias)는 참조 문서에도 싣지 않는다.
+        if not action.option_strings or "--help" in action.option_strings or action.help is argparse.SUPPRESS:
             continue
         flags = ", ".join(f"`{flag}`" for flag in action.option_strings)
         rows.append(

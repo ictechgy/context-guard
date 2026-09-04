@@ -627,6 +627,93 @@ class NudgeProtocolTests(unittest.TestCase):
                     self.assertEqual(state["episodes"][0]["count"], 2)
                     self.assertEqual(len(state["events"]), 2)
 
+    def test_escrow_wrapper_shape_unwraps_to_the_same_logical_digest(self):
+        """기본 래퍼가 digest/escrow 옵션을 붙여도 같은 논리 명령으로 묶여야 한다."""
+        logical = "pytest tests/a.py -k token=super-secret"
+        expected = hashlib.sha256(logical.encode()).hexdigest()
+        for script, module in self.modules():
+            with self.subTest(script=script):
+                prefix = module._wrapper_prefixes()["trim"]
+                escrow = shlex.join([
+                    *prefix, "--max-lines", "220", "--digest", "markdown",
+                    "--artifact-receipt", "--", "bash", "-c", logical,
+                ])
+                identity = module.command_identity(escrow)
+                self.assertEqual((identity.protocol, identity.digest), ("legacy-v0", expected))
+                with_budget = shlex.join([
+                    *prefix, "--max-lines", "220", "--digest", "markdown",
+                    "--artifact-receipt", "--head-lines", "30", "--tail-lines", "60",
+                    "--", "bash", "-c", logical,
+                ])
+                identity = module.command_identity(with_budget)
+                self.assertEqual((identity.protocol, identity.digest), ("legacy-v0", expected))
+                for foreign in (
+                    shlex.join([*prefix, "--max-lines", "220", "--digest", "csv", "--artifact-receipt", "--", "bash", "-c", logical]),
+                    shlex.join([*prefix, "--max-lines", "220", "--unknown", "--", "bash", "-c", logical]),
+                    shlex.join([*prefix, "--max-lines", "220", "--head-lines", "x", "--", "bash", "-c", logical]),
+                ):
+                    with self.subTest(foreign=foreign):
+                        self.assertEqual(module.command_identity(foreign).protocol, "legacy-or-foreign")
+
+    def test_nudge_text_is_one_line_without_clear_and_names_the_switch(self):
+        """힌트는 한 줄이어야 하고 /clear 권유 대신 세션 스위치 해제법을 담아야 한다."""
+        for script, module in self.modules():
+            with self.subTest(script=script):
+                text = module.NUDGE_TEXT
+                self.assertNotIn("\n", text)
+                self.assertLess(len(text.encode("utf-8")), 320)
+                self.assertNotIn("/clear", text)
+                self.assertIn("context-guard hooks off nudge", text)
+                self.assertTrue(text.startswith("[context-guard]"))
+
+    def test_session_switch_off_returns_empty_and_writes_no_state(self):
+        """`context-guard hooks off nudge` 상태면 훅은 {} 만 내고 상태 파일을 만들지 않는다."""
+        switch = ROOT / "context-guard-kit" / "hook_switch.py"
+        journal = ROOT / "context-guard-kit" / "hook_journal.py"
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                subprocess.run(
+                    [sys.executable, str(switch), "--root", str(root), "off", "nudge", "--for", "10m"],
+                    check=True, capture_output=True,
+                )
+                env = {"PATH": "/usr/bin:/bin", "HOME": tmp}
+                for tool_id in ("tool-1", "tool-2"):
+                    completed = subprocess.run(
+                        [sys.executable, "-I", str(script)],
+                        input=json.dumps(payload("pytest tests/a.py", tool_id)),
+                        text=True, capture_output=True, cwd=tmp, env=env, check=True,
+                    )
+                    self.assertEqual(json.loads(completed.stdout), {})
+                self.assertFalse((root / ".context-guard" / "failures-v2.json").exists())
+                journal_module = load_script(journal, f"_journal_{id(self)}")
+                rows = journal_module.read_rows(root)
+                self.assertEqual([row["hook"] for row in rows], ["nudge", "nudge"])
+                self.assertTrue(all(row["intervened"] is False for row in rows))
+                self.assertTrue(all(row.get("detail") == "switched off" for row in rows))
+
+    def test_second_failure_journals_an_intervention(self):
+        """두 번째 실패에서 힌트가 나가면 저널에 intervened=true 로 남는다."""
+        journal = ROOT / "context-guard-kit" / "hook_journal.py"
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                env = {"PATH": "/usr/bin:/bin", "HOME": tmp}
+                outputs = []
+                for tool_id in ("tool-1", "tool-2"):
+                    completed = subprocess.run(
+                        [sys.executable, "-I", str(script)],
+                        input=json.dumps(payload("pytest tests/a.py", tool_id)),
+                        text=True, capture_output=True, cwd=tmp, env=env, check=True,
+                    )
+                    outputs.append(json.loads(completed.stdout))
+                self.assertEqual(outputs[0], {})
+                self.assertIn("hookSpecificOutput", outputs[1])
+                rows = load_script(journal, f"_journal2_{id(self)}").read_rows(Path(tmp))
+                self.assertEqual([row["intervened"] for row in rows], [False, True])
+                joined = json.dumps(rows)
+                self.assertNotIn("pytest", joined)
+                self.assertNotIn("session-A", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

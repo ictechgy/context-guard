@@ -112,7 +112,20 @@ HELPER_EQUIVALENT_BASENAMES = {
 }
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
-DEFAULT_FAILED_ATTEMPT_NUDGE = True
+# 반복 실패 힌트는 오탐 데이터가 없는 상태에서 기본 ON 이었다(HANDOFF 표면 정리 항목).
+# 이제 opt-in 이다: `--failed-attempt-nudge` 또는 `--profile max` 로만 켠다.
+DEFAULT_FAILED_ATTEMPT_NUDGE = False
+# setup 프로파일: 플래그 30개를 세 가지 선택으로 접는다. 개별 --no-* 는 예외 조정용이다.
+PROFILE_CHOICES = ("minimal", "recommended", "max")
+DEFAULT_PROFILE = "recommended"
+PROFILE_PRESETS: dict[str, dict[str, bool]] = {
+    # deny 규칙 + Read 가드만. 훅이 명령을 바꾸지 않는 가장 조용한 구성.
+    "minimal": {"denies": True, "statusline": False, "bash_hook": False, "read_guard": True, "model_defaults": False, "failed_attempt_nudge": False},
+    # 현재 기본과 같다. 반복 실패 힌트만 제외한다.
+    "recommended": {"denies": True, "statusline": True, "bash_hook": True, "read_guard": True, "model_defaults": True, "failed_attempt_nudge": False},
+    # 모든 훅과 힌트. 오탐 저널을 모으려는 사용자용.
+    "max": {"denies": True, "statusline": True, "bash_hook": True, "read_guard": True, "model_defaults": True, "failed_attempt_nudge": True},
+}
 DEFAULT_POST_SETUP_SCAN_TOP = 5
 POST_SETUP_SCAN_TIMEOUT_SECONDS = 20
 PATH_HELPER_PROBE_TIMEOUT_SECONDS = 5
@@ -160,7 +173,7 @@ class Choices:
     bash_reference_v1: bool = False
     read_guard: bool = True
     model_defaults: bool = True
-    # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — recommended setup 기본 ON.
+    # 동일 Bash 명령이 두 번 연속 실패하면 전략 전환 힌트 — 기본 OFF, opt-in.
     failed_attempt_nudge: bool = DEFAULT_FAILED_ATTEMPT_NUDGE
 
 
@@ -3576,6 +3589,9 @@ def _setup_command(
         parts.extend(["--agent", ",".join(selected)])
     elif scope == "user":
         parts.extend(["--agent", "claude"])
+    profile = getattr(args, "profile", None)
+    if profile and profile != DEFAULT_PROFILE:
+        parts.extend(["--profile", profile])
     if getattr(args, "allow_path_helper_fallback", False):
         parts.append("--allow-path-helper-fallback")
     if getattr(args, "with_init", False):
@@ -3666,6 +3682,46 @@ def _adapter_warning_detail(entry: dict[str, Any]) -> dict[str, Any]:
         if key in entry:
             detail[key] = entry.get(key)
     return detail
+
+
+def _load_hook_journal_module():
+    """옆에 있는 hook_journal.py 를 찾아 싣는다. 없으면 None (doctor 는 그래도 돈다)."""
+    script_dir = Path(__file__).resolve().parent
+    for helper_dir in (script_dir, script_dir.parent / "lib"):
+        helper_path = helper_dir / "hook_journal.py"
+        try:
+            if not helper_path.is_file():
+                continue
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("_context_guard_hook_journal_doctor", helper_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:  # noqa: BLE001 - 부속 helper 는 doctor 를 깨뜨리지 않는다.
+            continue
+    return None
+
+
+def summarize_hook_journal(root: Path) -> dict[str, Any] | None:
+    """훅 저널을 읽어 doctor 용 한 줄 요약과 집계를 돌려준다.
+
+    이 값은 관측 집계다. 훅이 보류한 바이트와 훅 자신의 실행 시간을 나란히 보여줄 뿐,
+    토큰이나 비용 절감을 뜻하지 않는다. helper 가 없으면 None 이다.
+    """
+    module = _load_hook_journal_module()
+    if module is None:
+        return None
+    try:
+        summary = module.summarize(module.read_rows(root))
+        return {"one_line": module.render_one_line(summary), "summary": summary}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "one_line": f"hook journal: unreadable ({exc.__class__.__name__})",
+            "summary": {"error": exc.__class__.__name__},
+        }
 
 
 def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
@@ -3903,6 +3959,23 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
                     detail=diet_scan,
                 ))
 
+    hook_journal = summarize_hook_journal(root)
+    if hook_journal is None:
+        checks.append(doctor_check(
+            "hook-journal",
+            "ok",
+            "low",
+            "hook journal: helper unavailable in this install; hooks still run without it.",
+        ))
+    else:
+        checks.append(doctor_check(
+            "hook-journal",
+            "ok",
+            "low",
+            hook_journal["one_line"],
+            detail=hook_journal["summary"],
+        ))
+
     recommended = [_setup_command(args, apply=False, root=root, scope=scope)]
     if changed or adapter_warnings:
         recommended.append(_setup_command(args, apply=True, root=root, scope=scope))
@@ -3921,6 +3994,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             "adapter_plan": adapter_plan,
         },
         "diet_scan": diet_scan,
+        "hook_journal": None if hook_journal is None else hook_journal["summary"],
         "recommended_commands": recommended,
     }
 
@@ -4008,12 +4082,12 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
     if choices.failed_attempt_nudge:
         nudge_hook = failed_nudge_setting(allow_path_fallback=allow_path_fallback)
         nudge_command = nudge_hook["hooks"][0]["command"]
-        ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt /clear nudge", actions)
+        ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt nudge", actions)
         ensure_post_tool_failure_hook(
             settings,
             nudge_hook,
             nudge_command,
-            "failed-attempt /clear nudge",
+            "failed-attempt nudge",
             actions,
         )
     return actions
@@ -4400,23 +4474,38 @@ def interactive_choices(defaults: Choices) -> Choices:
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
-            "Enable failed-attempt /clear nudge? (Bash terminal-event hooks; recommended default)",
+            "Enable failed-attempt strategy nudge? (Bash terminal-event hooks; off by default)",
             defaults.failed_attempt_nudge,
         ),
     )
     return choices
 
 
+def profile_preset(args: argparse.Namespace) -> dict[str, bool]:
+    """`--profile` 값에 해당하는 구성표를 돌려준다. 없으면 recommended 다."""
+    name = getattr(args, "profile", None) or DEFAULT_PROFILE
+    if name not in PROFILE_PRESETS:
+        raise ValueError(f"unknown setup profile {name!r}; choose one of {', '.join(PROFILE_CHOICES)}")
+    return dict(PROFILE_PRESETS[name])
+
+
 def choices_from_args(args: argparse.Namespace) -> Choices:
+    """프로파일이 기본을 정하고, 개별 `--no-*` 와 `--failed-attempt-nudge` 가 그 위에 덮인다.
+
+    왜 이 순서인가: `--profile max --no-statusline` 처럼 "거의 다, 하나만 빼고" 를 한 줄로
+    적을 수 있어야 한다. 반대 방향(--no-* 가 프로파일을 이김)만 허용하므로 프로파일이
+    끈 것을 개별 플래그로 다시 켜는 조합은 없다 — 그 경우 더 큰 프로파일을 고른다.
+    """
+    preset = profile_preset(args)
     return Choices(
-        denies=not args.no_denies,
-        statusline=not args.no_statusline,
-        bash_hook=not args.no_bash_hook,
+        denies=preset["denies"] and not args.no_denies,
+        statusline=preset["statusline"] and not args.no_statusline,
+        bash_hook=preset["bash_hook"] and not args.no_bash_hook,
         bash_reference_v1=getattr(args, "bash_reference_v1", False),
-        read_guard=not args.no_read_guard,
-        model_defaults=not args.no_model_defaults,
+        read_guard=preset["read_guard"] and not args.no_read_guard,
+        model_defaults=preset["model_defaults"] and not args.no_model_defaults,
         failed_attempt_nudge=(
-            DEFAULT_FAILED_ATTEMPT_NUDGE
+            preset["failed_attempt_nudge"]
             if args.failed_attempt_nudge is None
             else args.failed_attempt_nudge
         ),
@@ -4871,13 +4960,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="setup scope: project-local by default; user/global targets only known user-level paths and requires explicit --agent for writes",
     )
     parser.add_argument(
-        "--allow-home-settings",
-        action="store_true",
-        help="deprecated compatibility alias for user-level Claude settings; prefer --scope user --agent claude",
+        "--profile",
+        choices=PROFILE_CHOICES,
+        default=DEFAULT_PROFILE,
+        help=(
+            "which guardrails to enable: minimal (deny rules + Read guard), "
+            "recommended (adds Bash trim/escrow, statusline, model defaults), "
+            "max (adds the failed-attempt nudge); individual --no-* flags still remove items"
+        ),
     )
+    # deprecated alias; 동작은 유지하되 --help 와 참조 문서에서 숨긴다.
+    parser.add_argument("--allow-home-settings", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--yes", action="store_true", help="apply the recommended/selected setup without prompts")
     parser.add_argument("--plan", action="store_true", help="show the setup plan without writing files")
-    parser.add_argument("--dry-run", action="store_true", help="alias for --plan")
+    parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)  # --plan 의 alias; 숨김
     parser.add_argument("--verify", action="store_true", help="run a read-only setup health check; never writes or prompts")
     parser.add_argument("--json", action="store_true", help="print machine-readable result")
     parser.add_argument(
@@ -4964,14 +5060,14 @@ def build_parser() -> argparse.ArgumentParser:
         dest="failed_attempt_nudge",
         action="store_true",
         default=None,
-        help="enable Bash terminal-event hooks that suggest /clear when the same command fails twice in a row (recommended default)",
+        help="enable Bash terminal-event hooks that inject a one-line strategy-switch hint when the same command fails twice in a row (off by default; also enabled by --profile max)",
     )
     nudge_group.add_argument(
         "--no-failed-attempt-nudge",
         dest="failed_attempt_nudge",
         action="store_false",
         default=None,
-        help="skip the failed-attempt /clear nudge hook",
+        help="skip the failed-attempt nudge hook even under --profile max",
     )
     return parser
 

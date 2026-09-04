@@ -27,12 +27,14 @@ fi
 Report:
 
 - observed token buckets: input, output, cache_read, cache_creation;
+- new tokens per turn (cache_creation distribution) and the "by preceding tool_result" table: this is the quantity billed under prompt caching, so lead with the tool that precedes most of it;
 - model distribution;
 - query_source distribution: main, subagent, auxiliary;
 - top transcript files and commands observed;
 - generated recommendations with priority, reason, action, and evidence;
 - `cache_friendliness` status, bounded prefix/tail churn signals, and any cache-layout findings;
-- top likely causes and one safe next experiment.
+- top likely causes and one safe next experiment;
+- `context-guard doctor` adds a one-line hook-journal summary (interventions, bytes withheld, hook overhead) for the current project; quote it as observed counts, never as savings.
 
 Privacy: default output uses basename+hash transcript labels and command category+hash labels. Do not ask for `--show-paths` or `--show-commands` unless the user explicitly wants local identifiers in the report. Cache-friendliness diagnostics use bounded redacted segment hashes and do not print raw prompt text. Recommendations are heuristics; treat them as hypotheses, especially with small `files` or `records` counts.
 

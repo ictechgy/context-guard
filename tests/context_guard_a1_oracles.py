@@ -1019,10 +1019,6 @@ def minishell_normative_cases() -> list[dict[str, object]]:
             "incoming_wrapper_denied",
         ),
         (
-            "claude-trim-output --max-lines 220 -- bash -c 'pytest -q'",
-            "incoming_wrapper_denied",
-        ),
-        (
             "python3 /tmp/trim_command_output.py --max-lines 220 -- bash -c 'pytest -q'",
             "incoming_wrapper_denied",
         ),

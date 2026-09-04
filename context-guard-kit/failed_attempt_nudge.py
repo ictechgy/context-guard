@@ -50,6 +50,59 @@ def _load_hook_secret_patterns():
 
 
 _hook_secret_patterns = _load_hook_secret_patterns()
+
+
+def _load_optional_helper(file_name: str, module_name: str):
+    """선택적 helper(hook_journal, hook_switch)를 찾으면 싣고, 없으면 None 을 돌려준다.
+
+    이 둘은 훅의 동작을 바꾸지 않는 부속이므로 없거나 깨져도 훅은 그대로 동작해야
+    한다. 그래서 필수 helper 와 달리 예외를 밖으로 내지 않는다.
+    """
+    for helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
+        helper_path = helper_dir / file_name
+        try:
+            if not helper_path.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(module_name, helper_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:  # noqa: BLE001 - 부속 helper 는 훅을 깨뜨리지 않는다.
+            continue
+    return None
+
+
+_hook_journal = _load_optional_helper("hook_journal.py", "_context_guard_hook_journal")
+_hook_switch = _load_optional_helper("hook_switch.py", "_context_guard_hook_switch")
+
+
+def _nudge_switched_off() -> bool:
+    """세션 스위치(`context-guard hooks off nudge`)로 꺼져 있으면 True."""
+    if _hook_switch is None:
+        return False
+    try:
+        return bool(_hook_switch.is_disabled("nudge"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _journal(started, *, intervened: bool, session_id, input_bytes: int, detail: str | None = None) -> None:
+    """훅 저널에 한 줄 남긴다. 저널이 없으면 아무 일도 하지 않는다."""
+    if _hook_journal is None:
+        return
+    try:
+        _hook_journal.record(
+            "nudge",
+            started=started,
+            intervened=intervened,
+            session_id=session_id,
+            input_bytes=input_bytes,
+            detail=detail,
+        )
+    except Exception:  # noqa: BLE001
+        return
 redact_sensitive_hook_text = _hook_secret_patterns.redact_sensitive_hook_text
 
 STATE_DIR = Path(".context-guard")
@@ -161,19 +214,17 @@ class TerminalEvent:
         return sha256_text(json.dumps(components, separators=(",", ":"), ensure_ascii=True))
 
 
-# additionalContext 는 모델에게 주입되므로 사용자에게 직접 명령하는 톤보다 모델이 행동을
-# 결정할 때 참고할 힌트 형태가 자연스럽다. 모델이 사용자에게 안내하도록 유도한다.
+# additionalContext 는 모델에게 주입되므로 한 줄로 줄인다. 무엇이 감지됐고, 무엇을 바꾸라는
+# 것이며, 오탐이면 어떻게 끄는지만 담는다. `/clear` 권유는 뺐다 — 작업 기억과 프롬프트
+# 캐시를 함께 버리게 하는 권유라 오탐 비용이 힌트의 이득보다 크다(외부 리뷰 합의).
 NUDGE_TEXT = (
-    "AI 힌트: 같은 Bash 작업이 이 세션에서 두 번 실패했습니다. 동일 경로를 다시 실행하지 말고 "
-    "실패의 공통 조건을 요약한 뒤 다른 가설, 더 작은 재현, 또는 수정 후의 좁은 검증으로 전환하세요. "
-    "긴 출력이 artifact receipt로 저장되었다면 전체 로그를 재주입하지 말고 필요한 줄만 조회하세요. "
-    "컨텍스트가 오염되었다면 사용자에게 `/compact` 또는 `/clear` 선택지를 짧게 안내하세요."
+    "[context-guard] Same Bash command failed twice in this session. Change the approach "
+    "(different hypothesis, smaller reproducer, or query the stored artifact receipt) instead of "
+    "rerunning it. Ask the user before running: context-guard hooks off nudge (project-wide, 2h)"
 )
 STRATEGY_SWITCH_TEXT = (
-    " Strategy-switch signal: the same failure direction has now repeated at least three times. "
-    "Stop retrying the identical command path; summarize the invariant failure, choose a different hypothesis "
-    "or smaller reproducer, rehydrate exact artifact receipt slices when available, "
-    "and only rerun after changing code, inputs, or diagnostic scope."
+    " Repeated 3+ times: stop retrying the identical command path until code, inputs, or "
+    "diagnostic scope change."
 )
 
 
@@ -307,8 +358,6 @@ def _is_wrapper_shaped(argv: tuple[str, ...]) -> bool:
         "trim_command_output.py",
         "context-guard-sanitize-output",
         "context-guard-trim-output",
-        "claude-sanitize-output",
-        "claude-trim-output",
     }
     if not argv:
         return False
@@ -327,6 +376,63 @@ def _is_wrapper_shaped(argv: tuple[str, ...]) -> bool:
             )
         )
     )
+
+
+# 기본 Bash 래퍼가 큰 출력을 artifact 로 escrow 할 때 `--max-lines` 와 `--` 사이에 붙이는
+# digest 옵션들. 값이 있는 옵션은 허용 값 집합을, 값이 없는 옵션은 None 을 적는다.
+ESCROW_V1_OPTION_VALUES: dict[str, frozenset[str] | None] = {
+    "--digest": frozenset({"markdown", "json"}),
+    "--artifact-receipt": None,
+    "--head-lines": None,  # 값은 정수여야 하므로 아래에서 따로 검사한다
+    "--tail-lines": None,
+}
+ESCROW_V1_INT_OPTIONS = frozenset({"--head-lines", "--tail-lines"})
+
+
+def _escrow_v1_logical(
+    argv: tuple[str, ...], prefix: tuple[str, ...], shell_argv: tuple[str, ...]
+) -> str | None:
+    """escrow 래퍼 형태 `prefix --max-lines N <digest 옵션들> -- <shell> logical` 를 푼다.
+
+    v0 형태와 같은 fingerprint 를 내야 같은 논리 명령의 실패가 하나의 episode 로 묶인다.
+    옵션 허용 목록 밖의 토큰이 하나라도 있으면 풀지 않는다(foreign 으로 남긴다).
+    """
+    head = prefix + ("--max-lines", LEGACY_V0_MAX_LINES)
+    if len(argv) <= len(head) or argv[: len(head)] != head:
+        return None
+    rest = argv[len(head):]
+    try:
+        separator = rest.index("--")
+    except ValueError:
+        return None
+    options = rest[:separator]
+    if not options:
+        return None
+    index = 0
+    while index < len(options):
+        option = options[index]
+        if option not in ESCROW_V1_OPTION_VALUES:
+            return None
+        allowed = ESCROW_V1_OPTION_VALUES[option]
+        if option in ESCROW_V1_INT_OPTIONS or allowed is not None:
+            if index + 1 >= len(options):
+                return None
+            value = options[index + 1]
+            if option in ESCROW_V1_INT_OPTIONS:
+                if not value.isdigit():
+                    return None
+            elif value not in allowed:
+                return None
+            index += 2
+        else:
+            index += 1
+    tail = rest[separator + 1:]
+    if len(tail) != len(shell_argv) + 1 or tail[:-1] != shell_argv:
+        return None
+    logical = tail[-1]
+    if not logical or _is_wrapper_shaped(_argv(logical) or ()):
+        return None
+    return logical
 
 
 def command_identity(command: str) -> CommandIdentity:
@@ -372,6 +478,9 @@ def command_identity(command: str) -> CommandIdentity:
                 logical = argv[-1]
                 if logical and not _is_wrapper_shaped(_argv(logical) or ()):
                     return CommandIdentity(PROTOCOL_LEGACY_V0, sha256_text(logical))
+            logical = _escrow_v1_logical(argv, prefix, shell_argv)
+            if logical is not None:
+                return CommandIdentity(PROTOCOL_LEGACY_V0, sha256_text(logical))
 
     protocol = PROTOCOL_FOREIGN if (
         _is_wrapper_shaped(argv) or CGW1_SENTINEL in argv
@@ -1237,7 +1346,9 @@ def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-failed-nudge")
         return 0
+    started = _hook_journal.start_clock() if _hook_journal is not None else None
     raw_payload, oversized = read_bounded_stdin_text()
+    input_bytes = len(raw_payload.encode("utf-8", "replace")) if isinstance(raw_payload, str) else 0
     if oversized:
         sys.stderr.write("context-guard-failed-nudge: oversized hook JSON skipped\n")
         print("{}")
@@ -1250,6 +1361,16 @@ def main() -> int:
     if not isinstance(payload, dict):
         print("{}")
         return 0
+    session_id = payload.get("session_id")
+    # 저널은 Bash 이벤트에만 남긴다. 다른 도구 호출은 상태 파일조차 만들지 않는다는
+    # 기존 계약(non-Bash → 디스크 무접촉)을 저널이 깨면 안 된다.
+    if payload.get("tool_name") != "Bash":
+        print("{}")
+        return 0
+    if _nudge_switched_off():
+        _journal(started, intervened=False, session_id=session_id, input_bytes=input_bytes, detail="switched off")
+        print("{}")
+        return 0
     try:
         response = update_state_transaction(payload)
     except OSError as exc:
@@ -1260,6 +1381,7 @@ def main() -> int:
             f"{diagnostic_text(exc)}\n"
         )
         response = {}
+    _journal(started, intervened=bool(response), session_id=session_id, input_bytes=input_bytes)
     print(json.dumps(response, ensure_ascii=False))
     return 0
 

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+import importlib.util
 import json
 import os
+from pathlib import Path
 import shlex
 import re
 import shutil
@@ -18,14 +20,84 @@ import stat
 import subprocess
 import sys
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _load_optional_helper(module_name: str):
+    """선택적 helper 를 SCRIPT_DIR 그다음 ../lib 순서로 찾는다.
+
+    없으면 None. 이 훅은 helper 없이도 예전과 완전히 동일하게 동작해야 하므로
+    로딩 실패는 절대 밖으로 새어 나가지 않는다.
+    """
+    for helper_dir in (_SCRIPT_DIR, _SCRIPT_DIR.parent / "lib"):
+        helper_path = helper_dir / f"{module_name}.py"
+        try:
+            if not helper_path.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(f"_context_guard_{module_name}", helper_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:  # noqa: BLE001 - helper 부재/파손이 훅 출력을 바꾸면 안 된다.
+            continue
+    return None
+
+
+_hook_journal = _load_optional_helper("hook_journal")
+_hook_switch = _load_optional_helper("hook_switch")
+
+
+def _journal_start():
+    """저널 helper 가 있으면 단조 시계를 켠다. 없으면 None."""
+    if _hook_journal is None:
+        return None
+    try:
+        return _hook_journal.start_clock()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _journal_record(**fields) -> None:
+    """저널 helper 가 있을 때만 한 줄 기록한다. 실패는 전부 삼킨다."""
+    if _hook_journal is None:
+        return
+    try:
+        _hook_journal.record("bash", **fields)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _switch_says_off() -> bool:
+    """세션 스위치로 bash 훅이 꺼져 있는지 본다. helper 가 없으면 항상 False."""
+    if _hook_switch is None:
+        return False
+    try:
+        return bool(_hook_switch.is_disabled("bash"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def bash_disable_hint() -> str:
+    """훅 메시지 끝에 붙일 한 줄 해제 안내. helper 가 없으면 기존 환경변수 문구."""
+    if _hook_switch is not None:
+        try:
+            return _hook_switch.disable_hint("bash")
+        except Exception:  # noqa: BLE001
+            pass
+    return "Set CONTEXT_GUARD_DISABLE=1 to disable ContextGuard's Bash hook."
+
+
+# 저널용 stdin 크기. load_hook_payload 가 채운다.
+_hook_input_bytes = 0
+
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
 WRAPPER_BASENAMES = frozenset({
     "trim_command_output.py",
     "context-guard-trim-output",
-    "claude-trim-output",
     "sanitize_output.py",
     "context-guard-sanitize-output",
-    "claude-sanitize-output",
 })
 MINISHELL_ROUTE_POLICY_VERSION = "minishell-route-v1"
 MINISHELL_EXPLICIT_NOOP_ARGV = frozenset({
@@ -122,6 +194,9 @@ MINISHELL_ALLOWED_ENV_PREFIX_NAMES = frozenset({
     "NODE_ENV",
 })
 CGW1_MAX_LINES = "220"
+# 기본 Bash 래핑에 붙는 escrow 플래그. 순서까지 계약이다 — 재진입 방지용 봉투
+# 인식(classify_incoming_wrapper)이 이 형태를 그대로 매칭한다.
+CGW1_ESCROW_FLAGS = ("--digest", "markdown", "--artifact-receipt")
 CGW1_SHELL_ARGV = ("bash", "-c")
 CGW1_SENTINEL = "--context-guard-wrapper-v1"
 CGW1_COMMAND_SEARCH_DIFF = "command_search_diff"
@@ -298,7 +373,10 @@ def reject_nonfinite_json_number(value: str) -> object:
 
 
 def load_hook_payload() -> dict[str, object]:
+    global _hook_input_bytes
     raw_payload = sys.stdin.buffer.read(MAX_HOOK_ENVELOPE_BYTES + 1)
+    # 저널이 쓸 입력 크기. 파싱이 실패해도 읽은 바이트 수는 사실이므로 먼저 남긴다.
+    _hook_input_bytes = len(raw_payload)
     if len(raw_payload) > MAX_HOOK_ENVELOPE_BYTES:
         raise HookInputError("envelope_too_large")
     try:
@@ -618,10 +696,8 @@ def _side_effecting_find_ask(parsed: MiniShellParse) -> CommandDecision:
         action="ask",
         parsed=parsed,
         reason=(
-            "ContextGuard: this find command modifies or deletes files. "
-            "ContextGuard does not block it; confirm if you intended it. "
-            "Set CONTEXT_GUARD_DISABLE=1 to disable ContextGuard's Bash hook "
-            "entirely."
+            "[context-guard] This find command modifies or deletes files — confirm if you meant it. "
+            + bash_disable_hint()
         ),
         reason_code="side_effecting_find_ask",
         route_code="ask",
@@ -1411,6 +1487,9 @@ def classify_incoming_wrapper(
     # 그대로 요구하기 때문이다. 사람이 손으로 적는 형태가 아니다.
     prefix_matchers: tuple[tuple[object, ...], ...] = (
         ("--max-lines", _ANY_TOKEN),
+        # 기본 trim 라우트가 escrow 플래그를 달고 나가므로 그 형태도 봉투로 알아봐야
+        # 한다. 알아보지 못하면 재진입 방지 거부가 조용히 사라진다.
+        ("--max-lines", _ANY_TOKEN, *CGW1_ESCROW_FLAGS),
         (CGW1_COMMAND_SEARCH_DIFF,),
         ("--mode", CGW1_COMMAND_SEARCH_DIFF),
     )
@@ -2940,10 +3019,9 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
             action="deny",
             parsed=parsed,
             reason=(
-                "ContextGuard refused a command carrying its own execution "
-                "wrapper. This is ContextGuard's recursion guard, not a policy "
-                "about your command. If you did not construct this command "
-                f"yourself, please report it. ({wrapper_status})"
+                f"[context-guard] Refused a command carrying ContextGuard's own execution wrapper "
+                f"({wrapper_status}) — recursion guard, not a policy about your command. "
+                + bash_disable_hint()
             ),
             reason_code=wrapper_status,
         )
@@ -3210,6 +3288,11 @@ def build_wrapped_command(wrapper: str, command: str, *, bash_reference_v1: bool
     wrapped_argv = prefix + ["--max-lines", CGW1_MAX_LINES]
     if bash_reference_v1:
         wrapped_argv += ["--digest", "json", BASH_REFERENCE_FLAG]
+    else:
+        # 기본 경로 escrow. 예산을 넘긴 출력만 로컬 artifact 에 무손실로 넣고 모델에는
+        # digest + handle + 재조회 명령을 준다. 예산 안에 들어온 출력은 trim 쪽 escrow
+        # 통과 규칙 덕분에 예전처럼 원본 그대로 지나간다.
+        wrapped_argv += CGW1_ESCROW_FLAGS
     wrapped_argv += ["--", *_runtime_shell_argv(), command]
     return shell_join(wrapped_argv)
 
@@ -3286,44 +3369,68 @@ def _main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-rewrite-bash")
         return 0
+    started = _journal_start()
+    session_id: object = None
+
+    def journal(intervened: bool, detail: str) -> int:
+        """PreToolUse 훅 한 건을 저널에 남긴다.
+
+        withheld 는 항상 0 이다 — PreToolUse 는 명령이 실행되기 전이라 출력 크기를
+        알 수 없고, 알지 못하는 값을 추정치로 적으면 저널이 거짓이 된다.
+        """
+        _journal_record(
+            started=started,
+            intervened=intervened,
+            session_id=session_id,
+            input_bytes=_hook_input_bytes,
+            withheld_bytes=0,
+            detail=detail,
+        )
+        return 0
+
     if hook_is_disabled():
         print_noop()
-        return 0
+        return journal(False, "env off")
+    if _switch_says_off():
+        print_noop()
+        return journal(False, "switched off")
     bash_reference_v1 = BASH_REFERENCE_FLAG in sys.argv[1:]
     try:
         payload = load_hook_payload()
+        session_id = payload.get("session_id")
         tool_input = select_tool_input(payload)
     except HookInputError as exc:
         decline_invalid_hook_input(exc.reason_code)
-        return 0
+        return journal(False, f"declined {exc.reason_code}")
     except RecursionError:
         decline_invalid_hook_input("payload_nesting_too_deep")
-        return 0
+        return journal(False, "declined payload_nesting_too_deep")
     except OSError:
         decline_invalid_hook_input("input_read_failed")
-        return 0
+        return journal(False, "declined input_read_failed")
     command = tool_input["command"]
     if not isinstance(command, str):
         # assert 는 입력 검증 수단이 아니다 — `python -O` 에서 사라져 비문자열이
         # 파서로 흘러 들어간다.
         decline_invalid_hook_input("command_not_string")
-        return 0
+        return journal(False, "declined command_not_string")
 
     decision = classify_command(command)
     if decision.action == "deny":
         deny_self_protection(
             decision.reason
-            or "ContextGuard refused a command carrying its own execution wrapper."
+            or ("[context-guard] Refused a command carrying ContextGuard's own execution wrapper. "
+                + bash_disable_hint())
         )
-        return 0
+        return journal(True, "deny")
     if decision.action == "ask":
         print_ask_response(
             decision.reason or "ContextGuard asks you to confirm this command."
         )
-        return 0
+        return journal(True, "ask")
     if decision.action == "noop":
         print_noop()
-        return 0
+        return journal(False, "noop")
 
     # 래퍼가 없다는 것은 ContextGuard 설치가 불완전하다는 뜻이지 명령이
     # 위험하다는 뜻이 아니다. 예전에는 이 경우에도 실행을 막았다 — 부분 설치
@@ -3332,20 +3439,20 @@ def _main() -> int:
         wrapper = find_wrapper("trim")
         if wrapper is None:
             decline_missing_wrapper("context-guard-trim-output", "untrimmed")
-            return 0
+            return journal(False, "wrapper missing")
         wrapped = build_wrapped_command(wrapper, command, bash_reference_v1=bash_reference_v1)
     elif decision.action == "sanitize":
         wrapper = find_wrapper("sanitize")
         if wrapper is None:
             decline_missing_wrapper("context-guard-sanitize-output", "unsanitized")
-            return 0
+            return journal(False, "wrapper missing")
         guarded_command = neutralize_git_config_execution(command, decision.parsed)
         wrapped = build_sanitized_command(wrapper, guarded_command)
     elif decision.action == "reference":
         wrapper = find_wrapper("trim")
         if wrapper is None:
             decline_missing_wrapper("context-guard-trim-output", "unexpanded")
-            return 0
+            return journal(False, "wrapper missing")
         reference_argv = _reference_route_argv(decision.parsed)
         if reference_argv is None:
             raise AssertionError("reference route lost its closed grammar")
@@ -3360,7 +3467,9 @@ def _main() -> int:
         print_updated_command(wrapped, tool_input)
     except RecursionError:
         decline_invalid_hook_input("payload_copy_too_deep")
-    return 0
+        return journal(False, "declined payload_copy_too_deep")
+    # 래핑은 기본 경로의 일상 동작이지 개입이 아니다. deny/ask 만 intervened 로 센다(doctor 지표).
+    return journal(False, f"wrapped {decision.action}")
 
 
 if __name__ == "__main__":
