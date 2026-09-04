@@ -69,7 +69,11 @@
     "docs/benchmark-fixtures/*.example.jsonl",
     "docs/benchmark-fixtures/*.prompt.example.md",
     "docs/experimental-benchmark-fixtures.md",
-    "packaging/homebrew/context-guard.rb.template"
+    "packaging/homebrew/context-guard.rb.template",
+    "docs/builtin-overlap.md",
+    "docs/experiments.md",
+    "docs/guide.md",
+    "docs/safety-reference.md"
   ],
   "engines": {
     "node": ">=18"

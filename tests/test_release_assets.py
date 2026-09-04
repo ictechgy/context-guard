@@ -59,8 +59,10 @@ class ReleaseAssetVerificationTests(unittest.TestCase):
         self.assertEqual(marketplace_entries[0]["version"], root_version)
 
         documents = {
-            ROOT / "README.md": f"@ictechgy/context-guard-receipt@{receipt_version}",
-            ROOT / "README.ko.md": f"@ictechgy/context-guard-receipt@{receipt_version}",
+            # R3 progressive disclosure: 설치·버전 핀 문단은 docs/guide.md 로 옮겼다.
+            ROOT / "docs/guide.md": (
+                f"@ictechgy/context-guard-receipt@{receipt_version}"
+            ),
             ROOT / "docs/distribution.md": (
                 f"@ictechgy/context-guard-receipt: {receipt_version}"
             ),
