@@ -42,7 +42,71 @@ def _load_hook_secret_patterns():
     raise ImportError("hook_secret_patterns.py not found in " + ", ".join(searched))
 
 
+def _load_optional_helper(module_name: str):
+    """선택적 helper 를 hook_secret_patterns 와 같은 방식으로 찾는다.
+
+    없으면 None 을 돌려준다. 이 훅은 helper 없이도 예전과 완전히 동일하게 동작해야
+    하므로, 로딩 실패는 결코 밖으로 새어 나가서는 안 된다.
+    """
+    for helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
+        helper_path = helper_dir / f"{module_name}.py"
+        try:
+            if not helper_path.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(f"_context_guard_{module_name}", helper_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:  # noqa: BLE001 - helper 부재/파손이 훅 출력을 바꾸면 안 된다.
+            continue
+    return None
+
+
 _hook_secret_patterns = _load_hook_secret_patterns()
+_hook_journal = _load_optional_helper("hook_journal")
+_hook_switch = _load_optional_helper("hook_switch")
+
+
+def _journal_start():
+    """저널 helper 가 있으면 단조 시계를 켠다. 없으면 None."""
+    if _hook_journal is None:
+        return None
+    try:
+        return _hook_journal.start_clock()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _journal_record(**fields) -> None:
+    """저널 helper 가 있을 때만 한 줄 기록한다. 실패는 전부 삼킨다."""
+    if _hook_journal is None:
+        return
+    try:
+        _hook_journal.record("read", **fields)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _switch_says_off() -> bool:
+    """세션 스위치로 read 훅이 꺼져 있는지 본다. helper 가 없으면 항상 False."""
+    if _hook_switch is None:
+        return False
+    try:
+        return bool(_hook_switch.is_disabled("read"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def read_disable_hint() -> str:
+    """거부 사유 끝에 붙일 한 줄 해제 안내. helper 가 없으면 기존 환경변수 문구."""
+    if _hook_switch is not None:
+        try:
+            return _hook_switch.disable_hint("read")
+        except Exception:  # noqa: BLE001
+            pass
+    return f"Set {GUARD_ENV}=0 only for a deliberate local override."
 CONTROL_CHAR_RE = _hook_secret_patterns.CONTROL_CHAR_RE
 hook_label_has_sensitive_evidence = _hook_secret_patterns.hook_label_has_sensitive_evidence
 
@@ -641,32 +705,21 @@ def progressive_read_ladder(
     *,
     command_path: str | None = None,
 ) -> str:
-    prefix, prefix_truncated = read_prefix_for_outline(path)
-    items = outline_items(path, prefix)
+    """거부 사유를 한 줄로 만든다.
+
+    예전에는 사다리 3단계 + 파일 아웃라인 + 추정 줄 수까지 실어 보냈다. 그 본문
+    자체가 거부 한 번마다 수백~수천 바이트씩 모델 컨텍스트를 먹었고, 정작 다음
+    행동에 필요한 것은 검색 명령 하나, 심볼 읽기 하나, 안전한 범위 하나뿐이다.
+    아웃라인은 이 훅의 JSON 응답에 별도 필드가 없으므로 그냥 뺀다.
+    """
     actionable_path = command_path if command_path is not None else label
-    rg_cmd, symbol_cmd = suggested_commands(actionable_path, read_symbol)
+    rg_cmd, _symbol_cmd = suggested_commands(actionable_path, read_symbol)
     range_limit = min(max_line_range(), 120)
-    parts = [
-        f"[context-guard-kit] Large Read blocked for {label} ({size} bytes > {limit} byte guard).",
-        "Progressive read ladder:",
-        f"1) Search names/errors: `{rg_cmd}`",
-    ]
-    if items:
-        first_name = items[0].split(" ", 3)[-1].split(" ", 1)[-1]
-        read_parts = shlex.split(read_symbol) + [actionable_path, first_name]
-        parts.append(f"2) Read a symbol slice: `{shlex.join(read_parts)}` (or `{symbol_cmd}`)")
-    else:
-        parts.append(f"2) Read a symbol slice when you know the name: `{symbol_cmd}`")
-    parts.append("Plugin installs can use `context-guard-read-symbol` directly.")
-    parts.append(f"3) If no symbol fits, use Read with offset=0 limit={range_limit} and then narrow further.")
-    parts.append(f"File outline: estimated_lines={line_estimate(prefix, size, prefix_truncated)}")
-    if items:
-        parts.append("Top-level outline: " + "; ".join(items))
-    else:
-        parts.append("Top-level outline: unavailable from the bounded prefix; search first.")
-    parts.append("Use full-file Read only after these smaller queries fail.")
-    parts.append(f"Set {GUARD_ENV}=0 only for a deliberate local override.")
-    return " ".join(parts)
+    return (
+        f"[context-guard] Read blocked: {label} is {size:,}B (> {limit:,}B). "
+        f"Try: `{rg_cmd}` or context-guard-read-symbol {actionable_path} <Symbol>, "
+        f"or Read with offset/limit <= {range_limit} lines. {read_disable_hint()}"
+    )
 
 
 def project_relative_path(path: Path, root: Path) -> str | None:
@@ -755,7 +808,9 @@ def read_proof_denial_reason(
         read_symbol,
         command_path=relative_path,
     )
-    return f"{ladder} Read proof outcome={outcome}. {outcome_detail}"
+    # 사다리는 이미 한 줄이다. 여기에 outcome/상세를 덧붙이면 다시 여러 문장이 되므로
+    # 붙이지 않는다. outcome_detail 은 경로를 노출할 수 없는 위의 두 분기에서만 쓴다.
+    return ladder
 
 
 def read_guard_fingerprint(
@@ -910,7 +965,7 @@ def valve_exhausted_reason(count: int) -> str:
     """
     return (
         f"[context-guard-kit] Read blocked ({count}x, escape valve exhausted). "
-        "Use a smaller offset/limit range for this file."
+        f"Use a smaller offset/limit range for this file. {read_disable_hint()}"
     )
 
 
@@ -923,7 +978,7 @@ def valve_budget_exceeded_reason(count: int, content_limit: int) -> str:
     return (
         f"[context-guard-kit] Large Read blocked ({count}x). Narrowed {max_line_range()}-line "
         f"range still exceeds the {content_limit:,}-byte guard; supply an explicit offset/limit "
-        "under it."
+        f"under it. {read_disable_hint()}"
     )
 
 
@@ -953,29 +1008,54 @@ def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-guard-read")
         return 0
-    if truthy_disabled(env_value(GUARD_ENV, LEGACY_GUARD_ENV)):
-        print("{}")
+    started = _journal_start()
+    # 저널에 실을 값은 페이로드를 읽은 뒤에야 확정되므로 가변 상자에 담아 둔다.
+    journal_state: dict[str, Any] = {"session": None, "in_bytes": 0}
+
+    def finish(
+        response: dict[str, Any] | None = None,
+        *,
+        intervened: bool = False,
+        withheld: int = 0,
+        detail: str | None = None,
+    ) -> int:
+        """훅 응답 한 건을 내보내고 같은 사실을 저널에 한 줄 남긴다."""
+        rendered = "{}" if response is None else json.dumps(response, ensure_ascii=False)
+        print(rendered)
+        _journal_record(
+            started=started,
+            intervened=intervened,
+            session_id=journal_state["session"],
+            input_bytes=journal_state["in_bytes"],
+            output_bytes=len(rendered.encode("utf-8", errors="replace")),
+            withheld_bytes=withheld,
+            detail=detail,
+        )
         return 0
+
+    if truthy_disabled(env_value(GUARD_ENV, LEGACY_GUARD_ENV)):
+        return finish(detail="env off")
+    if _switch_says_off():
+        return finish(detail="switched off")
     try:
-        payload = json.load(sys.stdin)
+        raw_stdin = sys.stdin.read()
+        journal_state["in_bytes"] = len(raw_stdin.encode("utf-8", errors="replace"))
+        payload = json.loads(raw_stdin)
     except json.JSONDecodeError as exc:
         print(f"context-guard-guard-read: invalid hook JSON: {exc}", file=sys.stderr)
         reason = "[context-guard-kit] Read blocked because the hook payload was invalid JSON. Retry the tool call."
-        print(json.dumps(deny_response(reason), ensure_ascii=False))
-        return 0
+        return finish(deny_response(reason), intervened=True, detail="invalid json")
     if not isinstance(payload, dict):
         reason = "[context-guard-kit] Read blocked because the hook payload was not a JSON object. Retry the tool call."
-        print(json.dumps(deny_response(reason), ensure_ascii=False))
-        return 0
+        return finish(deny_response(reason), intervened=True, detail="payload not object")
+    journal_state["session"] = payload.get("session_id")
     current_tool = tool_name(payload)
     if current_tool and current_tool != "Read":
-        print("{}")
-        return 0
+        return finish()
 
     raw_path = read_path_from_payload(payload)
     if not raw_path:
-        print("{}")
-        return 0
+        return finish()
     root = Path.cwd().resolve()
     try:
         path = Path(raw_path).expanduser()
@@ -989,24 +1069,21 @@ def main() -> int:
             "[context-guard-kit] Read blocked because the requested file path could not be normalized safely. "
             "Retry with a valid, explicit file path."
         )
-        print(json.dumps(deny_response(reason), ensure_ascii=False))
-        return 0
+        return finish(deny_response(reason), intervened=True, detail="path not normalizable")
     if traverses_symlink:
         label = safe_label(path, root)
         reason = (
             f"[context-guard-kit] Read blocked for {label}: requested path traverses a symlink. "
             "Use a real project file path before reading or extracting symbols."
         )
-        print(json.dumps(deny_response(reason), ensure_ascii=False))
-        return 0
+        return finish(deny_response(reason), intervened=True, detail="symlink path")
     if read_env_file_denied(path):
         reason = (
             "[context-guard-kit] Read blocked by the Read-only environment-file policy: the normalized basename "
             "begins with .env and is not exactly .env.example, .env.sample, or .env.template. "
             "This hook protects Claude Read only; Glob name listings, Grep, and Bash/process access are out of scope."
         )
-        print(json.dumps(deny_response(reason), ensure_ascii=False))
-        return 0
+        return finish(deny_response(reason), intervened=True, detail="env file")
     content_limit = max_bytes()
     size = 0
     initial_stat: os.stat_result | None = None
@@ -1019,8 +1096,7 @@ def main() -> int:
         initial_stat = os.fstat(fd)
         size = initial_stat.st_size
         if size <= content_limit:
-            print("{}")
-            return 0
+            return finish()
 
         # peek: fd 보유 구간 안에서 밸브 판정에 쓸 이전 시도 횟수를 읽는다(쓰기 없음).
         fingerprint = read_guard_fingerprint(path, safe_label(path, root), size, stat_result=initial_stat)
@@ -1062,11 +1138,9 @@ def main() -> int:
                 f"[context-guard-kit] Read blocked for {label}: requested path traverses a symlink. "
                 "Use a real project file path before reading or extracting symbols."
             )
-            print(json.dumps(deny_response(reason), ensure_ascii=False))
-            return 0
+            return finish(deny_response(reason), intervened=True, detail="symlink path")
         if error_number == errno.ENOENT:
-            print("{}")
-            return 0
+            return finish()
         label = safe_label(path, root)
         detail = compact_hook_text(getattr(exc, "strerror", "") or exc.__class__.__name__, 80)
         print(f"context-guard-guard-read: could not safely inspect requested file: {detail}", file=sys.stderr)
@@ -1080,8 +1154,7 @@ def main() -> int:
                 f"[context-guard-kit] Read blocked for {label}: the guard could not safely inspect the file "
                 f"({detail}). Use a bounded line range or verify the path locally first."
             )
-        print(json.dumps(deny_response(reason), ensure_ascii=False))
-        return 0
+        return finish(deny_response(reason), intervened=True, detail="inspect failed")
     finally:
         if fd != -1:
             os.close(fd)
@@ -1092,12 +1165,19 @@ def main() -> int:
             record_read_guard_attempt(root, fingerprint, valve_fired=True)
         except Exception:
             pass
-        print(json.dumps(valve_updated_input_response(payload, valve_offer), ensure_ascii=False))
-        return 0
+        # 밸브가 주입한 범위는 raw_read_range_outcome 이 "allowed" 로 증명한 범위이므로
+        # 그 내용 바이트는 content_limit 이하임이 보장된다. 따라서 컨텍스트에 들어가지
+        # 않은 바이트의 보수적 추정치는 (파일 크기 - 바이트 가드)다. 실제 주입 범위는
+        # 보통 이보다 작으므로 이 추정은 과대평가하지 않는다.
+        return finish(
+            valve_updated_input_response(payload, valve_offer),
+            intervened=True,
+            withheld=max(0, size - content_limit),
+            detail="valve range injected",
+        )
 
     if outcome == "allowed":
-        print("{}")
-        return 0
+        return finish()
 
     try:
         attempt_count = record_read_guard_attempt(root, fingerprint, valve_fired=False)
@@ -1124,8 +1204,8 @@ def main() -> int:
             content_limit=content_limit,
             read_symbol=read_symbol,
         ) + repeated_read_hint(attempt_count)
-    print(json.dumps(deny_response(reason), ensure_ascii=False))
-    return 0
+    # deny 는 파일 전체가 컨텍스트에 들어오지 않게 막은 것이므로 보류 바이트는 파일 크기다.
+    return finish(deny_response(reason), intervened=True, withheld=size, detail=f"deny {outcome}")
 
 
 if __name__ == "__main__":

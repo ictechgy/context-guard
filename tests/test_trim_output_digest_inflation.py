@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -92,21 +93,48 @@ class DigestInflationTest(unittest.TestCase):
         self.assertNotIn("digest skipped", result.stdout)
         self.assertIn("semantic digest", result.stdout)
 
-    def test_artifact_receipt_request_always_keeps_the_digest(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / "producer.py"
-            script.write_text(SMALL_SCRIPT, encoding="utf-8")
-            result = subprocess.run(
-                [
-                    sys.executable, str(TRIM), "--digest", "json",
-                    "--artifact-receipt", "--artifact-dir", str(Path(tmp) / "artifacts"),
-                    "--", sys.executable, str(script),
-                ],
-                capture_output=True, text=True, timeout=300,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr[-500:])
-            self.assertNotIn("digest skipped", result.stdout)
-            self.assertIn("artifact_receipt", result.stdout)
+    def _run_receipt(self, source: str, *extra: str) -> tuple[subprocess.CompletedProcess, Path]:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        script = tmp / "producer.py"
+        script.write_text(source, encoding="utf-8")
+        artifacts = tmp / "artifacts"
+        result = subprocess.run(
+            [
+                sys.executable, str(TRIM), "--digest", "json",
+                "--artifact-receipt", "--artifact-dir", str(artifacts), *extra,
+                "--", sys.executable, str(script),
+            ],
+            capture_output=True, text=True, timeout=300,
+        )
+        return result, artifacts
+
+    def test_artifact_receipt_escrows_only_when_the_output_overflows(self) -> None:
+        """escrow 는 넘친 출력에만 쓴다.
+
+        예전에는 `--artifact-receipt` 가 무조건 digest 를 강제했다. 그 규칙이 기본
+        Bash 래퍼의 기본값이 되면 한 줄짜리 출력에도 1KB digest 가 붙어 이 도구가
+        줄이려던 컨텍스트를 도리어 늘린다.
+        """
+        small, small_artifacts = self._run_receipt(SMALL_SCRIPT)
+        self.assertEqual(small.returncode, 0, small.stderr[-500:])
+        self.assertNotIn("artifact_receipt", small.stdout)
+        self.assertNotIn("digest skipped", small.stdout)
+        self.assertEqual(small.stdout, "ok: 3 tests passed\n")
+        self.assertFalse(small_artifacts.exists(), "small output must not write an artifact")
+
+        noisy = "for index in range(400):\n    print('noise %d' % index)\n"
+        big, big_artifacts = self._run_receipt(noisy)
+        self.assertEqual(big.returncode, 0, big.stderr[-500:])
+        self.assertIn("artifact_receipt", big.stdout)
+        self.assertTrue(any(big_artifacts.glob("*.txt")))
+
+    def test_digest_always_keeps_the_receipt_for_a_small_output(self) -> None:
+        """작은 출력에도 handle 이 꼭 필요한 호출자를 위한 명시적 탈출구."""
+        result, artifacts = self._run_receipt(SMALL_SCRIPT, "--digest-always")
+        self.assertEqual(result.returncode, 0, result.stderr[-500:])
+        self.assertIn("artifact_receipt", result.stdout)
+        self.assertTrue(any(artifacts.glob("*.txt")))
 
     def test_default_trim_mode_never_inflates_a_small_output(self) -> None:
         baseline = raw_bytes(SMALL_SCRIPT)

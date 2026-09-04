@@ -2396,7 +2396,21 @@ def main() -> int:
         if total <= args.max_lines:
             all_lines.append(visible_line)
 
-    if args.digest != "off":
+    # escrow 는 넘친 출력에만 쓴다. 예산 안에 완전히 들어온 성공 출력이라면 digest 도
+    # artifact 도 만들지 않고 원본을 그대로 통과시킨다. 예전에는 `--artifact-receipt` 가
+    # 무조건 digest 를 강제했는데, 그 규칙이 기본 Bash 래퍼에 들어가면 `echo hi` 한 줄에도
+    # 1KB 짜리 digest 가 붙어 컨텍스트가 늘어난다 — 이 도구의 목적과 정반대다.
+    # 작은 출력에도 receipt handle 이 꼭 필요하면 `--digest-always` 로 명시한다.
+    escrow_passthrough = (
+        args.artifact_receipt
+        and not args.digest_always
+        and rc == 0
+        and not command_stream.timed_out
+        and total <= args.max_lines
+        and visible_chars <= args.max_chars
+        and not any_line_capped
+    )
+    if args.digest != "off" and not escrow_passthrough:
         payload = build_digest_payload(
             args=args,
             command=command,

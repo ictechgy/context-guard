@@ -773,7 +773,6 @@ class MiniShellBoundaryTests(unittest.TestCase):
         direct_cli_commands = (
             "context-guard-trim-output --max-lines 10 -- pytest",
             "context-guard-sanitize-output --max-lines 10 -- git diff",
-            "claude-trim-output --max-lines 10 -- pytest",
             "python3 /tmp/trim_command_output.py --help",
         )
 
