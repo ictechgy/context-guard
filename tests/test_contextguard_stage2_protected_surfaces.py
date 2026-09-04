@@ -54,14 +54,14 @@ SETUP_AND_PLUGIN_OWNER_PATHS = {
 # historical manifest remains byte-stable; unchanged entries are still checked
 # against it below.
 POST_STAGE2_PROTECTED_SHA256 = {
-    ".claude-plugin/marketplace.json": "d20519c9d5271ef60c39e58e93c8af756d31e374782850ae175eb06ca961e0cc",
+    ".claude-plugin/marketplace.json": "524d934955fe2a66eac0771c9a7d7f26370b0a1e1a643eab7b108799ea86862b",
     "context-guard-kit/benchmark_runner.py": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
     "context-guard-kit/context_pack.py": "f5bb1019effdd4a0fbb665b4ac8eee6cbe1174c6a1b42ef018591a0cf1d610ce",
     "context-guard-kit/context_guard_commands.py": "d00c894221d11f5bbd15067ad50bb0f1269980b3b558606e5379fa49dfb5151b",
     "context-guard-kit/guard_large_read.py": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
     "context-guard-kit/setup_wizard.py": "ae7d48ff6bf7302029d386b3e4849205eb0c88bac6551997b057a33681b08d67",
-    "package.json": "b5acfe9edcc47f56836ec13dfbe26555f74405eed3ad9f287fc520c38ad24533",
-    "plugins/context-guard/.claude-plugin/plugin.json": "e49a2697d469449586a4595361604b5a8b4315398e30695109de0a2ee957a4a3",
+    "package.json": "75ae543477762bdbe321badf1caf01b460c2b89e01bd904bef52213775e9b650",
+    "plugins/context-guard/.claude-plugin/plugin.json": "4e19912fa79c19e8ac3fdb8439ba7bbb00d0c5ac70146acda2aa04dc50f226c0",
     "plugins/context-guard/bin/context-guard-bench": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
     "plugins/context-guard/bin/context-guard-guard-read": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
     "plugins/context-guard/bin/context-guard-pack": "f5bb1019effdd4a0fbb665b4ac8eee6cbe1174c6a1b42ef018591a0cf1d610ce",
