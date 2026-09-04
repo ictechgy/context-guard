@@ -6,6 +6,57 @@ All notable changes for the ContextGuard plugin are documented here.
 
 _No unreleased changes._
 
+## [0.13.0] - 2026-09-05
+
+Re-aimed at where the measurements say cost actually moves, after an external
+review by three models and a source-level analysis report. Nothing here claims a
+savings figure; the new audit sections exist so you can measure your own.
+
+- **Bash escrow is the default wrapper.** Outputs over 220 lines are stored as a
+  sanitized local artifact with a markdown digest, handle, and exact re-expand
+  command; in-budget output passes through untouched whether the command
+  succeeded or failed. Local transcripts showed 81.5% of new tokens per turn
+  landing right after a Bash result, so this is the surface the default now
+  covers. `--artifact-receipt` therefore means escrow-on-overflow; use
+  `--digest-always` to force a receipt for small output.
+- **Audit attributes new tokens to the preceding tool.** `new_tokens_per_turn`
+  gains `by_preceding_tool` (which tool's result preceded each turn's
+  `cache_creation`), `token_calibration` (observed bytes per cache_creation
+  token against the bytes/4 proxy; a corpus ratio with errors in both
+  directions, not a tokenizer measurement; `--token-proxy calibrated` applies
+  it), and `guard_coverage` (how much large-result volume arrives through Read,
+  the only tool the Read guard sees, versus Grep/Bash/MCP). Two recommendations
+  use them: `aim-at-new-token-source` and `large-results-bypass-read-guard`.
+- **Hook journal and a project-wide switch.** Every hook call appends one JSONL
+  row to `.context-guard/hook-journal.jsonl` (hook, session hash, elapsed ms,
+  bytes, whether it intervened, bytes withheld; never the command or output).
+  `context-guard doctor` summarizes it in one line. `context-guard hooks
+  off|on|status <read|bash|nudge|all> [--for 2h]` pauses a hook for this
+  project without editing settings; hook messages now end with "Ask the user
+  before running: context-guard hooks off <name> (project-wide, 2h)".
+- **Setup profiles.** `--profile minimal|recommended|max`. The failed-attempt
+  nudge is off by default (its false-positive rate is unmeasured) and enabled by
+  `--profile max` or `--failed-attempt-nudge`; its hint is one line and no
+  longer suggests `/clear`. `--dry-run` and `--allow-home-settings` still work
+  but are hidden. `doctor` remains an alias of `setup --verify`.
+- **One-line hook messages.** The Read guard's denial reason is a single line
+  with the search, symbol, and range alternatives; the file outline moved out of
+  the reason.
+- **Removed:** the 13 legacy `claude-*` wrapper files (replace the prefix with
+  `context-guard-*`) and the MinHash sketch duplicate veto in `context-guard
+  pack` (exact-duplicate detection stays; the project's own measurement put
+  exact duplicates at 0.6%).
+- **Docs.** README is 104 lines: quickstart, three problems, install, run audit
+  first, and where the rest lives. Operational detail moved verbatim to
+  `docs/guide.md`, trust boundaries and the standing-cost table to
+  `docs/safety-reference.md`, plan-only experiments to `docs/experiments.md`,
+  and `docs/builtin-overlap.md` states feature by feature what Claude Code
+  already does built in. All four ship in the npm package.
+- Gate-B generations gen22 and gen23 record the frozen-path changes; protected
+  surface digests and the P3 live-contract cascade were updated for the
+  `context_pack.py` change. `@ictechgy/context-guard-receipt` stays at 0.4.0; its
+  packaged runtime did not change.
+
 ## [0.12.5] - 2026-09-03
 
 - The `find` confirmation gate no longer misses an action glued to a separator.
