@@ -60,14 +60,14 @@ POST_STAGE2_PROTECTED_SHA256 = {
     "context-guard-kit/context_guard_commands.py": "d00c894221d11f5bbd15067ad50bb0f1269980b3b558606e5379fa49dfb5151b",
     "context-guard-kit/guard_large_read.py": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
     "context-guard-kit/setup_wizard.py": "ae7d48ff6bf7302029d386b3e4849205eb0c88bac6551997b057a33681b08d67",
-    "package.json": "e337f4edd79ce03b10785852ad758980ee536c51e9113a8e14adc0cec699ff7d",
+    "package.json": "b5acfe9edcc47f56836ec13dfbe26555f74405eed3ad9f287fc520c38ad24533",
     "plugins/context-guard/.claude-plugin/plugin.json": "e49a2697d469449586a4595361604b5a8b4315398e30695109de0a2ee957a4a3",
     "plugins/context-guard/bin/context-guard-bench": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
     "plugins/context-guard/bin/context-guard-guard-read": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
     "plugins/context-guard/bin/context-guard-pack": "f5bb1019effdd4a0fbb665b4ac8eee6cbe1174c6a1b42ef018591a0cf1d610ce",
     "plugins/context-guard/bin/context-guard-setup": "ae7d48ff6bf7302029d386b3e4849205eb0c88bac6551997b057a33681b08d67",
     "plugins/context-guard/lib/context_guard_commands.py": "d00c894221d11f5bbd15067ad50bb0f1269980b3b558606e5379fa49dfb5151b",
-    "scripts/prepublish_check.py": "6c12f9db661806cc49943950b75e762ca297be75207f888427d5bbef93385c44",
+    "scripts/prepublish_check.py": "2ed156a9da709392aa6256dc4e9a05b3c8e233c3b8dac3e5cd2e14d7baebe5c0",
     "scripts/release_smoke.py": "0a5364cfdcfe0061804b4fd070c970418a32247d5c336adb8a36932692e40e2d",
 }
 APPROVED_POST_STAGE2_PROTECTED_PATHS = frozenset(POST_STAGE2_PROTECTED_SHA256)
