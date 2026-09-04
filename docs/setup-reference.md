@@ -29,10 +29,9 @@ Only Claude Code currently has a verified user-scope write path; every user-scop
 | --- | --- | --- | --- |
 | `--root` | — | — | project root to configure (default: nearest git root, else current directory) |
 | `--scope` | `project` | `project`, `user`, `global` | setup scope: project-local by default; user/global targets only known user-level paths and requires explicit --agent for writes |
-| `--allow-home-settings` | false | — | deprecated compatibility alias for user-level Claude settings; prefer --scope user --agent claude |
+| `--profile` | `recommended` | `minimal`, `recommended`, `max` | which guardrails to enable: minimal (deny rules + Read guard), recommended (adds Bash trim/escrow, statusline, model defaults), max (adds the failed-attempt nudge); individual --no-* flags still remove items |
 | `--yes` | false | — | apply the recommended/selected setup without prompts |
 | `--plan` | false | — | show the setup plan without writing files |
-| `--dry-run` | false | — | alias for --plan |
 | `--verify` | false | — | run a read-only setup health check; never writes or prompts |
 | `--json` | false | — | print machine-readable result |
 | `--rules-only` | false | — | run an isolated rule-file operation without reading or changing settings/hooks |
@@ -54,5 +53,5 @@ Only Claude Code currently has a verified user-scope write path; every user-scop
 | `--with-mcp` | false | — | also configure a verified project-scoped stdio MCP server for Codex, Gemini, Cursor, Copilot/VS Code, OpenCode, or ForgeCode. |
 | `--brief-mode` | — | `lite`, `standard`, `ultra`, `off` | plan/apply advisory brief-mode snippets in project rule files; choose lite, standard, ultra, or off to remove. |
 | `--list-adapters` | false | — | print the cross-agent adapter registry and exit |
-| `--failed-attempt-nudge` | — | — | enable Bash terminal-event hooks that suggest /clear when the same command fails twice in a row (recommended default) |
-| `--no-failed-attempt-nudge` | — | — | skip the failed-attempt /clear nudge hook |
+| `--failed-attempt-nudge` | — | — | enable Bash terminal-event hooks that inject a one-line strategy-switch hint when the same command fails twice in a row (off by default; also enabled by --profile max) |
+| `--no-failed-attempt-nudge` | — | — | skip the failed-attempt nudge hook even under --profile max |

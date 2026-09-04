@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import argparse
 import re
 import subprocess
 import sys
@@ -52,6 +53,8 @@ class SetupReferenceTests(unittest.TestCase):
         setup = generator.load_setup()
         document = REFERENCE.read_text(encoding="utf-8")
         for action in setup.build_parser()._actions:
+            if action.help is argparse.SUPPRESS:
+                continue
             for option in action.option_strings:
                 if option in {"-h", "--help"}:
                     continue

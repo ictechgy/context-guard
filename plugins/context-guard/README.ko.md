@@ -4,6 +4,16 @@ ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스
 
 처음에는 `/context-guard:setup`을 실행하세요. 설정은 명시적이며, 프로젝트 단위로 적용되고, 되돌릴 수 있습니다. 추천 프로젝트 설정을 병합하고, 읽기 전용 컨텍스트 관리 검사 요약을 출력하며, 전역 Claude 설정은 변경하지 않습니다. 외부 AI 서비스로 작업을 위임하거나 외부에서 실행되도록 설정하지 않습니다.
 
+## 빠른 시작
+
+```bash
+/plugin marketplace add ictechgy/context-guard && /plugin install context-guard@context-guard   # Claude Code
+/context-guard:setup          # applies the recommended project-local hooks after showing a plan
+/context-guard:audit          # shows where your tokens went, by tool and per turn
+```
+
+npm 사용자는 `npx @ictechgy/context-guard setup --profile recommended --plan`을 실행한 뒤 `--yes`로 적용하세요.
+
 ## 줄이려는 토큰 낭비 경로
 
 ContextGuard는 provider prompt cache나 semantic answer cache가 아니라 로컬 컨텍스트 관리 계층입니다. 에이전트 대화에 들어가기 전에 큰 파일은 검색·심볼·줄 범위 읽기로 좁히고, 긴 명령 출력은 축약하거나 요약하며, 큰 로그는 로컬 보관 요약 기록으로 남깁니다. 또한 민감 정보처럼 보이는 값과 경로를 최대한 가리고, Bash 실패가 반복되면 전략을 바꾸도록 알리며, 제한된 가림 처리된 segment hash로 캐시 친화적 프롬프트 배치를 감사하고, 감사·벤치마크로 실제 작업의 전후 비교 근거를 남기도록 돕습니다.
@@ -12,7 +22,7 @@ ContextGuard는 provider prompt cache나 semantic answer cache가 아니라 로�
 
 Claude Code는 예전 `/claude-token-optimizer:*` 플러그인 슬래시 명령을 별칭으로 제공하지 않습니다. 설치 후에는 `/context-guard:*`를 사용하세요.
 
-기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 `bin/`에 계속 포함합니다.
+legacy `claude-*` 래퍼 이름은 이번 릴리스에서 제거했습니다. `context-guard-*` 이름을 사용하세요(마이그레이션: 접두사만 교체).
 
 ## 스킬
 
@@ -107,8 +117,6 @@ context-guard-statusline-merged
 
 모든 pack build는 기존 `pack_id`를 바꾸지 않고 렌더링된 byte의 SHA-256 `content_address`를 포함합니다. `build`와 `auto`의 선택적 `--delta-from-pack-id PACK_ID`는 private local receipt 하나만 bounded/fail-soft 방식으로 비교합니다. `rolling_delta`는 진단 전용이고 selection이나 pack 본문을 바꾸지 않으며 provider token/cost savings claim이 아닙니다. 진단은 `--json` 출력 또는 저장된 artifact receipt에서만 보고됩니다. `--no-artifact`를 쓰면 진단 보고에 `--json`이 필요하며, 기존 text stdout은 정확한 pack 본문을 그대로 유지합니다.
 
-선택적 `build`/`auto --sketch-duplicate-veto`는 sanitized slice에 rank-stable pre-budget gate를 적용하며 `suggest`는 그대로 둡니다. exact digest 후보는 byte로 확인합니다. 근사 gate는 고정 framing의 Unicode-casefold 순서 보존 5-token shingle, bottom 64 unique digest, 양쪽 최소 12, inclusive 0.90의 sketch-set Jaccard입니다. 짧은 sketch는 exact-only입니다. eligible pair 100,000개 검증 뒤 실제 skipped pair에서 fail open하고 이후 digest-only로 동작합니다. winner가 최종 budget에서 렌더링되지 않을 수 있으므로 누락 source 자체의 exact retrieval을 편집/근거 사용 전에 확인하십시오. `sketch_duplicate_source`, standalone build/`auto.build`의 `sketch_duplicate_veto.comparison_cap_reached`, flagged text의 `sketch_comparison_cap_reached=true|false`만 receipt 실패와 무관하게 관측됩니다. fingerprint, match identity, overlap, score, provider token/cost savings claim은 내보내지 않으며 flag-off 동작은 호환됩니다.
-
 - **설정 마법사**는 `.claude/settings.json`을 덮어쓰지 않고 병합한 뒤, 읽기 전용 `context-guard-diet scan` 요약을 보여줍니다. 자동화에서 적용 후 검사 요약이 필요 없으면 `--no-diet-scan`을 사용하세요. `PATH` helper fallback은 기본적으로 꺼져 있으며, `--allow-path-helper-fallback`과 identity 검증을 통과해야만 사용됩니다.
 - **컨텍스트 관리 스캐너**는 누락된 `permissions.deny` 가드레일, Bash 출력 축약 훅, 상태표시줄 설정, 넓은 읽기 허용, 비용이 큰 기본 모델/추론 강도, 많은 MCP 서버, 크거나 민감해 보이는 에이전트 규칙 파일, 부피가 크거나 민감해 보이는 로컬 경로에 대한 자문형 context-exclusion 추천을 확인합니다.
 - **대용량 읽기 가드와 심볼 리더**는 파일 전체 읽기 전에 검색, 심볼 구간, 작은 줄 범위 읽기 순서로 에이전트를 안내합니다. Python, JavaScript/TypeScript, Go, Rust 소스 구간 읽기를 지원합니다.
@@ -168,17 +176,11 @@ context-guard setup --rules-only --agent claude --scope project --narration-mode
 
 ContextGuard는 모델 토큰을 줄이기 위해 작업을 외부 AI 서비스로 전송하지 않습니다. 모든 헬퍼 명령은 로컬에서 동작합니다. 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄이는 데 도움될 수 있지만 provider prompt cache를 대체하지 않습니다. Anthropic 배포나 청구 설명 전에는 공식 prompt caching/pricing 문서를 다시 확인하세요: https://docs.anthropic.com/en/build-with-claude/prompt-caching 및 https://platform.claude.com/docs/en/about-claude/pricing.
 
-미래 learned, self-hosted 최적화 아이디어는 [`research/experimental-token-reduction-radar.md`](https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md)에 gated experiment로 기록하며, fixture-only 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md)에 둡니다. learned compression은 `context-guard experiments plan learned-compression` dry-run checker와 명시적 `context-guard experiments emit learned-compression` caller-supplied candidate emitter만 shipped 상태이고, self-hosted-metrics-ledger는 dry-run preview와 명시적 `context-guard experiments record self-hosted-metrics-ledger` local JSONL record를 제공하며, dry-run preview는 ledger 파일을 쓰지 않습니다. visual crop/OCR은 caller-supplied evidence-pack emit, image-context-pack은 pxpipe-inspired image/context packing 평가를 위한 plan-only dry-run gate, semantic-checkpoint는 review용 task-state checkpoint 계획을 위한 plan-only/eval-only gate, context-diff는 verified-receipt caller-supplied replacement emit만 제공합니다. image-context-pack은 exact text artifact fallback, protected-zone denial, provider-boundary acknowledgement for provider-measured matched tasks, missed-context guardrail, 그리고 visual-crop-ocr이 기존 caller-supplied visual evidence-pack surface라는 plan output 확인이 필요하며, image rendering, OCR 실행, image parsing, model/provider call, proxy traffic, binary artifact 저장, replacement evidence 출력, hosted token/cost savings claim을 하지 않습니다. semantic-checkpoint는 CLI flag가 optional이지만 JSON readiness에서 exact context fallback/re-expand, provider-boundary ack, protected-zone policy `deny`, missed-context note, provenance review note가 없으면 blocked이며, `--missing-provenance-note`는 `none known after review` 같은 검토 확인 문구일 수 있습니다. 허용되는 re-expand command는 `context-guard-artifact get <id> --full` 또는 `context-guard artifact get <id> --full` 형태이고, emit/record/serve runtime, 새 `context-guard-semantic-checkpoint` binary, file write, transcript/prompt edit, model/provider/network call, replacement context, hosted token/cost savings claim은 없습니다. local proxy는 `context-guard experiments plan local-proxy` localhost-only dry-run advisory plan, design-only `context-guard experiments plan local-proxy-external-forwarding` gate, 명시적 `context-guard experiments record local-proxy-runtime-gate --ledger-jsonl ...` gate row record, private ready-file nonce가 필요한 one-shot `context-guard experiments serve local-proxy` loopback forwarding MVP와 successful forwarded request용 optional shifted-cost diagnostic JSONL row만 shipped 상태입니다. record는 no listener/no traffic forwarding/no DNS lookup/no external service/no API-key persistence boundary를 유지하고, serve는 private ready-file nonce, literal loopback IP, `--once`, credential-free request만 허용하고 CONNECT/TLS proxying도 지원하지 않습니다. `--response-sandbox`는 safe UTF-8 response text만 local artifact receipt로 저장하고 raw body 대신 redacted rehydration command template가 담긴 compact envelope를 돌려주며 hosted token/cost savings claim은 아닙니다. `--diagnostic-ledger-jsonl`은 successful forwarded request 뒤에만 진단 row를 쓰며 raw header/body나 hosted-savings evidence를 저장하지 않습니다. `plan local-proxy-external-forwarding`은 threat model, HTTPS allowlist, credential redaction, provider-evidence boundary를 점검하는 dry-run design gate이고 listener, DNS lookup, external service call, traffic forwarding, credential persistence, external proxy forwarding runtime, hosted savings claim을 제공하지 않습니다. learned/synthetic compressor 실행·embedding·reranker·model call·생성형 replacement, generated OCR/crop, visual-token pruning, plan-only image-context-pack dry-run gate를 넘어선 image-context-pack rendering/runtime, plan-only semantic-checkpoint gate를 넘어선 emit/record/serve runtime이나 replacement context/file-writing checkpoint store/transcript-prompt edit/provider-backed checkpointing, self-hosted KV/latent runtime 최적화, one-shot literal-loopback local proxy MVP를 넘어선 external/daemon/credential-bearing proxy forwarding runtime은 shipped가 아닙니다. 이 radar와 fixture는 provider가 측정한 matched-task 근거 없이 hosted API 절감을 주장하지 않습니다. Radar의 later-roadmap gate는 neural/semantic compression, trust-tiered injection-aware compression, generated visual-token reduction, broader local proxy forwarding constraint도 별도 미래 PR이 gate를 통과하기 전까지 experimental/non-shipped로 묶습니다.
+미래 learned, self-hosted 최적화 아이디어는 [`research/experimental-token-reduction-radar.md`](https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md)에 gated experiment로 기록하며, fixture-only 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md)에 둡니다. 이 radar와 fixture는 provider가 측정한 matched-task 근거 없이 hosted API 절감을 주장하지 않습니다. Radar의 later-roadmap gate는 neural/semantic compression, trust-tiered injection-aware compression, generated visual-token reduction, broader local proxy forwarding constraint를 별도 미래 PR이 gate를 통과하기 전까지 experimental/non-shipped로 묶습니다.
 
-`plan proof-carrying-context`는 bounded repeatable inline JSON의 proof-envelope metadata 구문과 정의된 일관성만 확인하는 기본 비활성 plan-only readiness gate입니다. Caller timestamp를 보존하지만 현재 시간이나 freshness는 검사하지 않고 protected-zone policy는 선언 전용입니다. 이 plan command에는 range bounds, receipt storage, source content, SHA-256, timestamp freshness, rehydration이 unchecked warning으로 남으며 source/artifact/config/stdin read, file write, model/provider/network/subprocess call, context 생성·대체, `emit`/`record`/`serve` runtime, 새 binary, hosted savings claim은 없습니다. `candidate_replacement`는 항상 `null`입니다.
+## 실험 기능
 
-`verify proof-carrying-context`는 별도의 read-only local verifier입니다. 문서 fixture는 정확한 UTF-8 문자열 `ContextGuard proof fixture\n`(27 bytes, 1 line)이고 SHA-256은 `12637068ee51f2ddfe27f1c00836a51cb54ba6a5cfca7f2301a4a45fbade2d14`입니다. Explicit artifact directory 하나만 사용하고 fallback search를 수행하지 않고 symlink를 follow하지 않으며 effective-user-owned directory `0700`과 두 receipt leaf 모두 mode `0600`을 요구합니다. Bounded whole-file read로 receipt/proof SHA, byte/line count, range bounds만 확인하고 range content는 retrieve/echo하지 않습니다. Exit `0`은 local binding pass, exit `2`는 verification failure이며 timestamp freshness/protected-zone semantics는 unchecked입니다. Rehydrate command는 syntax/receipt binding만 확인하고 실행하지 않으며 `candidate_replacement: null`을 유지하고 replacement/omission/hosted-savings authority를 부여하지 않습니다.
-
-```bash
-context-guard experiments plan semantic-checkpoint --json --goal "preserve current task state for review" --constraint "do not rewrite protected evidence" --decision "ship plan-only semantic-checkpoint gate first" --open-task "verify exact fallback before any checkpoint is used" --evidence-handle "roadmap=contextguard-artifact:0123456789abcdef" --missing-provenance-note "none known after review" --unresolved-question "which provenance handle fields become mandatory later" --exact-context-fallback-receipt 0123456789abcdef --reexpand-command "context-guard-artifact get 0123456789abcdef --full" --provider-boundary-ack --protected-zone-policy deny --missed-context-note "raw transcript remains retrievable before checkpoint metadata is used"
-context-guard experiments plan proof-carrying-context --json --proof-unit-json '{"source_label":"context-filesystem-roadmap","receipt_id":"0123456789abcdef","content_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","safe_range":{"kind":"lines","start":82,"end":85},"captured_at":"2026-07-10T04:11:12Z","transform_policy":"safe_range_extract","rehydrate_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --protected-zone-policy deny
-context-guard experiments verify proof-carrying-context --artifact-dir ./artifacts --proof-unit-json '{"source_label":"context-filesystem-roadmap","receipt_id":"0123456789abcdef","content_sha256":"12637068ee51f2ddfe27f1c00836a51cb54ba6a5cfca7f2301a4a45fbade2d14","safe_range":{"kind":"lines","start":1,"end":1},"captured_at":"2026-07-10T04:11:12Z","transform_policy":"safe_range_extract","rehydrate_command":"context-guard-artifact get 0123456789abcdef --full"}' --json
-```
+모든 실험 planner는 기본 비활성이고 plan 전용이며, 자세한 내용은 [`docs/experiments.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experiments.md)에 있습니다.
 
 교차 에이전트 규칙 스니펫은 안내용입니다. 대상 에이전트가 반드시 따른다고 보장할 수 없으므로, 절감 주장이 필요하면 실제 전후 동작을 직접 측정하세요.
 
@@ -222,16 +224,6 @@ claude --plugin-dir ./plugins/context-guard
 /plugin marketplace add ./
 /plugin install context-guard@context-guard
 ```
-
-### 실험적 semantic-GC plan gate
-
-`semantic-gc`는 기본 비활성화된 deny 전용 계획 검토 gate입니다. 기본 비활성화는 registry intent를 뜻하며, 명시적 plan CLI는 계속 실행할 수 있지만 omission이나 runtime action을 활성화하지 않습니다. 전체 envelope나 graph topology가 모호하면 graph evaluation을 억제합니다. 도달할 수 없는 node는 semantic irrelevance의 증명이 아니라 검토 후보일 뿐이며 omission과 runtime action은 승인되지 않습니다. missed-context note는 신뢰되지 않은 입력입니다. 이 planner는 context/artifact 내용을 읽지 않고 provenance, fallback, provider, hosted 절감을 검증하지 않습니다. Exit 0은 `ready_for_plan_review`만 뜻하며 delete/omit 권한이 아닙니다.
-
-context-guard experiments plan semantic-gc --json --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false}' --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"orphan","references":[],"is_root":false,"protected_zone":false,"content_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","provenance":{"source_label":"canonical-example","receipt_id":"0123456789abcdef"},"missed_context_note":"A reviewer could lose the orphaned rationale.","exact_fallback_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --human-review-ack --protected-zone-policy deny
-
-`static-relevance`는 호출자가 제공한 제한된 static evidence를 컴파일하는 기본 비활성화 기능입니다. 누락된 signal은 모든 slice와 review ordering을 억제하며, 빈 edge list도 검증된 관측이 아니라 선언입니다. protected path match와 명시적 보호 reason은 사람 검토에서 먼저 보게 하는 hard retention veto일 뿐입니다. 이 명령은 계획 검토 전용이며 repo를 읽지 않고, git을 호출하지 않으며, parser·provider·network·subprocess도 호출하지 않습니다. 결정적 review order에는 omit 권한이 없고 삭제·deprioritization·대체·runtime action도 승인하지 않습니다.
-
-context-guard experiments plan static-relevance --json --relevance-unit-json '{"schema":"contextguard.static-relevance-unit.v1","unit_id":"src/cli.py::main","path":"src/cli.py","task_anchor":true,"protection_reasons":[],"symbol":{"name":"main","kind":"function","start_line":1,"end_line":40},"symbol_references":[],"dataflow_predecessors":[],"dataflow_successors":[],"git":{"blame_age_days":2,"blame_contributor_count":1,"path_change_count_90d":3}}' --protected-path-policy deny --provider-boundary-ack
 
 ## 라이선스
 
