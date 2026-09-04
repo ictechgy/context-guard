@@ -57,7 +57,11 @@ PROVIDER_LIVE_REQUIRED_TEST_IDS = frozenset(
 # 2026-08-10에는 macOS의 정상 진행 중인 스위트가 1,200초 경계에 도달했다. CI step의
 # 25분 상한보다 2분 먼저 종료하는 23분 감시견은 정리 시간을 남기면서도 행을 유한하게
 # 차단한다. 장기적으로는 스위트 실행 시간을 줄여야 한다.
-TEST_DISCOVERY_TIMEOUT_SECONDS = 1380
+# 2026-09-04: 전체 discovery 는 0.12.5 후보 빌드에서 이미 1,333초였고 0.13.0 에서
+# 1,380초를 넘겼다. 전체 discovery 를 도는 곳은 npm-candidate.yml 의 35분 step 뿐이므로
+# (ci.yml 은 --skip-tests) 그 상한보다 2분 앞선 33분으로 올린다. 장기적으로는 스위트
+# 실행 시간을 줄여야 한다는 결론은 그대로다.
+TEST_DISCOVERY_TIMEOUT_SECONDS = 1980
 PROVIDER_LIVE_TEST_TIMEOUT_SECONDS = 600
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"

@@ -67,7 +67,7 @@ POST_STAGE2_PROTECTED_SHA256 = {
     "plugins/context-guard/bin/context-guard-pack": "f5bb1019effdd4a0fbb665b4ac8eee6cbe1174c6a1b42ef018591a0cf1d610ce",
     "plugins/context-guard/bin/context-guard-setup": "ae7d48ff6bf7302029d386b3e4849205eb0c88bac6551997b057a33681b08d67",
     "plugins/context-guard/lib/context_guard_commands.py": "d00c894221d11f5bbd15067ad50bb0f1269980b3b558606e5379fa49dfb5151b",
-    "scripts/prepublish_check.py": "2ed156a9da709392aa6256dc4e9a05b3c8e233c3b8dac3e5cd2e14d7baebe5c0",
+    "scripts/prepublish_check.py": "54a968be3a125cfa9fabac2a38f410120de61e470525423dee103a47d003317b",
     "scripts/release_smoke.py": "0a5364cfdcfe0061804b4fd070c970418a32247d5c336adb8a36932692e40e2d",
 }
 APPROVED_POST_STAGE2_PROTECTED_PATHS = frozenset(POST_STAGE2_PROTECTED_SHA256)
