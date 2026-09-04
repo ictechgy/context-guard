@@ -140,6 +140,10 @@ GEN22_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen22 cost tool tri
 GEN22_B1_SUBJECT = "proof: reapply Gate-B nudge component gen22 cost tool triage"
 GEN22_B2_SUBJECT = "proof: reapply Gate-B usage component gen22 cost tool triage"
 GEN22_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen22 cost tool triage"
+GEN23_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen23 reconcile and guard coverage"
+GEN23_B1_SUBJECT = "proof: reapply Gate-B nudge component gen23 reconcile and guard coverage"
+GEN23_B2_SUBJECT = "proof: reapply Gate-B usage component gen23 reconcile and guard coverage"
+GEN23_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen23 reconcile and guard coverage"
 
 B1_PATHS = frozenset(
     {
@@ -601,6 +605,22 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen23: audit 에 토큰 프록시 reconcile(token_calibration)과 Read 가드 커버리지
+    # (guard_coverage)를 더한다(B2). B1/통합은 내용이 같지만 세대는 세 컴포넌트를 모두
+    # 다시 적용한다. 마커 소유 경로는 유지하고 잔여물은 gen22 bless 와 같다.
+    Generation(
+        name="gen23",
+        bless_subject=GEN23_BLESS_SUBJECT,
+        b1_subject=GEN23_B1_SUBJECT,
+        b2_subject=GEN23_B2_SUBJECT,
+        shared_subject=GEN23_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=GEN16_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -631,6 +651,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "b895c7ae60d63ad5b5fe569349ffa7cb5cc324d37e3c18f62e6b3ba9686f7ddd",
     "8ad2bbb5827d53ea6fb83a96d2c440e46bed99882edb9ebc940b7eed404e89be",
     "99791d5bdc02ddd4d411f1486885d3ea214ac75c6171e299b58daed3f3a244ce",
+    "d047d9eb29b3ca614fd9ed6cb0fa37743ddf77a34c735fdb703e00447656246a",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 

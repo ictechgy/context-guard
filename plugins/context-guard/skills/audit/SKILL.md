@@ -34,6 +34,7 @@ Report:
 - generated recommendations with priority, reason, action, and evidence;
 - `cache_friendliness` status, bounded prefix/tail churn signals, and any cache-layout findings;
 - top likely causes and one safe next experiment;
+- `token_calibration` (reconcile): observed bytes per cache_creation token vs the assumed bytes/4; `--token-proxy calibrated` re-derives the text token estimate from it (an observed corpus ratio with errors in both directions, not a tokenizer measurement); `guard_coverage`: share of large results that arrived through Read (guarded) vs Grep/Bash/MCP (unguarded);
 - `context-guard doctor` adds a one-line hook-journal summary (interventions, bytes withheld, hook overhead) for the current project; quote it as observed counts, never as savings.
 
 Privacy: default output uses basename+hash transcript labels and command category+hash labels. Do not ask for `--show-paths` or `--show-commands` unless the user explicitly wants local identifiers in the report. Cache-friendliness diagnostics use bounded redacted segment hashes and do not print raw prompt text. Recommendations are heuristics; treat them as hypotheses, especially with small `files` or `records` counts.

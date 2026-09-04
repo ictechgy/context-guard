@@ -132,6 +132,14 @@ TEXT_TOKEN_PROXY_DIVISOR = 4
 # 턴당 cache_creation 표본의 상한. 정수만 담으므로 내용은 남지 않는다.
 NEW_TOKENS_MAX_SAMPLES = 200_000
 NEW_TOKENS_BY_PRECEDING_TOOL_SCHEMA_VERSION = "contextguard.new-tokens-by-preceding-tool.v1"
+TOKEN_CALIBRATION_SCHEMA_VERSION = "contextguard.token-calibration.v1"
+GUARD_COVERAGE_SCHEMA_VERSION = "contextguard.guard-coverage.v1"
+# 보정 표본: 직전 tool_result 의 텍스트 바이트가 이 값 이상인 턴만 쓴다. 작은 결과에서는
+# 같은 턴에 들어온 어시스턴트 출력·사용자 입력이 cache_creation 을 지배해 비율이 무의미하다.
+TOKEN_CALIBRATION_MIN_RESULT_BYTES = 4_000
+TOKEN_CALIBRATION_MIN_SAMPLES = 30
+TOKEN_CALIBRATION_MAX_SAMPLES = 50_000
+TOKEN_PROXY_CHOICES = ("bytes_div_4", "calibrated")
 # 큰 결과의 기준. 이 값 이상만 상위 목록과 집중도 분모에 쓴다.
 TOOL_RESULT_LARGE_BYTES = 20_000
 # 백분위 계산을 위해 보관하는 크기 표본의 상한. 크기(int)만 담으므로 내용은 남지 않는다.
@@ -640,6 +648,18 @@ class ToolResultBytesAudit:
     # 현재 파일에서 가장 최근에 본 tool_result 의 (도구, 바이트). 다음 assistant 턴의
     # cache_creation 을 "직전에 들어온 도구 결과"에 귀속하는 데 쓴다.
     last_result: tuple[str, int] | None = field(default=None, init=False, repr=False)
+    # 직전 usage 턴 이후 들어온 모든 tool_result 의 텍스트(비이미지) 바이트 합과 건수.
+    # 병렬 tool_use 는 결과 여러 개가 한 턴에 들어오므로 마지막 하나만 보면 비율이 왜곡된다.
+    # scan() 이 usage 행을 받을 때 읽고 0 으로 되돌린다.
+    text_bytes_since_turn: int = field(default=0, init=False, repr=False)
+    results_since_turn: int = field(default=0, init=False, repr=False)
+    # 직전 usage 턴 이후의 어시스턴트 콘텐츠(thinking/text/tool_use) 바이트. 보정 분자에만
+    # 더하고, "큰 결과" 표본 필터에는 쓰지 않는다.
+    assistant_bytes_since_turn: int = field(default=0, init=False, repr=False)
+    # TOOL_RESULT_LARGE_BYTES 를 넘는 결과를 도구별로 센다. Read 가드가 덮는 경로(Read)와
+    # 덮지 않는 경로(Grep, Bash 등)로 큰 바이트가 얼마나 들어오는지가 가드 실효 범위다.
+    large_results_by_tool: Counter[str] = field(default_factory=Counter)
+    large_bytes_by_tool: Counter[str] = field(default_factory=Counter)
 
     def start_file(self, file: Path | None) -> None:
         """세션 하나가 시작됨을 알리고 상관/중복 상태를 비운다.
@@ -657,6 +677,9 @@ class ToolResultBytesAudit:
         self._seen_hashes.clear()
         self._seen_read_hashes.clear()
         self.last_result = None
+        self.text_bytes_since_turn = 0
+        self.results_since_turn = 0
+        self.assistant_bytes_since_turn = 0
 
     def observe(self, root: Any) -> None:
         """레코드 하나에서 tool_use와 tool_result 블록을 찾아 집계한다."""
@@ -709,6 +732,9 @@ class ToolResultBytesAudit:
         self.by_tool_results[tool_name] += 1
         self.by_tool_bytes[tool_name] += size
         self.last_result = (tool_name, size)
+        if size > TOOL_RESULT_LARGE_BYTES:
+            self.large_results_by_tool[tool_name] += 1
+            self.large_bytes_by_tool[tool_name] += size
 
         if extension is not None:
             extension = _bounded_label(
@@ -716,6 +742,7 @@ class ToolResultBytesAudit:
             )
             self.by_extension_results[extension] += 1
             self.by_extension_bytes[extension] += size
+        image_bytes_in_result = 0
         for content_class, class_bytes in _tool_result_class_bytes(
             extension, block.get("content"), size
         ).items():
@@ -723,6 +750,10 @@ class ToolResultBytesAudit:
             # 따라서 by_class_results 의 합은 results 보다 클 수 있다.
             self.by_class_results[content_class] += 1
             self.by_class_bytes[content_class] += class_bytes
+            if content_class == "image":
+                image_bytes_in_result += class_bytes
+        self.text_bytes_since_turn += max(0, size - image_bytes_in_result)
+        self.results_since_turn += 1
 
         if entry is not None and tool_name in FILE_READ_TOOL_NAMES:
             if bounded:
@@ -814,6 +845,14 @@ class UsageSummary:
     cache_creation_by_preceding_tool: Counter[str] = field(default_factory=Counter)
     cache_creation_turns_by_preceding_tool: Counter[str] = field(default_factory=Counter)
     cache_creation_samples_truncated: bool = False
+    # (도구, 직전 턴 이후 새 바이트(결과 텍스트+어시스턴트 콘텐츠), 그 턴의 cache_creation).
+    calibration_samples: list[tuple[str, int, int]] = field(default_factory=list)
+    calibration_samples_truncated: bool = False
+    # cache_read <= cache_creation 이라 캐시 재작성으로 보고 보정 표본에서 뺀 턴 수.
+    calibration_excluded_cache_rewrites: int = 0
+    # 직전 usage 턴 이후 tool_result 가 2개 이상이었던 턴 수(병렬 tool_use). 귀속은 마지막
+    # 도구에만 하므로 이 수가 크면 by_preceding_tool 은 과소분배됐다.
+    multi_result_turns: int = 0
     cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     positive_cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
@@ -1395,6 +1434,9 @@ def _apply_usage_reduction(
     *,
     show_paths: bool,
     row_preceding_result: dict[int, tuple[str, int] | None] | None = None,
+    row_preceding_text_bytes: dict[int, int] | None = None,
+    row_preceding_results: dict[int, int] | None = None,
+    row_preceding_assistant_bytes: dict[int, int] | None = None,
 ) -> None:
     reduction = reducer.finalize()
     summary.usage_reducer_schema = reduction.schema
@@ -1426,6 +1468,24 @@ def _apply_usage_reduction(
             label = preceding[0] if preceding is not None else NO_PRECEDING_TOOL_LABEL
             summary.cache_creation_by_preceding_tool[label] += created
             summary.cache_creation_turns_by_preceding_tool[label] += 1
+            if (row_preceding_results or {}).get(selection.row_ordinal, 0) > 1:
+                # 결과 여러 개가 한 턴에 들어왔는데 마지막 도구에만 귀속했다. 과소분배가
+                # 얼마나 되는지 독자가 볼 수 있게 턴 수를 따로 센다.
+                summary.multi_result_turns += 1
+            text_bytes = (row_preceding_text_bytes or {}).get(selection.row_ordinal, 0)
+            if preceding is not None and text_bytes >= TOKEN_CALIBRATION_MIN_RESULT_BYTES:
+                cache_read = selection.tokens.get("cache_read", 0)
+                # 캐시가 만료된 턴은 cache_creation 이 컨텍스트 전체를 다시 쓴 값이라
+                # 결과 크기와 무관하다. cache_read 가 creation 보다 큰 턴(접두사 대부분이
+                # 캐시에서 읽힌 증분 턴)만 표본으로 쓰고, 나머지는 따로 센다.
+                if isinstance(cache_read, int) and cache_read > created:
+                    new_bytes = text_bytes + (row_preceding_assistant_bytes or {}).get(selection.row_ordinal, 0)
+                    if len(summary.calibration_samples) < TOKEN_CALIBRATION_MAX_SAMPLES:
+                        summary.calibration_samples.append((label, new_bytes, created))
+                    else:
+                        summary.calibration_samples_truncated = True
+                else:
+                    summary.calibration_excluded_cache_rewrites += 1
         elif "cache_creation" in selection.present_buckets:
             summary.cache_creation_zero_turns += 1
         cache_present = bool({"cache_read", "cache_creation"} & set(selection.present_buckets))
@@ -1439,6 +1499,18 @@ def _apply_usage_reduction(
             summary.positive_cache_record_timestamps.append(selection.timestamp)
 
 
+def _assistant_content_bytes(row: dict[str, Any]) -> int:
+    """어시스턴트 행의 콘텐츠(thinking/text/tool_use)를 canonical JSON 으로 잰 바이트."""
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if content is None:
+        return 0
+    try:
+        return len(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
+
+
 def scan(
     paths: list[str],
     show_paths: bool = False,
@@ -1450,6 +1522,9 @@ def scan(
     reducer = UsageReducer()
     row_metadata: dict[int, tuple[Path, str]] = {}
     row_preceding_result: dict[int, tuple[str, int] | None] = {}
+    row_preceding_text_bytes: dict[int, int] = {}
+    row_preceding_results: dict[int, int] = {}
+    row_preceding_assistant_bytes: dict[int, int] = {}
     file_identities: dict[Path, str] = {}
     next_ordinal = 0
 
@@ -1480,6 +1555,18 @@ def scan(
             row_metadata[ordinal] = (file, query_source)
             # usage 행(assistant)이 관측되기 *전*의 마지막 tool_result 가 이 턴의 선행 결과다.
             row_preceding_result[ordinal] = summary.tool_result_bytes.last_result
+            audit_state = summary.tool_result_bytes
+            row_preceding_text_bytes[ordinal] = audit_state.text_bytes_since_turn
+            row_preceding_results[ordinal] = audit_state.results_since_turn
+            row_preceding_assistant_bytes[ordinal] = audit_state.assistant_bytes_since_turn
+            audit_state.text_bytes_since_turn = 0
+            audit_state.results_since_turn = 0
+            audit_state.assistant_bytes_since_turn = 0
+        if obj.get("type") == "assistant":
+            # 이 어시스턴트 메시지(thinking, 텍스트, tool_use)는 다음 턴에 입력으로 다시
+            # 보내져 그 턴의 cache_creation 에 들어간다. 보정 분자에 함께 넣지 않으면
+            # bytes/token 이 실제보다 훨씬 작게 나온다(thinking 이 긴 턴에서 특히).
+            summary.tool_result_bytes.assistant_bytes_since_turn += _assistant_content_bytes(obj)
         add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
 
     for file in iter_jsonl_files(paths):
@@ -1565,7 +1652,14 @@ def scan(
             summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
             continue
     _apply_usage_reduction(
-        summary, reducer, row_metadata, show_paths=show_paths, row_preceding_result=row_preceding_result
+        summary,
+        reducer,
+        row_metadata,
+        show_paths=show_paths,
+        row_preceding_result=row_preceding_result,
+        row_preceding_text_bytes=row_preceding_text_bytes,
+        row_preceding_results=row_preceding_results,
+        row_preceding_assistant_bytes=row_preceding_assistant_bytes,
     )
     return summary
 
@@ -2732,12 +2826,14 @@ def build_new_tokens_by_preceding_tool(summary: UsageSummary) -> dict[str, Any]:
         # 표본이 잘리면 두 총계가 달라지며, 그 사실을 여기 적어 두 표를 나란히 읽게 한다.
         "covers_all_turns": True,
         "distribution_samples_truncated": summary.cache_creation_samples_truncated,
+        "multi_result_turns": summary.multi_result_turns,
         "rows": rows,
         "note": (
             "Each turn's cache_creation is attributed to the most recent tool_result that entered the "
             f"context before it; turns with no preceding tool_result are labelled {NO_PRECEDING_TOOL_LABEL!r} "
-            "(user prompts, rule-file or tool-catalog changes). This is an ordering observation, not a "
-            "causal proof."
+            "(user prompts, rule-file or tool-catalog changes). Turns that received several results "
+            "(parallel tool_use) are attributed to the last one only; multi_result_turns counts them. "
+            "This is an ordering observation, not a causal proof."
         ),
         "claim_boundary": {
             "provider_measured": True,
@@ -2746,7 +2842,133 @@ def build_new_tokens_by_preceding_tool(summary: UsageSummary) -> dict[str, Any]:
     }
 
 
-def _build_token_estimate(audit: ToolResultBytesAudit) -> dict[str, Any]:
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    index = min(len(sorted_values) - 1, max(0, int(len(sorted_values) * fraction)))
+    return sorted_values[index]
+
+
+def build_token_calibration(summary: UsageSummary) -> dict[str, Any]:
+    """bytes/4 대리값을 관측된 provider usage 와 대조한다 (reconcile).
+
+    표본은 "직전 tool_result 의 텍스트 바이트가 충분히 큰 턴"의 (새 바이트, cache_creation)
+    쌍이다. 분자에는 사용자 입력과 하네스가 주입한 reminder 가 빠져 비율이 낮아지고, 반대로
+    canonical JSON 이스케이프만큼 실제 입력보다 커져 비율이 높아진다. 두 오차가 공존하므로
+    이 값은 상한도 하한도 아닌 관측 비율이다. 큰 결과로 표본을 제한해 빠진 텍스트의 몫을
+    줄인다. 이 절은 보정 계수의 근거를 보여줄 뿐 어떤 절감도 주장하지 않는다.
+    """
+    samples = summary.calibration_samples
+    report: dict[str, Any] = {
+        "schema_version": TOKEN_CALIBRATION_SCHEMA_VERSION,
+        "assumed_bytes_per_token": TEXT_TOKEN_PROXY_DIVISOR,
+        "min_result_text_bytes": TOKEN_CALIBRATION_MIN_RESULT_BYTES,
+        "min_samples": TOKEN_CALIBRATION_MIN_SAMPLES,
+        "samples": len(samples),
+        "samples_truncated": summary.calibration_samples_truncated,
+        "excluded_cache_rewrite_turns": summary.calibration_excluded_cache_rewrites,
+        "status": "insufficient_samples",
+        "note": (
+            "bytes_per_token = bytes of everything new since the previous usage turn (tool_result text "
+            "plus the assistant's own thinking/text/tool_use content, canonical JSON) / that turn's "
+            "cache_creation. The ratio is biased in both directions: user-typed text and harness-injected "
+            "reminders are missing from the numerator (pushes it low), while canonical JSON escaping "
+            "inflates the numerator over the decoded input (pushes it high). Treat it as an observed "
+            "corpus ratio, not a bound. Restricting to turns with at least min_result_text_bytes of "
+            "tool_result text keeps the omitted text small. Turns whose "
+            "cache_read did not exceed cache_creation are "
+            "treated as cache rewrites and excluded. Ordering-based observation, not a tokenizer "
+            "measurement."
+        ),
+        "claim_boundary": {
+            "provider_measured": True,
+            "token_or_cost_savings_claim_allowed": False,
+        },
+    }
+    if len(samples) < TOKEN_CALIBRATION_MIN_SAMPLES:
+        return report
+    ratios = sorted(text_bytes / created for _tool, text_bytes, created in samples if created > 0)
+    if not ratios:
+        return report
+    p50 = _percentile(ratios, 0.50)
+    report.update({
+        "status": "observed",
+        "bytes_per_token": {
+            "p25": round(_percentile(ratios, 0.25), 2),
+            "p50": round(p50, 2),
+            "p75": round(_percentile(ratios, 0.75), 2),
+        },
+        "calibrated_divisor": round(p50, 2),
+        "proxy_bias": {
+            "assumed_over_observed": round(TEXT_TOKEN_PROXY_DIVISOR / p50, 3) if p50 > 0 else None,
+            "note": (
+                "assumed_over_observed > 1 means bytes/4 under-counts tokens for this corpus "
+                "(dense code, identifiers); < 1 means it over-counts."
+            ),
+        },
+    })
+    by_tool: dict[str, list[float]] = {}
+    for tool, text_bytes, created in samples:
+        if created > 0:
+            by_tool.setdefault(tool, []).append(text_bytes / created)
+    report["by_tool"] = [
+        {"label": tool, "samples": len(values), "bytes_per_token_p50": round(_percentile(sorted(values), 0.5), 2)}
+        for tool, values in sorted(by_tool.items(), key=lambda item: (-len(item[1]), item[0]))
+        if len(values) >= 5
+    ]
+    return report
+
+
+def calibrated_text_divisor(summary: UsageSummary) -> tuple[float, str]:
+    """`--token-proxy calibrated` 가 쓸 나눗수와 method 라벨. 표본이 부족하면 bytes/4 로 돌아간다."""
+    calibration = build_token_calibration(summary)
+    if calibration["status"] == "observed":
+        divisor = float(calibration["calibrated_divisor"])
+        if divisor > 0:
+            return divisor, f"calibrated_bytes_div_{divisor:g}"
+    return float(TEXT_TOKEN_PROXY_DIVISOR), "bytes_div_4_fallback"
+
+
+def build_guard_coverage(audit: ToolResultBytesAudit) -> dict[str, Any]:
+    """큰 tool_result 가 어느 도구로 들어왔는지, 그중 Read 가드가 덮는 비중을 보고한다.
+
+    Read 가드는 Claude Read 만 막는다. 같은 바이트가 Grep 이나 Bash cat 으로 들어오면
+    가드는 침묵한다(README 에 문서화된 한계). 우회를 막을 수는 없으니 측정으로 봉쇄한다:
+    큰 결과 바이트 중 Read 경유 비율이 가드의 실효 커버리지다.
+    """
+    total_bytes = sum(audit.large_bytes_by_tool.values())
+    read_bytes = sum(
+        audit.large_bytes_by_tool[tool] for tool in audit.large_bytes_by_tool if tool in FILE_READ_TOOL_NAMES
+    )
+    rows = [
+        {
+            "label": tool,
+            "results": audit.large_results_by_tool[tool],
+            "bytes": byte_count,
+            "byte_share": _share(byte_count, total_bytes),
+            "covered_by_read_guard": tool in FILE_READ_TOOL_NAMES,
+        }
+        for tool, byte_count in audit.large_bytes_by_tool.most_common()
+    ]
+    return {
+        "schema_version": GUARD_COVERAGE_SCHEMA_VERSION,
+        "threshold_bytes": TOOL_RESULT_LARGE_BYTES,
+        "large_results": sum(audit.large_results_by_tool.values()),
+        "large_bytes": total_bytes,
+        "read_guard_covered_share": _share(read_bytes, total_bytes),
+        "bypass_share": _share(total_bytes - read_bytes, total_bytes),
+        "read_guard_default_budget_bytes": 48_000,
+        "rows": rows,
+        "note": (
+            "covered_by_read_guard means the result came through Read/NotebookRead, the only tools "
+            "the large-Read guard can see; it does not mean the guard fired (the guard is opt-in and "
+            "its default budget is 48,000B, above this table's 20,000B threshold). Results from other "
+            "tools never reach the guard. The Bash escrow wrapper, when installed, stores Bash outputs "
+            "over its line budget, so a long single-line Bash result can still bypass it. Grep and MCP "
+            "tools are uncovered. Observation, not a savings claim."
+        ),
+    }
+
+
+def _build_token_estimate(audit: ToolResultBytesAudit, *, text_divisor: float = TEXT_TOKEN_PROXY_DIVISOR, text_method: str = "bytes_div_4") -> dict[str, Any]:
     """바이트를 토큰 단위로 다시 세어 클래스별로 보고한다.
 
     두 클래스의 추정 방법이 다르므로 행마다 method를 밝힌다. 이미지는 제공자 공식을
@@ -2760,8 +2982,8 @@ def _build_token_estimate(audit: ToolResultBytesAudit) -> dict[str, Any]:
             class_tokens[label] = audit.image_tokens
             class_method[label] = "image_formula"
         else:
-            class_tokens[label] = class_bytes // TEXT_TOKEN_PROXY_DIVISOR
-            class_method[label] = "bytes_div_4"
+            class_tokens[label] = int(class_bytes / text_divisor)
+            class_method[label] = text_method
     total_tokens = sum(class_tokens.values())
     rows = [
         {
@@ -2814,7 +3036,7 @@ def _build_token_estimate(audit: ToolResultBytesAudit) -> dict[str, Any]:
     }
 
 
-def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
+def build_tool_result_bytes(summary: UsageSummary, top: int, *, token_proxy: str = "bytes_div_4") -> dict[str, Any]:
     """tool_result 바이트가 어디로 갔는지에 대한 관측 보고를 만든다.
 
     이 절은 절감을 주장하지 않는다. usage 토큰 필드는 요청 합계만 주므로 도구별 귀속이
@@ -2852,7 +3074,13 @@ def build_tool_result_bytes(summary: UsageSummary, top: int) -> dict[str, Any]:
     }
     # 결과가 없어도 공식 스탬프는 남긴다. 소비자가 "이 리포트가 어떤 공식으로 말하는가"
     # 를 결과 유무와 무관하게 읽을 수 있어야 한다.
-    report["token_estimate"] = _build_token_estimate(audit)
+    if token_proxy == "calibrated":
+        divisor, method = calibrated_text_divisor(summary)
+        report["token_estimate"] = _build_token_estimate(audit, text_divisor=divisor, text_method=method)
+    else:
+        report["token_estimate"] = _build_token_estimate(audit)
+    report["token_calibration"] = build_token_calibration(summary)
+    report["guard_coverage"] = build_guard_coverage(audit)
     if not audit.results:
         report["reason"] = "no tool_result blocks were observed in the scanned transcripts"
         return report
@@ -3037,6 +3265,39 @@ def _aim_at_new_token_source(summary: UsageSummary) -> dict[str, Any] | None:
     )
 
 
+BYPASS_MIN_SHARE = 0.5
+BYPASS_MIN_BYTES = 1_000_000
+
+
+def _large_results_bypass_guard(summary: UsageSummary) -> dict[str, Any] | None:
+    """큰 결과의 절반 이상이 Read 가드 밖 도구로 들어오면 그 도구를 지목하는 권고 하나."""
+    coverage = build_guard_coverage(summary.tool_result_bytes)
+    share = coverage["bypass_share"]
+    if share is None or share < BYPASS_MIN_SHARE or coverage["large_bytes"] < BYPASS_MIN_BYTES:
+        return None
+    unguarded = [row for row in coverage["rows"] if not row["covered_by_read_guard"]]
+    if not unguarded:
+        return None
+    lead = unguarded[0]
+    actions = {
+        "Bash": "Keep the default Bash escrow wrapper installed; it stores outputs over the line budget as local artifacts.",
+        "Grep": "Narrow Grep patterns and paths or cap matches; Grep results are not guarded and enter the context whole.",
+    }
+    action = actions.get(lead["label"], f"{lead['label']} results over {coverage['threshold_bytes']:,}B are not guarded; bound them at the source.")
+    return recommendation(
+        "large-results-bypass-read-guard",
+        f"{_format_share(share)} of large tool results arrive outside the Read guard",
+        (
+            f"Large results (> {coverage['threshold_bytes']:,}B) total {coverage['large_bytes']:,}B; "
+            f"{_format_share(coverage['read_guard_covered_share'])} came through Read, the rest through "
+            f"{lead['label']} and other tools the guard never sees."
+        ),
+        action,
+        "P1",
+        {"lead_tool": lead["label"], "bypass_share": share, "large_bytes": coverage["large_bytes"]},
+    )
+
+
 def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any]]:
     recs: list[dict[str, Any]] = []
     total = max(0, summary.total_tokens)
@@ -3054,6 +3315,9 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     aim = _aim_at_new_token_source(summary)
     if aim is not None:
         recs.append(aim)
+    bypass = _large_results_bypass_guard(summary)
+    if bypass is not None:
+        recs.append(bypass)
 
     output_tokens = summary.tokens.get("output", 0)
     input_tokens = summary.tokens.get("input", 0)
@@ -3287,6 +3551,7 @@ def summary_json(
     top: int = 15,
     include_recommendations: bool = False,
     limits: ScanLimits | None = None,
+    token_proxy: str = "bytes_div_4",
 ) -> dict[str, Any]:
     limits = limits or ScanLimits()
     data = {
@@ -3323,7 +3588,7 @@ def summary_json(
                 )
             },
         },
-        "tool_result_bytes": build_tool_result_bytes(summary, top),
+        "tool_result_bytes": build_tool_result_bytes(summary, top, token_proxy=token_proxy),
         "new_tokens_per_turn": build_new_tokens_per_turn(summary),
         "cache_metrics": {
             "cache_hit_rate": round(summary.cache_hit_rate, 4),
@@ -3378,9 +3643,9 @@ def print_new_tokens_per_turn(summary: UsageSummary, top: int) -> None:
             )
 
 
-def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
+def print_tool_result_bytes(summary: UsageSummary, top: int, token_proxy: str = "bytes_div_4") -> None:
     """tool_result 바이트 분포를 텍스트로 출력한다."""
-    report = build_tool_result_bytes(summary, top)
+    report = build_tool_result_bytes(summary, top, token_proxy=token_proxy)
     print("\nBytes stored in tool_result blocks")
     if report["status"] != "observed":
         print(f"  unavailable: {report.get('reason', 'no tool_result blocks observed')}")
@@ -3440,10 +3705,47 @@ def print_tool_result_bytes(summary: UsageSummary, top: int) -> None:
                 f"{images['downscaled_to_cap']} over the {estimate['image_formula']['long_edge_cap_px']}px "
                 f"long-edge cap{unread_note}"
             )
+        text_method = next(
+            (row["method"] for row in estimate["by_content_class"] if row["label"] == "text"), "bytes_div_4"
+        )
+        text_note = (
+            "text uses a divisor observed from this corpus's cache_creation (see token proxy reconcile; "
+            "may over- or under-count)"
+            if text_method.startswith("calibrated")
+            else "text uses a bytes/4 proxy"
+        )
         print(
             "    token shares are estimates, not billed amounts; images use a published provider "
-            "formula and text uses a bytes/4 proxy"
+            f"formula and {text_note}"
         )
+    calibration = report.get("token_calibration")
+    if calibration:
+        if calibration["status"] == "observed":
+            ratio = calibration["bytes_per_token"]
+            print(
+                f"  token proxy reconcile: observed ~{ratio['p50']} bytes/token "
+                f"(p25 {ratio['p25']}, p75 {ratio['p75']}) over {calibration['samples']:,} large-result turns "
+                f"vs assumed {calibration['assumed_bytes_per_token']}; corpus ratio with errors in both "
+                "directions, not a tokenizer measurement"
+            )
+        else:
+            print(
+                f"  token proxy reconcile: {calibration['samples']} large-result turns "
+                f"(< {calibration['min_samples']} needed); bytes/4 stays unverified for this corpus"
+            )
+    coverage = report.get("guard_coverage")
+    if coverage and coverage["large_results"]:
+        print(
+            f"  large results (> {coverage['threshold_bytes']:,}B): {coverage['large_results']:,} results, "
+            f"{coverage['large_bytes']:,}B; {_format_share(coverage['read_guard_covered_share'])} via Read "
+            f"(the only tool the guard sees), {_format_share(coverage['bypass_share'])} via other tools"
+        )
+        for row in coverage["rows"][:top]:
+            marker = "via Read (guard-visible)" if row["covered_by_read_guard"] else "outside the guard"
+            print(
+                f"    {row['label'][:44]:44s} {row['results']:>7,} results "
+                f"{row['bytes']:>14,}B {_format_share(row['byte_share']):>7s} {marker}"
+            )
     repeats = report.get("repeat_reads")
     if repeats and repeats["results"]:
         print(
@@ -3499,6 +3801,16 @@ def main() -> int:
     )
     parser.add_argument("--recommend", action="store_true", help="Print concrete token-saving recommendations")
     parser.add_argument(
+        "--token-proxy",
+        choices=TOKEN_PROXY_CHOICES,
+        default="bytes_div_4",
+        help=(
+            "text token proxy for the tool_result token estimate: bytes_div_4 (default) or "
+            "calibrated (divisor observed from this corpus's cache_creation; falls back to bytes/4 "
+            "when fewer than %d large-result samples exist)" % TOKEN_CALIBRATION_MIN_SAMPLES
+        ),
+    )
+    parser.add_argument(
         "--show-paths",
         action="store_true",
         help="Show transcript paths instead of basename+hash labels; local debugging only; secret-shaped path components remain redacted",
@@ -3541,7 +3853,7 @@ def main() -> int:
 
     if args.json:
         print(json.dumps(
-            summary_json(summary, args.top, include_recommendations=args.recommend, limits=limits),
+            summary_json(summary, args.top, include_recommendations=args.recommend, limits=limits, token_proxy=args.token_proxy),
             indent=2,
             sort_keys=True,
         ))
@@ -3653,7 +3965,7 @@ def main() -> int:
     print_counter("Top command hints observed", summary.by_command, args.top)
     print_counter("Top tools observed", summary.by_tool, args.top)
     print_new_tokens_per_turn(summary, args.top)
-    print_tool_result_bytes(summary, args.top)
+    print_tool_result_bytes(summary, args.top, token_proxy=args.token_proxy)
     if args.recommend:
         print_recommendations(summary, args.top)
     return 0

@@ -623,7 +623,8 @@ class BenchmarkStreamJsonTests(unittest.TestCase):
                 module.run_bounded_command = original
 
     def test_public_fixture_docs_describe_stream_json_without_changing_report_example(self):
-        doc_paths = (ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md")
+        # R3 progressive disclosure: 벤치마크 절은 docs/guide.md 로 옮겼다.
+        doc_paths = (ROOT / "docs" / "guide.md", KIT_DIR / "README.md")
         for path in doc_paths:
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
@@ -3509,7 +3510,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertIn("local/model-server latency", guide)
         self.assertIn("do not fold them into hosted API token/cost savings claims", guide)
 
-        for doc in (ROOT / "README.md", ROOT / "README.ko.md", PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
+        for doc in (ROOT / "docs" / "guide.md", PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
             self.assertIn("benchmark-workflow-examples.md", doc.read_text(encoding="utf-8"), str(doc))
         self.assertNotIn("workflow-specific before/after benchmark report examples", (ROOT / "README.md").read_text(encoding="utf-8"))
         self.assertNotIn("작업 유형별 전후 비교 벤치마크 예시 모음", (ROOT / "README.ko.md").read_text(encoding="utf-8"))
@@ -4185,6 +4186,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
             PLUGIN_DIR / "README.md",
             PLUGIN_DIR / "README.ko.md",
             ROOT / "docs" / "experiments.md",
+            ROOT / "docs" / "guide.md",
+            ROOT / "docs" / "safety-reference.md",
+            ROOT / "docs" / "builtin-overlap.md",
             ROOT / "docs" / "benchmark-workflow-examples.md",
             ROOT / "research" / "benchmark-plan.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",

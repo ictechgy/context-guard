@@ -14996,7 +14996,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     receipt = json.loads((root / ".context-guard" / "packs" / f"{stored['pack_id']}.json").read_text(encoding="utf-8"))
                     self.assertEqual(receipt["content_address"], stored["content_address"])
         for doc in (
-            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
+            ROOT / "docs" / "guide.md", KIT_DIR / "README.md",
             PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
         ):
             text = doc.read_text(encoding="utf-8")
@@ -18500,8 +18500,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 suggest_help = self._run_pack(script, ROOT, "suggest", "--help")
                 self.assertIn("--adaptive-k-policy", suggest_help.stdout)
         docs = [
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
+            ROOT / "docs" / "guide.md",
             PLUGIN_DIR / "README.md",
             PLUGIN_DIR / "README.ko.md",
             KIT_DIR / "README.md",
@@ -26181,8 +26180,8 @@ for malformed in malformed_values:
                     self.assertEqual(set(feasible_data["cache_diagnostics"]), required)
                     self.assertEqual(set(feasible_data["summary"]["cache_diagnostics"]), required)
 
-        for doc in (ROOT / "README.md", ROOT / "README.ko.md"):
-            self.assertIn("docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
+        # R3 progressive disclosure: audit 절이 docs/ 안으로 옮겨져 링크가 상대 경로가 됐다.
+        self.assertIn("](cache-diagnostics-schema.md)", (ROOT / "docs" / "guide.md").read_text(encoding="utf-8"))
         for doc in (PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
             self.assertIn("https://github.com/ictechgy/context-guard/blob/main/docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
 

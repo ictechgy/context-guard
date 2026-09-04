@@ -408,5 +408,107 @@ class NewTokensByPrecedingTool(unittest.TestCase):
         self.assertEqual([rec for rec in recs if rec["id"] == "aim-at-new-token-source"], [])
 
 
+def usage_row_with_cache(cache_creation: int, cache_read: int, ordinal: int) -> dict:
+    """cache_read 를 함께 담은 어시스턴트 usage 행. 보정 표본은 cache_read > cache_creation 인 턴만 쓴다."""
+    row = usage_row(cache_creation, ordinal)
+    row["message"]["usage"]["cache_read_input_tokens"] = cache_read
+    return row
+
+
+class TokenCalibration(unittest.TestCase):
+    """bytes/4 대리값을 관측 usage 와 대조하는 reconcile 절을 고정한다."""
+
+    def _corpus(self, *, turns: int, result_bytes: int, created: int, cache_read: int = 1_000_000) -> list[dict]:
+        rows = []
+        for index in range(turns):
+            rows.append(assistant_row(tool_use(f"u{index}", "Bash", command="ls")))
+            rows.append(user_row(tool_result(f"u{index}", "x" * result_bytes)))
+            rows.append(usage_row_with_cache(created, cache_read, index))
+        return rows
+
+    def test_insufficient_samples_keeps_the_proxy_unverified(self) -> None:
+        section = full_report(self._corpus(turns=5, result_bytes=8_000, created=2_000))["tool_result_bytes"]["token_calibration"]
+        self.assertEqual(section["status"], "insufficient_samples")
+        self.assertEqual(section["samples"], 5)
+        self.assertNotIn("calibrated_divisor", section)
+
+    def test_observed_ratio_is_bytes_of_new_content_over_cache_creation(self) -> None:
+        # 결과 8,000B 를 2,000 토큰이 받았으니 비율은 4 에 가깝다(어시스턴트 tool_use 행 몇십 바이트가 더해진다).
+        section = full_report(self._corpus(turns=40, result_bytes=8_000, created=2_000))["tool_result_bytes"]["token_calibration"]
+        self.assertEqual(section["status"], "observed")
+        self.assertEqual(section["samples"], 40)
+        self.assertGreater(section["bytes_per_token"]["p50"], 4.0)
+        self.assertLess(section["bytes_per_token"]["p50"], 4.2)
+        self.assertEqual(section["by_tool"][0]["label"], "Bash")
+
+    def test_small_results_and_cache_rewrites_are_not_samples(self) -> None:
+        rows = self._corpus(turns=40, result_bytes=100, created=2_000)  # 작은 결과: 표본 아님
+        rows += self._corpus(turns=40, result_bytes=8_000, created=2_000, cache_read=0)  # 캐시 재작성: 제외
+        section = full_report(rows)["tool_result_bytes"]["token_calibration"]
+        self.assertEqual(section["samples"], 0)
+        self.assertEqual(section["excluded_cache_rewrite_turns"], 40)
+
+    def test_calibrated_proxy_rewrites_the_text_token_estimate(self) -> None:
+        rows = self._corpus(turns=40, result_bytes=8_000, created=4_000)  # ~2 bytes/token
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "session.jsonl").open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row) + "\n")
+            summary = audit.scan([str(root)])
+            default = audit.build_tool_result_bytes(summary, 15)["token_estimate"]
+            calibrated = audit.build_tool_result_bytes(summary, 15, token_proxy="calibrated")["token_estimate"]
+        text_default = next(row for row in default["by_content_class"] if row["label"] == "text")
+        text_calibrated = next(row for row in calibrated["by_content_class"] if row["label"] == "text")
+        self.assertEqual(text_default["method"], "bytes_div_4")
+        self.assertTrue(text_calibrated["method"].startswith("calibrated_bytes_div_"))
+        self.assertGreater(text_calibrated["tokens"], text_default["tokens"] * 1.5)
+
+    def test_calibration_never_claims_savings(self) -> None:
+        section = full_report(self._corpus(turns=40, result_bytes=8_000, created=2_000))["tool_result_bytes"]["token_calibration"]
+        self.assertFalse(section["claim_boundary"]["token_or_cost_savings_claim_allowed"])
+        self.assertIn("not a bound", section["note"])
+
+
+class GuardCoverage(unittest.TestCase):
+    """큰 결과가 Read 가드 안(Read)과 밖(Grep/Bash)으로 얼마나 들어오는지 고정한다."""
+
+    def test_large_results_are_split_by_guard_coverage(self) -> None:
+        big = "x" * 25_000
+        rows = [
+            assistant_row(tool_use("u1", "Read", file_path="a.py")), user_row(tool_result("u1", big)),
+            assistant_row(tool_use("u2", "Grep", pattern="x")), user_row(tool_result("u2", big)),
+            assistant_row(tool_use("u3", "Bash", command="cat")), user_row(tool_result("u3", big)),
+            assistant_row(tool_use("u4", "Read", file_path="b.py")), user_row(tool_result("u4", "small")),
+        ]
+        coverage = full_report(rows)["tool_result_bytes"]["guard_coverage"]
+        self.assertEqual(coverage["large_results"], 3)
+        self.assertAlmostEqual(coverage["read_guard_covered_share"], 1 / 3, places=3)
+        self.assertAlmostEqual(coverage["bypass_share"], 2 / 3, places=3)
+        by_label = {row["label"]: row for row in coverage["rows"]}
+        self.assertTrue(by_label["Read"]["covered_by_read_guard"])
+        self.assertFalse(by_label["Grep"]["covered_by_read_guard"])
+
+    def test_bypass_recommendation_names_the_leading_unguarded_tool(self) -> None:
+        big = "x" * 300_000
+        rows = []
+        for index in range(4):
+            rows.append(assistant_row(tool_use(f"g{index}", "Grep", pattern="x")))
+            rows.append(user_row(tool_result(f"g{index}", big)))
+        rows.append(assistant_row(tool_use("r1", "Read", file_path="a.py")))
+        rows.append(user_row(tool_result("r1", big)))
+        rows.append(usage_row(10, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (root / "session.jsonl").open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row) + "\n")
+            recs = audit.build_recommendations(audit.scan([str(root)]), 15)
+        bypass = [rec for rec in recs if rec["id"] == "large-results-bypass-read-guard"]
+        self.assertEqual(len(bypass), 1)
+        self.assertEqual(bypass[0]["evidence"]["lead_tool"], "Grep")
+        self.assertIn("Grep", bypass[0]["action"])
+
+
 if __name__ == "__main__":
     unittest.main()

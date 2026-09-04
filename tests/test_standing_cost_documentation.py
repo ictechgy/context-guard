@@ -1,6 +1,7 @@
 """S003-F1: the documented standing cost of advisory rule blocks must stay true.
 
-The README states a fixed per-request byte cost for each managed rule block. Those
+docs/safety-reference.md states a fixed per-request byte cost for each managed rule
+block. Those
 numbers are the break-even threshold a user is told to measure against, so they
 must match the shipped files exactly in both languages.
 """
@@ -22,8 +23,10 @@ BLOCKS = (
 class StandingCostDocumentationTest(unittest.TestCase):
     def setUp(self) -> None:
         # 문장이 줄바꿈으로 나뉘어도 문구 검사가 깨지지 않게 공백을 정규화한다.
-        self.english = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
-        self.korean = " ".join((ROOT / "README.ko.md").read_text(encoding="utf-8").split())
+        # R3 progressive disclosure: 상시 비용 표는 README 에서 안전 참조 문서로 옮겼다.
+        safety = " ".join((ROOT / "docs" / "safety-reference.md").read_text(encoding="utf-8").split())
+        self.english = safety
+        self.korean = safety
 
     def test_every_block_size_is_documented_in_both_readmes(self) -> None:
         for name in BLOCKS:
@@ -34,11 +37,11 @@ class StandingCostDocumentationTest(unittest.TestCase):
                 formatted = f"{size:,}"
                 self.assertIn(
                     f"`{name}` | {formatted} bytes", self.english,
-                    f"README.md does not document {name} as {formatted} bytes",
+                    f"docs/safety-reference.md does not document {name} as {formatted} bytes",
                 )
                 self.assertIn(
                     f"`{name}` | {formatted} 바이트", self.korean,
-                    f"README.ko.md does not document {name} as {formatted} bytes",
+                    f"docs/safety-reference.md does not document {name} as {formatted} bytes (Korean)",
                 )
 
     def test_break_even_framing_is_present(self) -> None:
