@@ -368,7 +368,7 @@ class HookSwitchTests(unittest.TestCase):
             with self.subTest(hook=hook):
                 self.assertEqual(
                     switch.disable_hint(hook),
-                    f"Disable for this session: context-guard hooks off {hook}",
+                    f"Ask the user before running: context-guard hooks off {hook} (project-wide, 2h)",
                 )
 
 

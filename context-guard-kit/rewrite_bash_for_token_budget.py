@@ -3468,7 +3468,8 @@ def _main() -> int:
     except RecursionError:
         decline_invalid_hook_input("payload_copy_too_deep")
         return journal(False, "declined payload_copy_too_deep")
-    return journal(True, f"wrapped {decision.action}")
+    # 래핑은 기본 경로의 일상 동작이지 개입이 아니다. deny/ask 만 intervened 로 센다(doctor 지표).
+    return journal(False, f"wrapped {decision.action}")
 
 
 if __name__ == "__main__":

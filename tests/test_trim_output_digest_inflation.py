@@ -160,5 +160,24 @@ class DigestInflationTest(unittest.TestCase):
         self.assertIn("digest skipped", PACKAGED_TRIM.read_text(encoding="utf-8"))
 
 
+class EscrowPassthroughIgnoresExitStatus(unittest.TestCase):
+    """예산 안의 실패 출력(rc≠0)도 digest 없이 원문 그대로 통과해야 한다 (GLM 리뷰 A1)."""
+
+    def test_failed_small_output_passes_through_without_digest(self) -> None:
+        import subprocess, sys, tempfile
+        from pathlib import Path
+        script = Path(__file__).resolve().parents[1] / "context-guard-kit" / "trim_command_output.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [sys.executable, str(script), "--max-lines", "220", "--digest", "markdown", "--artifact-receipt",
+                 "--artifact-dir", str(Path(tmp) / "artifacts"), "--", "sh", "-c", "echo no-match; exit 1"],
+                capture_output=True, text=True, cwd=tmp,
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("no-match", proc.stdout)
+        self.assertNotIn("semantic digest", proc.stdout)
+        self.assertNotIn("artifact_receipt", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

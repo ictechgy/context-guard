@@ -976,9 +976,8 @@ def valve_budget_exceeded_reason(count: int, content_limit: int) -> str:
     수치를 실어 에이전트가 스스로 유효한 offset/limit을 계산할 수 있게 한다.
     """
     return (
-        f"[context-guard-kit] Large Read blocked ({count}x). Narrowed {max_line_range()}-line "
-        f"range still exceeds the {content_limit:,}-byte guard; supply an explicit offset/limit "
-        f"under it. {read_disable_hint()}"
+        f"[context-guard-kit] Large Read blocked ({count}x): {max_line_range()}-line range exceeds "
+        f"the {content_limit:,}-byte guard; use a smaller offset/limit. {read_disable_hint()}"
     )
 
 

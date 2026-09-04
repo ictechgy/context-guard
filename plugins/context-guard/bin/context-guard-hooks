@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""세션 단위 훅 해제 스위치 (`context-guard hooks off|on|status`).
+"""프로젝트 단위 임시 훅 해제 스위치 (`context-guard hooks off|on|status`).
 
 왜 있는가: 지금까지 훅을 끄는 길은 프로세스 환경 변수(`CONTEXT_GUARD_DISABLE`,
 `CONTEXT_GUARD_READ_GUARD=0`)나 setup 재실행뿐이었다. 오탐이 났을 때 에이전트나
@@ -10,7 +10,11 @@
 계약:
 - 기본 만료 2시간, 최대 24시간. 만료된 항목은 없는 것으로 본다.
 - 파일이 없거나 깨져 있으면 "모두 켜짐"이다. 읽기 실패는 훅을 깨뜨리지 않는다.
-- 훅 이름은 read(Read 가드), bash(Bash 재작성/축약), nudge(반복 실패 힌트), all.
+- 훅 이름은 read(Read 가드), bash(Bash 재작성/축약 — 시크릿 sanitizer 도 함께 꺼진다),
+  nudge(반복 실패 힌트), all.
+- 범위는 "세션"이 아니라 이 프로젝트(cwd 기준 .context-guard/)의 모든 세션이다.
+  `.context-guard/` 는 setup 의 deny 규칙에 들어가지만 커밋 여부는 사용자 몫이므로,
+  hooks-off.json 을 커밋하면 그 저장소는 처음부터 훅이 꺼진 채 시작한다.
 """
 from __future__ import annotations
 
@@ -32,7 +36,7 @@ DEFAULT_DURATION_SECONDS = 2 * 60 * 60
 MAX_DURATION_SECONDS = 24 * 60 * 60
 MAX_STATE_BYTES = 4096
 DURATION_RE = re.compile(r"^(\d+)([mhd])$")
-DISABLE_HINT = "Disable for this session: context-guard hooks off {name}"
+DISABLE_HINT = "Ask the user before running: context-guard hooks off {name} (project-wide, 2h)"
 
 
 def state_path(root: Path | None = None) -> Path:
@@ -173,13 +177,13 @@ def _render_status(report: dict[str, Any]) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="context-guard hooks",
-        description="Turn ContextGuard hooks off or on for this project session without editing settings.",
+        description="Temporarily turn ContextGuard hooks off or on for this project (all sessions under this root) without editing settings. Turning bash off also skips the secret sanitizer.",
     )
     parser.add_argument("--root", type=Path, default=None, help="project root (default: cwd)")
     parser.add_argument("--json", action="store_true", help="print JSON")
     commands = parser.add_subparsers(dest="command", required=True)
     off = commands.add_parser("off", help="disable a hook for a while")
-    off.add_argument("name", help="read | bash | nudge | all")
+    off.add_argument("name", help="read | bash (also disables the sanitizer) | nudge | all")
     off.add_argument("--for", dest="duration", default="2h", help="duration such as 30m, 2h, 1d (max 24h; default 2h)")
     on = commands.add_parser("on", help="re-enable a hook")
     on.add_argument("name", help="read | bash | nudge | all")

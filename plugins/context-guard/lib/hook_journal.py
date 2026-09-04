@@ -223,7 +223,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def render_one_line(summary: dict[str, Any]) -> str:
-    """doctor 와 statusline 이 쓰는 한 줄 요약."""
+    """doctor 가 쓰는 한 줄 요약(statusline 은 아직 쓰지 않는다)."""
     total = summary["total"]
     if not summary["rows"]:
         return "hook journal: no rows yet (hooks write .context-guard/hook-journal.jsonl as they run)"
