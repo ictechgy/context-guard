@@ -1806,7 +1806,7 @@ def run_npm_package_smoke(
             timeout=timeout,
             expect=lambda proc: (
                 None
-                if "  setup" in proc.stdout and "  experiments" in proc.stdout
+                if "  setup" in proc.stdout and "  audit" in proc.stdout
                 else fail("isolated context-guard --help did not include expected manifest-derived subcommands")
             ),
         )

@@ -119,7 +119,7 @@ IMAGE_CONTEXT_GATE_IDS = (
 )
 
 # The imported proof-verifier projection binds to the *existing* verifier contract
-# in context-guard-kit/experimental_registry.py; replay never re-runs the verifier.
+# in context-guard-kit/benchmark_runner.py; replay never re-runs the verifier.
 PROOF_VERIFY_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
 PROOF_VERIFICATION_CLAIM_BOUNDARY = (
     "Local receipt/hash/range/command binding only; no semantic-safety, protected-zone, freshness, replacement, "
@@ -6893,7 +6893,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
         """Build a well-formed ``evaluation_controls`` block, then apply overrides."""
         receipt_id = "receipt-fixture-0001"
         content_sha256 = hashlib.sha256(b"exact-source-text-fixture").hexdigest()
-        retrieval_command = "context-guard experiments verify proof-carrying-context --artifact-dir ./fixture-receipts"
+        retrieval_command = "context-guard-artifact get receipt-fixture-0001 --full"
         if omission and verified_fallback:
             fallback = {
                 "available": True,

@@ -6340,7 +6340,7 @@ def print_auto_text(payload: dict[str, Any]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build budgeted local context packs with exact retrieval hints.")
+    parser = argparse.ArgumentParser(description="[deprecated] Build budgeted local context packs with exact retrieval hints. Ranker defects are recorded in HANDOFF; the command keeps shipping because the P3 live-evidence contract pins it as canonical_packer.")
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build", help="assemble a prioritized context pack")
     build.add_argument("--root", default=".", help="project root; must not be a symlink")

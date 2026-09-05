@@ -122,7 +122,8 @@ PROFILE_PRESETS: dict[str, dict[str, bool]] = {
     # deny 규칙 + Read 가드만. 훅이 명령을 바꾸지 않는 가장 조용한 구성.
     "minimal": {"denies": True, "statusline": False, "bash_hook": False, "read_guard": True, "model_defaults": False, "failed_attempt_nudge": False},
     # 현재 기본과 같다. 반복 실패 힌트만 제외한다.
-    "recommended": {"denies": True, "statusline": True, "bash_hook": True, "read_guard": True, "model_defaults": True, "failed_attempt_nudge": False},
+    # statusline 은 Claude Code 의 /usage 와 겹치고 렌더마다 Python 을 띄우므로 recommended 에서 뺐다(0.14.0).
+    "recommended": {"denies": True, "statusline": False, "bash_hook": True, "read_guard": True, "model_defaults": True, "failed_attempt_nudge": False},
     # 모든 훅과 힌트. 오탐 저널을 모으려는 사용자용.
     "max": {"denies": True, "statusline": True, "bash_hook": True, "read_guard": True, "model_defaults": True, "failed_attempt_nudge": True},
 }
@@ -4465,7 +4466,7 @@ def interactive_choices(defaults: Choices) -> Choices:
     print("Project-local changes only. Existing settings are merged, not replaced.\n")
     choices = Choices(
         denies=prompt_bool("Add deny rules for bulky/sensitive paths?", defaults.denies),
-        statusline=prompt_bool("Enable token/cost statusline?", defaults.statusline),
+        statusline=prompt_bool("Enable token/cost statusline? (deprecated; duplicates /usage)", defaults.statusline),
         bash_hook=prompt_bool("Enable Bash output trim + grep/diff sanitizer hook?", defaults.bash_hook),
         bash_reference_v1=prompt_bool(
             "Enable optional Bash receipt references? 7-day scoped bearer handles are visible to Claude/provider transcripts",
@@ -4965,8 +4966,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PROFILE,
         help=(
             "which guardrails to enable: minimal (deny rules + Read guard), "
-            "recommended (adds Bash trim/escrow, statusline, model defaults), "
-            "max (adds the failed-attempt nudge); individual --no-* flags still remove items"
+            "recommended (adds Bash trim/escrow and model defaults), "
+            "max (adds the deprecated statusline and the failed-attempt nudge); individual --no-* flags still remove items"
         ),
     )
     # deprecated alias; 동작은 유지하되 --help 와 참조 문서에서 숨긴다.
@@ -4989,7 +4990,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-backup", action="store_true", help="do not create .bak-* before modifying existing settings")
     parser.add_argument("--no-denies", action="store_true", help="skip recommended permissions.deny rules")
-    parser.add_argument("--no-statusline", action="store_true", help="skip token statusline")
+    parser.add_argument("--no-statusline", action="store_true", help="skip the token statusline (deprecated: it duplicates Claude Code /usage; only --profile max installs it)")
     parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
     reference_group = parser.add_mutually_exclusive_group()
     reference_group.add_argument(

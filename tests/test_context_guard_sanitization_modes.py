@@ -429,7 +429,6 @@ class SanitizationModeTests(unittest.TestCase):
             ("context_pack.py", "context-guard-pack"),
             ("context_escrow.py", "context-guard-artifact"),
             ("tool_schema_pruner.py", "context-guard-tool-prune"),
-            ("experimental_registry.py", "context-guard-experiments"),
         )
         for canonical, packaged in pairs:
             with self.subTest(canonical=canonical):

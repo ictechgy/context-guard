@@ -837,7 +837,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     return rc
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=TOOL_NAME, description="Validate and apply bounded declarative command-output filters. Filtered mode applies line rules to combined stdout+stderr and writes the filtered result to stdout; passthrough mode preserves stdout/stderr streams.")
+    parser = argparse.ArgumentParser(prog=TOOL_NAME, description="[deprecated] Validate and apply bounded declarative command-output filters. The filter DSL is user-owned and sees very little use. Filtered mode applies line rules to combined stdout+stderr and writes the filtered result to stdout; passthrough mode preserves stdout/stderr streams.")
     sub = parser.add_subparsers(dest="command_name", required=True)
     validate = sub.add_parser("validate", help="validate a filter DSL JSON file")
     validate.add_argument("--config", required=True, help="path to user-owned filter JSON")

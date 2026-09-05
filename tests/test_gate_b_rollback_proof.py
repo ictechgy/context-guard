@@ -213,7 +213,7 @@ class GateBRollbackProofTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-partial-") as tmp:
             repo, commits = self.make_gate_b_history_repo(Path(tmp))
-            frozen_path = sorted(rollback_proof.SHARED_INTEGRATION_PATHS)[0]
+            frozen_path = sorted(rollback_proof.GENERATIONS[-1].shared_paths)[0]
             (repo / frozen_path).write_text(
                 "# hunk surgery: partially unapplied\n", encoding="utf-8"
             )
@@ -298,7 +298,7 @@ class GateBRollbackProofTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-rename-") as tmp:
             repo, commits = self.make_gate_b_history_repo(Path(tmp))
-            frozen_path = sorted(rollback_proof.SHARED_INTEGRATION_PATHS)[0]
+            frozen_path = sorted(rollback_proof.GENERATIONS[-1].shared_paths)[0]
             old_content = (repo / frozen_path).read_text(encoding="utf-8")
             renamed_path = frozen_path + ".renamed"
             rollback_proof.run_git(repo, "mv", frozen_path, renamed_path)
@@ -1204,8 +1204,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen23(self) -> None:
-        """운영 레코드는 gen2~gen23을 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen24(self) -> None:
+        """운영 레코드는 gen2~gen24을 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1232,11 +1232,12 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen21",
                 "gen22",
                 "gen23",
+                "gen24",
             ),
         )
         (
             gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10,
-            gen11, gen12, gen13, gen14, gen15, gen16, gen17, gen18, gen19, gen20, gen21, gen22, gen23,
+            gen11, gen12, gen13, gen14, gen15, gen16, gen17, gen18, gen19, gen20, gen21, gen22, gen23, gen24,
         ) = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
@@ -1869,6 +1870,19 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen21": ["tests/test_context_guard_kit.py"],
                 "gen22": ["tests/test_context_guard_kit.py"],
                 "gen23": ["tests/test_context_guard_kit.py"],
+                # gen24 는 마커 소유 파일·미러·전용 테스트만 남기고 나머지를 동결에서 뺀다.
+                "gen24": [
+                    "context-guard-kit/context_guard_commands.py",
+                    "context-guard-kit/statusline.sh",
+                    "context-guard-kit/statusline_merged.sh",
+                    "context-guard-kit/transcript_usage_reducer.py",
+                    "plugins/context-guard/bin/context-guard-statusline",
+                    "plugins/context-guard/bin/context-guard-statusline-merged",
+                    "plugins/context-guard/lib/context_guard_commands.py",
+                    "plugins/context-guard/lib/transcript_usage_reducer.py",
+                    "scripts/release_smoke.py",
+                    "tests/test_context_guard_kit.py",
+                ],
             },
         )
 

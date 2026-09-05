@@ -33,7 +33,7 @@ HISTORY_MODULES = (
 )
 SERIAL_TEST_IDS = (
     "test_context_guard_kit.ClaudeTokenKitTests."
-    "test_experimental_registry_config_write_race_cannot_redirect_to_symlink",
+    "test_context_pack_serializes_concurrent_sanitizer_factory_first_load",
 )
 BOUNDARY_PROVIDER_FREE_REQUIRED_TEST_IDS = frozenset(
     {

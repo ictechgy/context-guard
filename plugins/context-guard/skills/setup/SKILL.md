@@ -19,7 +19,7 @@ context-guard-setup --plan
 
 2. Explain the three profiles briefly (`--profile`):
    - `minimal`: deny bulky/sensitive reads + large Read guard only,
-   - `recommended` (default): adds the Bash trim/escrow + sanitizer hook, the token/cost statusline, and missing model/effort defaults,
+   - `recommended` (default): adds the Bash trim/escrow + sanitizer hook and missing model/effort defaults (the statusline is deprecated and no longer part of this profile),
    - `max`: adds the failed-attempt nudge for repeated Bash failures (off by default until false-positive data exists).
    Individual `--no-*` flags remove one item from a profile.
 3. If the user wants the recommended project-local setup, run:

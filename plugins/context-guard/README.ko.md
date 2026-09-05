@@ -93,7 +93,6 @@ context-guard task-memory get <opaque_handle> --task issue-123 --source src/app.
 context-guard-compress --json < large-output.txt
 context-guard cost preflight --request request.json --budget-krw 3000 --json
 context-guard cost observe --usage usage.json --json
-context-guard route-advisor --workload workload.json --json
 context-guard cost advisory --workload advisory-workload.json --json
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
@@ -132,7 +131,7 @@ context-guard-pack auto --root . --query "retry 수정" --diff worktree --output
 - **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact 요약 기록과 payload integrity check로 전체 가림 처리된 schema 재조회를 보존합니다. `defer-report`는 core inline tool과 deferred stub/namespace 요약을 나누고 gross deferred-schema 및 net initial-report `chars_div_4` proxy 회계를 보여주지만, deferred tool을 쓰기 전에는 전체 schema를 다시 조회해야 합니다.
 - **적용형 adaptive breadth**는 명시적 `auto --apply-adaptive-k`에서만 동작합니다. 로컬 회귀 gate 통과 뒤 heuristic source를 줄이고 caller가 지정한 file/output/test-output 및 diff source는 항상 보존하며, 같은 byte budget으로 다시 build하고 `adaptive_k_application`을 기록합니다. 로컬 proxy는 provider token/cost 절감 주장을 허용하지 않습니다.
 - **보수적 압축기**는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
-- **정적 cache-score lint와 Anthropic 비용 가드/route advisor**는 `context-guard-cache-score`로 로컬 prompt/request cache layout과 사용자 제공 cache write/read multiplier 기반 amortization 위험을 안내하고, `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard-receipt evaluate full-wire`는 크기가 제한된 canonical baseline/candidate request envelope를 하나의 canonical-byte ceiling으로 비교하면서 선택한 JSON pointer와 출력 토큰 예산을 보존하고 request 원문을 출력하지 않습니다. `context-guard route-advisor`는 caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽는 local-only passive advisor이며 queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오거나 provider feature 지식을 authoritative하게 취급하지 않고 total-cost accounting, batchability blocker, route 후보를 출력합니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
+- **정적 cache-score lint와 Anthropic 비용 가드**는 `context-guard-cache-score`로 로컬 prompt/request cache layout과 사용자 제공 cache write/read multiplier 기반 amortization 위험을 안내하고, `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard-receipt evaluate full-wire`는 크기가 제한된 canonical baseline/candidate request envelope를 하나의 canonical-byte ceiling으로 비교하면서 선택한 JSON pointer와 출력 토큰 예산을 보존하고 request 원문을 출력하지 않습니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
 - **Net-efficiency P0-P2 계약**은 로컬 `net-efficiency`, `fanout-plan`,
   `prefix-plan`, `prune-plan`, `shadow-policy` 평가와 task-scoped read-only
   `receipt_batch` MCP 호출을 추가합니다. 모두 provider-free·shadow-only이며
@@ -180,7 +179,7 @@ ContextGuard는 모델 토큰을 줄이기 위해 작업을 외부 AI 서비스�
 
 ## 실험 기능
 
-모든 실험 planner는 기본 비활성이고 plan 전용이며, 자세한 내용은 [`docs/experiments.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experiments.md)에 있습니다.
+`context-guard experiments` 명령과 plan 전용 lane들은 0.14.0에서 제거됐습니다. 어떤 lane도 런타임 동작을 만들지 않았습니다. 자세한 내용은 [`docs/experiments.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experiments.md)에 있습니다.
 
 교차 에이전트 규칙 스니펫은 안내용입니다. 대상 에이전트가 반드시 따른다고 보장할 수 없으므로, 절감 주장이 필요하면 실제 전후 동작을 직접 측정하세요.
 
