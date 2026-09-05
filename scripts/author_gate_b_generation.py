@@ -152,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
                 git("checkout", "--quiet", prev_bless, "--", path)
         stage_paths(all_paths)
         body = (args.body.strip() + "\n\n") if args.body.strip() else ""
-        bless = commit(f"{current.bless_subject}\n\n{body}{TRAILER}".rstrip())
+        bless_message = f"{current.bless_subject}\n\n{body}{TRAILER}".rstrip()
+        bless = commit(bless_message)
         print(f"  bless  {bless[:10]}")
 
         def reapply(paths: list[str], subject: str) -> None:
@@ -168,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
             changed = git("diff", "--cached", "--name-only").split()
             if sorted(changed) != sorted(paths):
                 raise SystemExit(f"author-gate-b: reapply for {subject!r} would touch {changed}, expected {paths}")
-            print(f"  {subject.split()[2]:<12} {commit(f'{subject}\n\n{TRAILER}'.rstrip())[:10]}")
+            message = f"{subject}\n\n{TRAILER}".rstrip()
+            print(f"  {subject.split()[2]:<12} {commit(message)[:10]}")
 
         reapply(b1, current.b1_subject)
         reapply(b2, current.b2_subject)
