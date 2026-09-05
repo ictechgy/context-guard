@@ -1,7 +1,7 @@
 ---
 description: Diagnose and reduce Claude Code token usage for a project or session using context hygiene, model and effort routing, MCP minimization, output trimming/sanitizing, subagent discipline, and measurement. Use when the user asks to lower Claude Code token usage, cost, context bloat, or usage-limit burn.
 argument-hint: [project/session symptoms]
-allowed-tools: Bash(context-guard-setup *), Bash(context-guard-audit *), Bash(context-guard-diet scan *), Bash(context-guard-diet structural-waste *), Bash(context-guard-read-symbol *), Bash(context-guard-artifact store *), Bash(context-guard-artifact get *), Bash(context-guard-artifact list *), Bash(context-guard-statusline)
+allowed-tools: Bash(context-guard-setup *), Bash(context-guard-audit *), Bash(context-guard-diet scan *), Bash(context-guard-diet structural-waste *), Bash(context-guard-read-symbol *), Bash(context-guard-artifact store *), Bash(context-guard-artifact get *), Bash(context-guard-artifact list *)
 ---
 
 # ContextGuard
@@ -21,7 +21,7 @@ Use this order:
    - startup context -> prune `CLAUDE.md`, move long workflows to skills, disable unused MCP servers.
    - large file reads -> use `context-guard-read-symbol` and the example Read guard before whole-file context.
    - very large logs that may need later exact slices -> store sanitized output with `context-guard-artifact store` and query only needed lines/patterns.
-   - noisy command output -> use `context-guard-trim-output` wrappers or the example PreToolUse hook; use `context-guard-filter` only with an explicit user-owned config for stable successful command shapes.
+   - noisy command output -> use `context-guard-trim-output` wrappers or the example PreToolUse hook. `context-guard-filter` is deprecated; do not recommend it.
    - grep/diff output with possible secrets -> use `context-guard-sanitize-output` or the example Bash hook.
    - expensive reasoning -> route default work to `sonnet` and lower `/effort`; reserve Opus/`opusplan` for planning.
    - noisy exploration -> keep it local: use `rg`, `context-guard-read-symbol`, artifact queries, or a bounded subagent only when parallel value justifies the multiplier.
@@ -44,8 +44,6 @@ context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
-context-guard-filter validate --config .context-guard/filter-dsl.json
-context-guard-statusline
 ```
 
 If installing hook examples, prefer project-local opt-in settings first. Do not silently modify global `~/.claude/settings.json`.

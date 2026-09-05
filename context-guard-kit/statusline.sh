@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# [deprecated] Claude Code 의 /usage 와 기능이 겹친다. 계속 배포하지만
+# 권장 프로필은 더 이상 이 statusline 을 설치하지 않는다.
 set -euo pipefail
 
 # This script is also callable directly, so do not let workspace-controlled

@@ -917,7 +917,7 @@ def run_compress(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Classify and conservatively compress stdin (sanitized) for token-budget reuse.",
+        description="[deprecated] Classify and conservatively compress stdin (sanitized) for token-budget reuse. Built-in compaction wins in practice; use context-guard-artifact for lossless retrieval instead.",
     )
     parser.add_argument(
         "--type",

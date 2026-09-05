@@ -88,14 +88,14 @@ context-guard-audit ~/.claude/projects --top 20 --recommend
 - [docs/guide.md](docs/guide.md) — 모든 헬퍼 명령, brief 모드, 조용한 진행 설명, 에이전트별 연동, 벤치마크 실행기, 로컬 MCP 어댑터, 선택적 `bash_reference_v1`, Receipt 동반 패키지. `--explain`, `--adaptive-k-policy`, `--apply-adaptive-k`, `--apply-symbol-memory` 같은 pack 옵션도 여기 있습니다.
 - [docs/safety-reference.md](docs/safety-reference.md) — 신뢰 경계, `PATH` 헬퍼 정책, ContextGuard가 하지 않는 일, 안내용 규칙 블록의 상시 비용·손익분기 표, Read 가드의 TOCTOU 한계, 절감 주장 문구 규칙.
 - [docs/builtin-overlap.md](docs/builtin-overlap.md) — Claude Code 내장 기능과 기능별로 겹침/보완/내장 없음을 비교한 표.
-- [docs/experiments.md](docs/experiments.md) — 기본 비활성 실험 lane과 그 gate.
+- [docs/experiments.md](docs/experiments.md) — 0.14.0에서 제거된 실험 lane의 tombstone.
 - [docs/setup-reference.md](docs/setup-reference.md) — 생성된 setup 기능·플래그 참조.
 - [docs/release-runbook.md](docs/release-runbook.md) — 릴리스 절차, 증거 체크리스트, 롤백 체크리스트.
 - [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md) — fixture-only 실험 시작 예시. 절감 주장을 하려면 같은 matched-task benchmark gate를 먼저 통과해야 합니다.
 
 ## 실험 기능
 
-모든 실험 planner는 기본 비활성이고 plan 전용이며, 자세한 내용은 [`docs/experiments.md`](docs/experiments.md)에 있습니다. 이 lane들은 later-roadmap gate와 provider가 측정한 matched-task 근거를 통과하기 전까지 experimental/non-shipped이며 제공 기능이 아닙니다. 더 넓은 연구 lane은 [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md)에서 추적합니다. ContextGuard는 고정된 토큰·비용 절감률을 보장하지 않으며, 주장 경계는 [docs/safety-reference.md](docs/safety-reference.md)에 있습니다.
+`context-guard experiments` 명령과 plan 전용 실험 lane들은 0.14.0에서 제거됐습니다. 어떤 lane도 런타임 동작을 만들지 않았고, hosted API 절감 주장에 필요한 provider 측정 matched-task gate를 통과한 lane도 없었습니다. 자세한 내용은 [`docs/experiments.md`](docs/experiments.md)에 있습니다. 더 넓은 연구 lane은 [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md)에서 계속 추적합니다. ContextGuard는 고정된 토큰·비용 절감률을 보장하지 않으며, 주장 경계는 [docs/safety-reference.md](docs/safety-reference.md)에 있습니다.
 
 ## 라이선스
 

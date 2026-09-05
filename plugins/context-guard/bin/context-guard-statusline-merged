@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# [deprecated] Claude Code 의 /usage 와 기능이 겹친다. 계속 배포하지만
+# 권장 프로필은 더 이상 이 statusline 을 설치하지 않는다.
 # OMC HUD 와 context-guard-statusline 을 하나로 결합하는 statusline wrapper.
 #
 # 동작 매트릭스:

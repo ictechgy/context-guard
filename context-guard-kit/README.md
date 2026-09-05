@@ -16,7 +16,7 @@ Claude Code CLI에서 생기는 컨텍스트 낭비를 줄이기 위한 도구 �
 - `context_pack.py` — 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown context pack으로 조립하고, 로컬 query/diff/output 신호에서 build manifest를 추천합니다.
 - `context_filter.py` — 사용자 소유 JSON DSL로 성공 출력 라인 필터를 적용하되, 보호해야 할 실패 출력은 원문 그대로 통과시킵니다.
 - `tool_schema_pruner.py` — 로컬 tool/MCP catalog를 top-k schema 자문 리포트로 줄이고, 전체 정제된 schema는 receipt/payload로 재조회할 수 있게 합니다.
-- `cost_guard.py` — provider usage/cache cost preflight·observe·compile과 local-only route-advisor total-cost/batchability 후보를 출력합니다.
+- `cost_guard.py` — provider usage/cache cost preflight·observe·compile·ledger·advisory를 출력합니다.
 - `benchmark_runner.py` — 고정 task/variant fixture로 A/B token/cost 절감 benchmark, cost-shift ledger, report를 생성합니다.
 - `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 대화형으로 선택하고 병합합니다.
 - `failed_attempt_nudge.py` — 반복 Bash 실패 시 `/clear`/`/compact`와 전략 전환을 짧게 권유합니다.
@@ -83,11 +83,7 @@ python3 context_pack.py auto --root . --query "retry failure" --diff worktree --
 
 `cost_guard.py compile`은 section manifest의 `protected`, `semantic_sensitive`, `protected_zone_classes`, `content_type`, `volatile`, `ttl`, `bytes` 필드를 읽어 `protected_zone_policy`와 `transform_policy`를 출력합니다. `protected=true`와 `volatile=true`가 같이 있으면 volatile이 cache ordering을 tail 쪽으로 보내고, protection은 transform/retrieval 정책만 제어합니다. 대용량 protected section에는 local artifact retrieval을 안내하지만 provider prompt cache를 대체한다고 주장하지 않습니다.
 
-`cost_guard.py route-advisor`와 dispatcher alias `context-guard route-advisor`는 caller-supplied workload JSON, provider feature 선언, usage telemetry, shifted external/local cost sidecar를 합쳐 local-only total-cost/batchability/routing 후보 자문을 출력합니다. queue를 시작하거나 provider를 호출하지 않고, provider feature matrix를 authoritative하게 내장하지 않으며, batch API·prompt cache·structured outputs·lower-cost model 추천은 matched successful task와 shifted-cost evidence 전까지 절감 주장으로 해석하면 안 됩니다.
-
-`experimental_registry.py`는 `context-guard experiments`의 project-local 메타데이터 진입점입니다. 기본 비활성이며, `enable`/`disable`은 `.context-guard/experiments.json`만 갱신하고 기존 헬퍼 동작은 여전히 명시적 flag가 있어야 바뀝니다. 레지스트리는 receipt-backed 출력 축약 경로(`trim_command_output.py --digest markdown|json --artifact-receipt`)와 protected-zone 정책 경로(`context_compress.py --protected-policy`, `cost_guard.py compile`의 protected section 메타데이터)를 명시적 flag 실험으로 표시합니다.
-
-실험 lane의 전체 surface와 경계는 [`../docs/experiments.md`](../docs/experiments.md)에 정리했습니다. 모든 lane은 기본 비활성이며 plan 전용이거나 좁은 명시적 로컬 runtime입니다.
+`experimental_registry.py`와 `context-guard experiments` 명령은 0.14.0에서 제거됐습니다. 배경은 [`../docs/experiments.md`](../docs/experiments.md)에 있습니다.
 
 `benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. 선택적 `output_format`은 기본값이 `json`이고 `json|stream-json`만 허용합니다. `stream-json`은 runner-controlled `--verbose`를 추가하며 bounded NDJSON의 마지막 event가 유효한 terminal result일 때만 성공으로 처리합니다. 이 경로의 client cost도 authoritative provider billing이 아닙니다. `variant_prompt_files`는 선택된 task/variant를 필터링한 뒤 필요한 file-backed prompt만 읽으므로 선택하지 않은 fixture의 누락 파일이 선택된 실행을 깨지 않습니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost와 run별 측정 가능 여부를 남기고, 선택적 `self_hosted_metrics` provider payload는 run별 sidecar로만 기록합니다. `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성하며, `--dashboard-md`는 같은 report에서 Markdown dashboard를 렌더링합니다. `--evidence-jsonl` replay는 provider와 `success_command`를 실행하지 않는 deterministic import mode이고, synthetic/manual evidence는 public hosted-savings claim 불가로 강제됩니다. `self_hosted_metrics`는 CSV/report 요약에 접지 않습니다. Report의 `matched_pair_evidence`는 성공한 baseline/variant task bucket을 transform, quality gate, 측정 가능 여부, claim boundary와 연결하므로 절감 주장을 쓰기 전에 이 항목을 확인하세요. Report의 `default_matrix`는 같은 evidence에서 trimming, artifact escrow, tool pruning, cache advice, adaptive-k, optional compression을 `default-on`/`advisory`/`experimental`/`reject/rework`로 분류하지만, report-only metadata이며 runtime default나 hosted savings claim을 바꾸지 않습니다. Report의 `public_claim_readiness`는 public hosted-savings claim의 최종 release gate로, matched successful task, provider-measured primary token/cost, quality non-inferiority, shifted-cost accounting, 명시적 confidence/failure note, complete provider-export provenance가 모두 통과하지 않으면 `claim_allowed=false`로 unsupported claim을 금지합니다.
 

@@ -29,7 +29,7 @@ Only Claude Code currently has a verified user-scope write path; every user-scop
 | --- | --- | --- | --- |
 | `--root` | — | — | project root to configure (default: nearest git root, else current directory) |
 | `--scope` | `project` | `project`, `user`, `global` | setup scope: project-local by default; user/global targets only known user-level paths and requires explicit --agent for writes |
-| `--profile` | `recommended` | `minimal`, `recommended`, `max` | which guardrails to enable: minimal (deny rules + Read guard), recommended (adds Bash trim/escrow, statusline, model defaults), max (adds the failed-attempt nudge); individual --no-* flags still remove items |
+| `--profile` | `recommended` | `minimal`, `recommended`, `max` | which guardrails to enable: minimal (deny rules + Read guard), recommended (adds Bash trim/escrow and model defaults), max (adds the deprecated statusline and the failed-attempt nudge); individual --no-* flags still remove items |
 | `--yes` | false | — | apply the recommended/selected setup without prompts |
 | `--plan` | false | — | show the setup plan without writing files |
 | `--verify` | false | — | run a read-only setup health check; never writes or prompts |
@@ -38,7 +38,7 @@ Only Claude Code currently has a verified user-scope write path; every user-scop
 | `--narration-mode` | — | `quiet`, `default` | with --rules-only, add quiet Claude narration guidance or restore default behavior |
 | `--no-backup` | false | — | do not create .bak-* before modifying existing settings |
 | `--no-denies` | false | — | skip recommended permissions.deny rules |
-| `--no-statusline` | false | — | skip token statusline |
+| `--no-statusline` | false | — | skip the token statusline (deprecated: it duplicates Claude Code /usage; only --profile max installs it) |
 | `--no-bash-hook` | false | — | skip Bash trim/sanitize hook |
 | `--bash-reference-v1` | false | — | opt in to 7-day scoped receipt references in the Bash hook; handles are provider-visible |
 | `--no-bash-reference-v1` | false | — | disable/remove the optional Bash receipt-reference hook flag (default) |

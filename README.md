@@ -91,14 +91,14 @@ reports are observations, not savings.
 - [docs/guide.md](docs/guide.md) — every helper command, brief mode, quiet narration, the cross-agent adapters, the benchmark runner, the local MCP adapter, opt-in `bash_reference_v1`, and the Receipt companion. Pack options such as `--explain`, `--adaptive-k-policy`, `--apply-adaptive-k`, and `--apply-symbol-memory` are documented there.
 - [docs/safety-reference.md](docs/safety-reference.md) — trust boundaries, the `PATH` helper policy, what ContextGuard does not do, the standing-cost and break-even table for advisory rule blocks, the Read-guard TOCTOU limit, and the wording rules for savings claims.
 - [docs/builtin-overlap.md](docs/builtin-overlap.md) — feature-by-feature comparison with what Claude Code already does built in (overlap, complement, or not built in).
-- [docs/experiments.md](docs/experiments.md) — default-off experimental lanes and their gates.
+- [docs/experiments.md](docs/experiments.md) — tombstone for the experimental lanes removed in 0.14.0.
 - [docs/setup-reference.md](docs/setup-reference.md) — generated setup capability and flag reference.
 - [docs/release-runbook.md](docs/release-runbook.md) — release workflow, evidence checklist, and rollback checklist.
 - [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md) — fixture-only experimental task/variant starters; they clear the same matched-task benchmark gates before any savings claim.
 
 ## Experimental features
 
-All experimental planners are off by default, plan-only, and documented in [`docs/experiments.md`](docs/experiments.md); their later-roadmap gates keep those lanes experimental/non-shipped until matched successful, provider-measured tasks and a separate future PR satisfy them. The wider research lanes are tracked in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md). ContextGuard does not guarantee a fixed token or cost reduction; the claim boundaries are in [docs/safety-reference.md](docs/safety-reference.md).
+The `context-guard experiments` command and its plan-only experimental lanes were removed in 0.14.0 — none of them produced runtime behaviour, and none ever cleared the provider-measured matched-task gate that a hosted API savings claim requires. See [`docs/experiments.md`](docs/experiments.md). The wider research lanes are still tracked in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md). ContextGuard does not guarantee a fixed token or cost reduction; the claim boundaries are in [docs/safety-reference.md](docs/safety-reference.md).
 
 ## License
 

@@ -62,7 +62,7 @@ If you need a savings claim, measure it on your own tasks:
 - It does not execute command manifests as code or trust arbitrary `PATH`/current-working-directory helpers during setup or packaged smoke checks.
 - It does not replace real before/after measurement when you need a savings claim.
 - Local RAM/disk receipts can help reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
-- Experimental helpers are default-off, plan-only or narrow explicit local runtimes; see [`docs/experiments.md`](experiments.md).
+- The experimental helper lanes were removed in 0.14.0; see [`docs/experiments.md`](experiments.md).
 - ContextGuard does not ship learned/synthetic compressor execution, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or broader proxy forwarding beyond literal-loopback, one-request HTTP forwarding with credential material blocked.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
@@ -119,7 +119,7 @@ ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트�
 - setup이나 패키징 smoke check에서 명령 매니페스트를 코드로 실행하거나 임의 `PATH`/현재 작업 디렉터리 헬퍼를 신뢰하지 않습니다.
 - 절감 수치가 필요할 때 직접 전후 비교 측정을 대신하지 않습니다.
 - 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄이는 데 도움이 될 수 있지만 Anthropic provider prompt cache를 대체하거나 cache hit를 보장하지 않습니다. 배포나 청구 설명 전에는 Anthropic prompt caching/pricing 문서를 다시 확인하세요: https://docs.anthropic.com/en/build-with-claude/prompt-caching 및 https://platform.claude.com/docs/en/about-claude/pricing.
-- 실험 헬퍼는 기본 비활성이며 plan 전용이거나 좁은 명시적 로컬 runtime입니다. 자세한 내용은 [`docs/experiments.md`](experiments.md)를 참고하세요.
+- 실험 헬퍼 lane은 0.14.0에서 제거됐습니다. 자세한 내용은 [`docs/experiments.md`](experiments.md)를 참고하세요.
 - ContextGuard는 learned/synthetic compressor 실행·embedding·reranker·model call·생성형 replacement, screenshot 캡처·image crop·OCR 실행·image parsing·외부 OCR/image service, 명시적 local metrics 기록을 넘어선 self-hosted KV/latent inference optimization runtime, literal-loopback 1회 HTTP forwarding과 credential 차단을 넘어선 proxy forwarding은 제공하지 않습니다.
 - 예전 `/claude-token-optimizer:*` Claude Code 슬래시 명령을 별칭으로 제공하지 않습니다. 설치 후에는 `/context-guard:*`를 사용하세요.
 

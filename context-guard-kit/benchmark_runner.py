@@ -426,7 +426,8 @@ PROFILE_STATUS_READY_FOR_BOUNDED_PILOT_REVIEW = "ready_for_bounded_pilot_review"
 IMPORTED_LOCAL_VERIFIER_ATTESTATION_LABEL = "imported_local_verifier_attestation"
 PROOF_VERIFICATION_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
 PROOF_VERIFICATION_VERIFIED_STATUS = "verified"
-# experimental_registry.PROOF_VERIFICATION_CLAIM_BOUNDARY 와 반드시 같은 문자열이다.
+# proof-carrying context verification 의 claim 경계 문자열이다. 0.14.0 에서 실험 레지스트리를
+# 삭제하면서 이 모듈이 유일한 정의처가 됐다.
 # 가져온 attestation 은 이 local-only 경계를 그대로 선언할 때만 verified 로 인정한다.
 PROOF_VERIFICATION_CLAIM_BOUNDARY = (
     "Local receipt/hash/range/command binding only; no semantic-safety, protected-zone, freshness, replacement, "

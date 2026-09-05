@@ -90,7 +90,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("provider-live", gate)
         self.assertIn("history", gate)
         self.assertIn("SERIAL_TEST_IDS", gate)
-        self.assertIn("test_experimental_registry_config_write_race_cannot_redirect_to_symlink", gate)
+        self.assertIn("test_context_pack_serializes_concurrent_sanitizer_factory_first_load", gate)
         self.assertIn("tests.test_release_assets", gate)
         self.assertIn("test_exact_two_package_release_asset_set_is_required", gate)
         self.assertNotIn(

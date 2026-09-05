@@ -1269,7 +1269,7 @@ def get_schema(args: argparse.Namespace) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Select bounded top-k tool/MCP schemas with local full-schema fallback receipts.")
+    parser = argparse.ArgumentParser(description="[deprecated] Select bounded top-k tool/MCP schemas with local full-schema fallback receipts. Claude Code loads MCP schemas lazily through tool search, so this helper is only useful for agents without deferred schema loading.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     select = sub.add_parser("select", help="rank a local catalog and emit a bounded selection report")
