@@ -121,16 +121,32 @@ def run_check_or_write(write: bool) -> int:
 
 
 def pin_core(commit: str) -> int:
+    """4단계: launcher 의 EXPECTED_CORE_COMMIT 과, 그 값을 리터럴로 박아 둔 핀 테스트를 갱신한다.
+
+    핀 테스트는 상수 이름 없이 SHA 리터럴만 갖고 있으므로, launcher 에서 읽은 *이전* 값을
+    새 값으로 치환한다.
+    """
     if COMMIT_RE.fullmatch(commit) is None:
         raise SystemExit("refresh-p3: --pin-core needs a 40-character lowercase commit sha")
+    launcher_text = LAUNCHER.read_text(encoding="utf-8")
+    match = re.search(r'^EXPECTED_CORE_COMMIT = "([0-9a-f]{40})"$', launcher_text, re.M)
+    if match is None:
+        raise SystemExit("refresh-p3: EXPECTED_CORE_COMMIT not found in live_launcher.py")
+    previous = match.group(1)
     changed_any = False
-    for path in (LAUNCHER, CORE_PIN_TEST):
-        text = path.read_text(encoding="utf-8")
-        new_text, changed = replace_constant(text, "EXPECTED_CORE_COMMIT", commit, path.name)
-        if changed:
-            path.write_text(new_text, encoding="utf-8")
-            changed_any = True
-            print(f"refresh-p3: pinned EXPECTED_CORE_COMMIT in {path.relative_to(ROOT)}")
+    if previous != commit:
+        LAUNCHER.write_text(launcher_text[: match.start(1)] + commit + launcher_text[match.end(1):], encoding="utf-8")
+        changed_any = True
+        print(f"refresh-p3: pinned EXPECTED_CORE_COMMIT in {LAUNCHER.relative_to(ROOT)}")
+    test_text = CORE_PIN_TEST.read_text(encoding="utf-8")
+    if previous in test_text and previous != commit:
+        CORE_PIN_TEST.write_text(test_text.replace(previous, commit), encoding="utf-8")
+        changed_any = True
+        print(f"refresh-p3: pinned core commit literal in {CORE_PIN_TEST.relative_to(ROOT)}")
+    elif commit not in test_text:
+        raise SystemExit(
+            f"refresh-p3: {CORE_PIN_TEST.relative_to(ROOT)} holds neither the previous nor the new core commit"
+        )
     if not changed_any:
         print("refresh-p3: EXPECTED_CORE_COMMIT already pinned to that commit")
     print("refresh-p3: commit this as the second cascade commit; the pinned commit must stay an ancestor of main (merge commit, never squash)")
