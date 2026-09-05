@@ -128,6 +128,11 @@ def pin_core(commit: str) -> int:
     """
     if COMMIT_RE.fullmatch(commit) is None:
         raise SystemExit("refresh-p3: --pin-core needs a 40-character lowercase commit sha")
+    import subprocess
+
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", commit, "HEAD"], cwd=ROOT, capture_output=True)
+    if ancestor.returncode != 0:
+        raise SystemExit(f"refresh-p3: {commit[:10]} is not an ancestor of HEAD (or does not exist); commit steps 1-3 first")
     launcher_text = LAUNCHER.read_text(encoding="utf-8")
     match = re.search(r'^EXPECTED_CORE_COMMIT = "([0-9a-f]{40})"$', launcher_text, re.M)
     if match is None:

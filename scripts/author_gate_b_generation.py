@@ -36,10 +36,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = ROOT / "scripts" / "verify_gate_b_rollback.py"
-TRAILER = (
-    "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n"
-    "Claude-Session: https://claude.ai/code/session_01DE3AupXcyv64SEuQeTckSh"
-)
+# 커밋 trailer 는 실행자가 준다. 하드코딩하면 다른 사람의 실행이 엉뚱한 세션을 주장한다.
+TRAILER = ""
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -98,10 +96,13 @@ def stage_paths(paths: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--body", default="", help="extra commit-message body for the bless and record commits")
-    parser.add_argument("--record-extra", action="append", default=[], help="extra path to include in the record commit (e.g. tests/test_gate_b_rollback_proof.py)")
+    parser.add_argument("--record-extra", action="append", default=[], help="extra path to include in the record commit (e.g. tests/test_gate_b_rollback_proof.py); it may be dirty in the working tree")
+    parser.add_argument("--trailer", default="", help="text appended to every commit message (e.g. a Co-Authored-By line)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and the fingerprint, commit nothing")
     parser.add_argument("--skip-proof", action="store_true", help="do not run verify_gate_b_rollback.py at the end")
     args = parser.parse_args(argv)
+    global TRAILER
+    TRAILER = args.trailer.strip()
 
     proof = load_proof()
     generations = proof["GENERATIONS"]
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {'delete ' if path in deletions else 'restore'} {path}")
         return 0
 
-    assert_clean_except(set(all_paths))
+    assert_clean_except(set(all_paths) | set(args.record_extra))
     for subject in (current.bless_subject, current.b1_subject, current.b2_subject, current.shared_subject):
         if git("log", "--format=%s", "HEAD").count(subject):
             raise SystemExit(f"author-gate-b: subject already exists in history: {subject!r}")
@@ -145,12 +146,13 @@ def main(argv: list[str] | None = None) -> int:
         for path in all_paths:
             if path in deletions:
                 if (ROOT / path).exists():
-                    git("rm", "--quiet", "--", path)
+                    # 작업 트리에는 최종 내용이 있어 index 와 다르다. stash 에 복사해 뒀으므로 강제 삭제.
+                    git("rm", "--quiet", "-f", "--", path)
             else:
                 git("checkout", "--quiet", prev_bless, "--", path)
         stage_paths(all_paths)
         body = (args.body.strip() + "\n\n") if args.body.strip() else ""
-        bless = commit(f"{current.bless_subject}\n\n{body}{TRAILER}")
+        bless = commit(f"{current.bless_subject}\n\n{body}{TRAILER}".rstrip())
         print(f"  bless  {bless[:10]}")
 
         def reapply(paths: list[str], subject: str) -> None:
@@ -166,13 +168,16 @@ def main(argv: list[str] | None = None) -> int:
             changed = git("diff", "--cached", "--name-only").split()
             if sorted(changed) != sorted(paths):
                 raise SystemExit(f"author-gate-b: reapply for {subject!r} would touch {changed}, expected {paths}")
-            print(f"  {subject.split()[2]:<12} {commit(f'{subject}\n\n{TRAILER}')[:10]}")
+            print(f"  {subject.split()[2]:<12} {commit(f'{subject}\n\n{TRAILER}'.rstrip())[:10]}")
 
         reapply(b1, current.b1_subject)
         reapply(b2, current.b2_subject)
         reapply(shared, current.shared_subject)
-    finally:
-        shutil.rmtree(stash_dir, ignore_errors=True)
+    except BaseException:
+        # 실패하면 최종 내용의 유일한 사본이 stash 다. 지우지 말고 위치를 알린다.
+        print(f"author-gate-b: FAILED; final component contents are preserved in {stash_dir}", file=sys.stderr)
+        raise
+    shutil.rmtree(stash_dir, ignore_errors=True)
 
     # 원장 append
     text = VERIFIER.read_text(encoding="utf-8")
@@ -187,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     stage_paths(record_paths)
     record = commit(
         f"proof: append Gate-B generation record {current.name} {current.bless_subject.split(current.name + ' ', 1)[1]}\n\n"
-        f"{body}지문은 생산 canonicalizer 로 계산했고 기존 레코드와 지문은 건드리지 않았다.\n\n{TRAILER}"
+        f"{body}지문은 생산 canonicalizer 로 계산했고 기존 레코드와 지문은 건드리지 않았다.\n\n{TRAILER}".rstrip()
     )
     print(f"  record {record[:10]}")
     if args.skip_proof:

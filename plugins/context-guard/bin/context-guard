@@ -435,6 +435,14 @@ def main(argv: list[str] | None = None) -> int:
     if command not in HELPER_SUBCOMMANDS:
         if MANIFEST_LOAD_ERROR:
             fail(MANIFEST_LOAD_ERROR)
+        # 0.14.0 에서 제거된 서브커맨드는 왜 없어졌는지 한 줄로 알려준다.
+        removed = {
+            "experiments": "removed in 0.14.0 (plan-only lanes produced no runtime behaviour; design notes stay under research/)",
+            "route-advisor": "removed in 0.14.0 (duplicated 'context-guard cost advisory')",
+            "route": "removed in 0.14.0 (duplicated 'context-guard cost advisory')",
+        }
+        if command in removed:
+            fail(f"subcommand {command!r} was {removed[command]}.")
         fail(f"unknown subcommand {command!r}. Run '{COMMAND_NAME} --help'.")
     return run_helper(command, args)
 

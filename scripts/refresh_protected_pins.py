@@ -77,6 +77,9 @@ def rewrite_entries(text: str, expected: dict[str, str], label: str) -> tuple[st
     changed: list[str] = []
     for path, digests in present.items():
         new = expected[path]
+        if len(digests) > 1:
+            # 같은 경로에 서로 다른 digest 가 있으면 드리프트 픽스처일 수 있다. 조용히 통일하지 않는다.
+            print(f"refresh-protected-pins: warning: {label} holds {len(digests)} different digests for {path}; all are rewritten", file=sys.stderr)
         if digests != {new}:
             for old in digests:
                 text = text.replace(f'"{path}": "{old}"', f'"{path}": "{new}"')

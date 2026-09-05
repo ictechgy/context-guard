@@ -31,9 +31,12 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
 
 
-def changed_paths(base: str) -> set[str]:
-    merge_base = git("merge-base", base, "HEAD").strip()
-    out = git("diff", "--name-only", "--no-renames", f"{merge_base}..HEAD")
+def changed_paths(base: str) -> set[str] | None:
+    """base 와의 merge-base 이후 바뀐 경로. base 를 알 수 없으면(얕은 checkout) None."""
+    proc = subprocess.run(["git", "merge-base", base, "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    out = git("diff", "--name-only", "--no-renames", f"{proc.stdout.strip()}..HEAD")
     return {line for line in out.splitlines() if line}
 
 
@@ -53,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     changed = changed_paths(args.base)
+    if changed is None:
+        annotate("notice", f"release-preflight: cannot resolve merge-base with {args.base} (shallow checkout?); path checks skipped, cascade checks still run")
+        changed = set()
     stale = False
 
     proof = runpy.run_path(str(SCRIPTS / "verify_gate_b_rollback.py"), run_name="gate_b_fingerprint")
@@ -83,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     code, output = run_helper("refresh_protected_pins.py")
     if protected_hits or code != 0:
         stale = stale or code != 0
+        print(output)
         annotate(
             "warning" if code != 0 else "notice",
             f"protected surfaces changed: {', '.join(protected_hits) or '(none by path)'}; "
@@ -95,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     code, output = run_helper("refresh_p3_live_contract.py")
     if artifact_hits or code != 0:
         stale = stale or code != 0
+        print(output)
         annotate(
             "warning" if code != 0 else "notice",
             f"P3 live-contract artifacts changed: {', '.join(artifact_hits) or '(none by path)'}; "
