@@ -144,6 +144,10 @@ GEN23_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen23 reconcile and
 GEN23_B1_SUBJECT = "proof: reapply Gate-B nudge component gen23 reconcile and guard coverage"
 GEN23_B2_SUBJECT = "proof: reapply Gate-B usage component gen23 reconcile and guard coverage"
 GEN23_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen23 reconcile and guard coverage"
+GEN24_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen24 narrow freeze to marker owners"
+GEN24_B1_SUBJECT = "proof: reapply Gate-B nudge component gen24 narrow freeze to marker owners"
+GEN24_B2_SUBJECT = "proof: reapply Gate-B usage component gen24 narrow freeze to marker owners"
+GEN24_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen24 narrow freeze to marker owners"
 
 B1_PATHS = frozenset(
     {
@@ -184,6 +188,37 @@ ALL_COMPONENT_PATHS = B1_PATHS | B2_PATHS | SHARED_INTEGRATION_PATHS
 # 소유하지 않으므로 마커 계약은 영향을 받지 않는다.
 GEN16_SHARED_INTEGRATION_PATHS = SHARED_INTEGRATION_PATHS - {
     "tests/test_context_guard_kit.py"
+}
+
+# gen24 가 좁힌 집합. 6일 동안 세대 9개(gen15→gen23)가 생겼고, 그 대부분은 마커를
+# 소유하지 않는 경로(dispatcher manifest, release_smoke, statusline, reducer)를 건드린
+# 보통 PR 이 freeze 에 걸린 것이었다. 동결은 Gate-B 마커를 소유하는 세 파일(nudge, audit,
+# setup_wizard)과 그 미러, 그리고 두 전용 테스트로 줄인다. 빠진 경로는 이후 보통 CI 가
+# 지킨다. narrowed_paths_report 가 빠진 경로를 모두 이름으로 낸다.
+GEN24_B1_PATHS = frozenset(
+    {
+        "context-guard-kit/failed_attempt_nudge.py",
+        "plugins/context-guard/bin/context-guard-failed-nudge",
+        "tests/test_context_guard_nudge_protocol.py",
+    }
+)
+GEN24_B2_PATHS = frozenset(
+    {
+        "context-guard-kit/claude_transcript_cost_audit.py",
+        "plugins/context-guard/bin/context-guard-audit",
+        "tests/test_context_guard_usage_reducer_v2.py",
+    }
+)
+GEN24_SHARED_INTEGRATION_PATHS = frozenset(
+    {
+        "context-guard-kit/setup_wizard.py",
+        "plugins/context-guard/bin/context-guard-setup",
+    }
+)
+# release_smoke.py 가 컴포넌트 밖으로 나가므로 그 잔여 마커는 더 이상 선언할 수 없다
+# (wellformed 검사가 컴포넌트 밖 키를 거부한다). setup_wizard 의 잔여 마커는 그대로다.
+GEN24_RESIDUAL_MARKERS: dict[str, tuple[str, ...]] = {
+    "context-guard-kit/setup_wizard.py": ("NARRATION_MODE_CHOICES", "def parse_managed_bytes"),
 }
 
 # gen1 잔여물이 보존해야 하는 무관 기능 마커(존재 방향). 이 세대가 무엇을
@@ -621,6 +656,22 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen24: narrowing 세대(gen16 선례). 컴포넌트를 마커 소유 파일과 미러, 전용 테스트로
+    # 줄인다. setup_wizard 의 recommended 프로파일에서 statusline 을 빼는 변경을 함께 싣는다.
+    # 잔여물은 gen23 bless 와 같다(residual_edits 없음).
+    Generation(
+        name="gen24",
+        bless_subject=GEN24_BLESS_SUBJECT,
+        b1_subject=GEN24_B1_SUBJECT,
+        b2_subject=GEN24_B2_SUBJECT,
+        shared_subject=GEN24_SHARED_SUBJECT,
+        b1_paths=GEN24_B1_PATHS,
+        b2_paths=GEN24_B2_PATHS,
+        shared_paths=GEN24_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN24_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -652,6 +703,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "8ad2bbb5827d53ea6fb83a96d2c440e46bed99882edb9ebc940b7eed404e89be",
     "99791d5bdc02ddd4d411f1486885d3ea214ac75c6171e299b58daed3f3a244ce",
     "d047d9eb29b3ca614fd9ed6cb0fa37743ddf77a34c735fdb703e00447656246a",
+    "e8f4a88ccf351f5e694bc1c566c9978cab40ff91d968e9ca2d661b364ae82928",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
