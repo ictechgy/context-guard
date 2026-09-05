@@ -301,14 +301,14 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
         self.assertEqual(
             guard.POST_STAGE2_PROTECTED_SHA256,
             {
-                ".claude-plugin/marketplace.json": "524d934955fe2a66eac0771c9a7d7f26370b0a1e1a643eab7b108799ea86862b",
+                ".claude-plugin/marketplace.json": "8f61b70bba4c1ea52c988b17db4348ccb81bee11b3ef46a8ea97ffb41ed04e59",
                 "context-guard-kit/benchmark_runner.py": "716dc6710923401ca5a5ab171ca652bcf1fa0094fae567f6e7f6ee1eda24cf71",
                 "context-guard-kit/context_pack.py": "6bc42070e4d3d0dea3e424388dbb02c352e2879bacf3788cb3df343f64cd5e75",
                 "context-guard-kit/context_guard_commands.py": "0920128f013a8b5be62253fbf34aa917d2b30b7c6e99bc656067102d5fba727a",
                 "context-guard-kit/guard_large_read.py": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
                 "context-guard-kit/setup_wizard.py": "c4352c4a19f4c9c30879898b6c762f03e799c4f2dc4ae5812393a7689686cde7",
-                "package.json": "d1c8a985ae15cd6773ab93262665fa2b59e4f2baa60d39f989ebc5061d2b747f",
-                "plugins/context-guard/.claude-plugin/plugin.json": "4e19912fa79c19e8ac3fdb8439ba7bbb00d0c5ac70146acda2aa04dc50f226c0",
+                "package.json": "18811b92460edf141a379f325b989ca3559150b736191ae074056ef7a10fb3b5",
+                "plugins/context-guard/.claude-plugin/plugin.json": "68d2bd26750767e6c22cc7076762223b6d324611433e957945f593bba7f9d016",
                 "plugins/context-guard/bin/context-guard-bench": "716dc6710923401ca5a5ab171ca652bcf1fa0094fae567f6e7f6ee1eda24cf71",
                 "plugins/context-guard/bin/context-guard-guard-read": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
                 "plugins/context-guard/bin/context-guard-pack": "6bc42070e4d3d0dea3e424388dbb02c352e2879bacf3788cb3df343f64cd5e75",
