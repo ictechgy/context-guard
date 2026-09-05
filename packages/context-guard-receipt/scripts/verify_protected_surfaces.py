@@ -68,20 +68,20 @@ SEMANTIC_RECORD_EXPECTATIONS = {
 ENTRY_KEYS = {"file_type", "mode", "path", "sha256", "tracked"}
 POST_STAGE2_PROTECTED_SHA256 = {
     ".claude-plugin/marketplace.json": "524d934955fe2a66eac0771c9a7d7f26370b0a1e1a643eab7b108799ea86862b",
-    "context-guard-kit/benchmark_runner.py": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
-    "context-guard-kit/context_pack.py": "f5bb1019effdd4a0fbb665b4ac8eee6cbe1174c6a1b42ef018591a0cf1d610ce",
-    "context-guard-kit/context_guard_commands.py": "d00c894221d11f5bbd15067ad50bb0f1269980b3b558606e5379fa49dfb5151b",
+    "context-guard-kit/benchmark_runner.py": "716dc6710923401ca5a5ab171ca652bcf1fa0094fae567f6e7f6ee1eda24cf71",
+    "context-guard-kit/context_pack.py": "6bc42070e4d3d0dea3e424388dbb02c352e2879bacf3788cb3df343f64cd5e75",
+    "context-guard-kit/context_guard_commands.py": "0920128f013a8b5be62253fbf34aa917d2b30b7c6e99bc656067102d5fba727a",
     "context-guard-kit/guard_large_read.py": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
-    "context-guard-kit/setup_wizard.py": "ae7d48ff6bf7302029d386b3e4849205eb0c88bac6551997b057a33681b08d67",
-    "package.json": "75ae543477762bdbe321badf1caf01b460c2b89e01bd904bef52213775e9b650",
+    "context-guard-kit/setup_wizard.py": "c4352c4a19f4c9c30879898b6c762f03e799c4f2dc4ae5812393a7689686cde7",
+    "package.json": "d1c8a985ae15cd6773ab93262665fa2b59e4f2baa60d39f989ebc5061d2b747f",
     "plugins/context-guard/.claude-plugin/plugin.json": "4e19912fa79c19e8ac3fdb8439ba7bbb00d0c5ac70146acda2aa04dc50f226c0",
-    "plugins/context-guard/bin/context-guard-bench": "56c9de323303f33e65f127417426a9ebed3c53aef05a7438849cf7b04d719d8c",
+    "plugins/context-guard/bin/context-guard-bench": "716dc6710923401ca5a5ab171ca652bcf1fa0094fae567f6e7f6ee1eda24cf71",
     "plugins/context-guard/bin/context-guard-guard-read": "81ddea324fdf927dc778b8d9466eb542f1941da40303a2ba4d16a6d68ab448e2",
-    "plugins/context-guard/bin/context-guard-pack": "f5bb1019effdd4a0fbb665b4ac8eee6cbe1174c6a1b42ef018591a0cf1d610ce",
-    "plugins/context-guard/bin/context-guard-setup": "ae7d48ff6bf7302029d386b3e4849205eb0c88bac6551997b057a33681b08d67",
-    "plugins/context-guard/lib/context_guard_commands.py": "d00c894221d11f5bbd15067ad50bb0f1269980b3b558606e5379fa49dfb5151b",
+    "plugins/context-guard/bin/context-guard-pack": "6bc42070e4d3d0dea3e424388dbb02c352e2879bacf3788cb3df343f64cd5e75",
+    "plugins/context-guard/bin/context-guard-setup": "c4352c4a19f4c9c30879898b6c762f03e799c4f2dc4ae5812393a7689686cde7",
+    "plugins/context-guard/lib/context_guard_commands.py": "0920128f013a8b5be62253fbf34aa917d2b30b7c6e99bc656067102d5fba727a",
     "scripts/prepublish_check.py": "54a968be3a125cfa9fabac2a38f410120de61e470525423dee103a47d003317b",
-    "scripts/release_smoke.py": "0a5364cfdcfe0061804b4fd070c970418a32247d5c336adb8a36932692e40e2d",
+    "scripts/release_smoke.py": "b18490bddd7d74e12a3405ceca22aaea0085dbbb688a21f143545796a9018102",
 }
 
 

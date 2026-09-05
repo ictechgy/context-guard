@@ -84,6 +84,12 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         # 2026-09 비용 도구 재조준(외부 리뷰 5개 항목): 설계 문서, 실험 문서 분리, 훅 테스트.
         "docs/experiments.md",
         "docs/builtin-overlap.md",
+        # 릴리스 캐스케이드 자동화(2026-09-05): 세대 작성기, 핀/P3 갱신기, PR 프리플라이트.
+        "scripts/author_gate_b_generation.py",
+        "scripts/refresh_p3_live_contract.py",
+        "scripts/refresh_protected_pins.py",
+        "scripts/release_preflight.py",
+        "tests/test_release_automation.py",
         "tests/test_standing_cost_documentation.py",
         # R3 문서 점진적 공개: README 에서 옮겨온 전체 가이드와 안전 경계 참조.
         "docs/guide.md",
@@ -166,6 +172,20 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "plugins/context-guard/bin/claude-token-statusline",
         "plugins/context-guard/bin/claude-token-statusline-merged",
         "plugins/context-guard/bin/claude-trim-output",
+        # 0.14.0 표면 정리: experiments/route-advisor 삭제와 5개 헬퍼 deprecation 으로 바뀐 경로.
+        "context-guard-kit/experimental_registry.py",
+        "plugins/context-guard/bin/context-guard-experiments",
+        "context-guard-kit/context_compress.py",
+        "context-guard-kit/context_filter.py",
+        "context-guard-kit/tool_schema_pruner.py",
+        "context-guard-kit/settings.example.json",
+        "plugins/context-guard/examples/settings.example.json",
+        "plugins/context-guard/bin/context-guard-compress",
+        "plugins/context-guard/bin/context-guard-filter",
+        "plugins/context-guard/bin/context-guard-tool-prune",
+        "plugins/context-guard/skills/optimize/SKILL.md",
+        "docs/benchmark-workflow-examples.md",
+        "tests/test_context_guard_sanitization_modes.py",
         "plugins/context-guard/bin/context-guard-audit",
         "plugins/context-guard/bin/context-guard-bench",
         "plugins/context-guard/bin/context-guard-artifact",
@@ -419,8 +439,8 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
     }
 )
 PROVIDER_FREE_PINNED_SUPPORT_SHA256 = {
-    "context-guard-kit/cost_guard.py": "209c8d3bfd33d98dfec272c6f7f9956c8440b665707cc1e3fedf5715b77162d6",
-    "plugins/context-guard/bin/context-guard-cost": "209c8d3bfd33d98dfec272c6f7f9956c8440b665707cc1e3fedf5715b77162d6",
+    "context-guard-kit/cost_guard.py": "c317cafb558edef204f2dcad610f86b3f923514feee6fc12ad4e0bdaf6371de7",
+    "plugins/context-guard/bin/context-guard-cost": "c317cafb558edef204f2dcad610f86b3f923514feee6fc12ad4e0bdaf6371de7",
 }
 EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 138
 RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular',
@@ -774,7 +794,7 @@ RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular',
  {'file_type': 'regular',
   'mode': '0644',
   'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py',
-  'sha256': 'e7ebb15835e96601b5af8fe31affbf676db95d53cdba12d0d9698631b916b124'},
+  'sha256': '4de74b72297b92358df991a9c4680b90e36ce7131486790b80e2cc3b8927fa95'},
  {'file_type': 'regular',
   'mode': '0644',
   'path': 'packages/context-guard-receipt/tests/adversarial/__init__.py',
@@ -794,7 +814,7 @@ RECEIPT_COMPANION_INVENTORY = [{'file_type': 'regular',
  {'file_type': 'regular',
   'mode': '0644',
   'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py',
-  'sha256': '52a4b783999c01fe33cbace32b7cf572e9ebdd672cd6317903a6cd58e893731d'},
+  'sha256': 'ee52aa791e7e70ad11f135795231197e7b2f965b27987ede024465eb0171d862'},
  {'file_type': 'regular',
   'mode': '0644',
   'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py',
