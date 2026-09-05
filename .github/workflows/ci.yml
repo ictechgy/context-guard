@@ -45,6 +45,8 @@ jobs:
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
       - name: Verify synchronized package sources
         run: python scripts/sync_plugin_copies.py --check
+      - name: Release cascade preflight (warnings only)
+        run: python scripts/release_preflight.py --base "origin/${{ github.base_ref }}"
       - name: Run fast closed security gate
         run: python scripts/ci_test_gate.py fast
       - name: Check release package invariants
