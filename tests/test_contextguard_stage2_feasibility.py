@@ -85,6 +85,8 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "docs/experiments.md",
         "docs/builtin-overlap.md",
         # 릴리스 캐스케이드 자동화(2026-09-05): 세대 작성기, 핀/P3 갱신기, PR 프리플라이트.
+        "context-guard-kit/context_guard_cli.py",
+        "plugins/context-guard/bin/context-guard",
         "scripts/author_gate_b_generation.py",
         "scripts/refresh_p3_live_contract.py",
         "scripts/refresh_protected_pins.py",
