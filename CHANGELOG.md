@@ -6,6 +6,42 @@ All notable changes for the ContextGuard plugin are documented here.
 
 _No unreleased changes._
 
+## [0.14.0] - 2026-09-05
+
+Surface triage decided with an external reviewer, and a smaller, scripted release
+process. No savings claim is made anywhere in this release.
+
+- **Removed:** the `experiments` command and its plan-only registry (eight lanes
+  that never produced runtime behaviour; the design notes stay under
+  `research/`, `docs/experiments.md` is a tombstone), and `cost route-advisor`
+  (`route`), which duplicated `cost advisory`. `context-guard experiments` and
+  `context-guard route-advisor` now explain why they are gone.
+- **Deprecated, still shipped:** `context-guard-tool-prune` (Claude Code defers MCP
+  schemas itself), `context-guard-compress` (built-in compaction wins; use
+  `context-guard-artifact` for lossless retrieval), `context-guard-filter`
+  (user-owned DSL, little use), `context-guard-pack` (ranker defects are recorded;
+  kept because the P3 live-evidence contract pins it), and the token statusline
+  (duplicates `/usage`; `--profile recommended` no longer installs it, only
+  `--profile max` does). Each `--help` says so; `docs/guide.md` lists them under
+  "Deprecated helpers".
+- **Gate-B freeze narrowed (gen24).** The rollback proof now freezes only the
+  three modules that own a Gate-B marker (`failed_attempt_nudge.py`,
+  `claude_transcript_cost_audit.py`, `setup_wizard.py`), their packaged mirrors,
+  and their two dedicated tests. Nine generations in six days had come from
+  ordinary PRs touching the dispatcher manifest, release smoke, the statusline,
+  or the usage reducer; those are guarded by ordinary CI now, and
+  `verify_gate_b_rollback.py --json` names every dropped path.
+- **Release automation.** `scripts/author_gate_b_generation.py` writes a
+  generation's five commits mechanically (it replayed gen24 byte for byte),
+  `scripts/refresh_protected_pins.py` and `scripts/refresh_p3_live_contract.py`
+  update the digest cascades, and `scripts/release_preflight.py` runs first in
+  the fast PR job to warn about frozen-path edits or stale pins before a release
+  gate would.
+- The full-test-discovery watchdog in `prepublish_check.py` is 33 minutes (the
+  0.13.0 candidate build crossed the old 23-minute limit).
+- `@ictechgy/context-guard-receipt` stays at 0.4.0; its packaged runtime did not
+  change.
+
 ## [0.13.0] - 2026-09-05
 
 Re-aimed at where the measurements say cost actually moves, after an external

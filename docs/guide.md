@@ -199,7 +199,7 @@ designed and rejected in review for losing exactly that anchor; see
 [`research/receipt-install-shape-boundary-20260831.md`](../research/receipt-install-shape-boundary-20260831.md).
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.13.0
+npm install --save-exact @ictechgy/context-guard@0.14.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
@@ -834,7 +834,7 @@ plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 referenc
 사용할 수 없다고 알립니다.
 
 ```bash
-npm install --save-exact @ictechgy/context-guard@0.13.0
+npm install --save-exact @ictechgy/context-guard@0.14.0
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
 ./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
 ```
