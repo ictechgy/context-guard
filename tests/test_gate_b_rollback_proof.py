@@ -213,7 +213,7 @@ class GateBRollbackProofTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-partial-") as tmp:
             repo, commits = self.make_gate_b_history_repo(Path(tmp))
-            frozen_path = sorted(rollback_proof.SHARED_INTEGRATION_PATHS)[0]
+            frozen_path = sorted(rollback_proof.GENERATIONS[-1].shared_paths)[0]
             (repo / frozen_path).write_text(
                 "# hunk surgery: partially unapplied\n", encoding="utf-8"
             )
@@ -298,7 +298,7 @@ class GateBRollbackProofTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-rename-") as tmp:
             repo, commits = self.make_gate_b_history_repo(Path(tmp))
-            frozen_path = sorted(rollback_proof.SHARED_INTEGRATION_PATHS)[0]
+            frozen_path = sorted(rollback_proof.GENERATIONS[-1].shared_paths)[0]
             old_content = (repo / frozen_path).read_text(encoding="utf-8")
             renamed_path = frozen_path + ".renamed"
             rollback_proof.run_git(repo, "mv", frozen_path, renamed_path)
