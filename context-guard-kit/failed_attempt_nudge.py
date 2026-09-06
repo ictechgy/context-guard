@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""Claude Code PostToolUse hook: 동일 Bash 명령이 연속 실패하면 /clear 권유.
+"""Claude Code Bash terminal-hook feedback with privacy-safe accounting.
 
-같은 명령으로 두 번 연속 실패하면 그 흐름은 컨텍스트 오염을 일으키고 prompt cache 도
-매 retry 마다 재워밍된다. 이 hook 은 그 패턴을 감지해 다음 turn 의 추가 컨텍스트로
-짧은 모델 힌트를 주입한다 (블록하지 않음).
+The hook accepts both ``PostToolUse`` and ``PostToolUseFailure`` payloads. It
+groups only exact ContextGuard wrapper envelopes, stores full SHA-256 identity
+components instead of raw commands/session/tool IDs, and emits one bounded
+strategy nudge on the second unique failure in an episode.
 
-PostToolUse 의 `hookSpecificOutput.additionalContext` 는 Claude Code 공식 hook 명세상
-모델 컨텍스트로 surfacing 되는 키이다 (https://code.claude.com/docs/en/hooks 참조).
-
-상태 저장: 프로젝트 로컬 `.context-guard/failures-<session>.json`.
-session_id 가 없으면 cross-session 오염을 피하기 위해 hook 자체를 noop 한다.
-같은 fingerprint 가 한 번이라도 성공하면 카운트를 리셋한다 (false-positive 방지).
-트래킹 깊이는 5 회로 제한해 디스크 사용을 무시할 수 있게 한다.
-
-Install via `.claude/settings.json` PostToolUse hook with matcher "Bash".
+State is project-local at ``.context-guard/failures-v2.json``. A
+symlink-safe advisory lock covers read/modify/durable-write so concurrent hook
+processes cannot emit the same episode twice.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
 import errno
+import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shlex
 import shutil
 import stat
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -50,10 +50,107 @@ def _load_hook_secret_patterns():
 
 
 _hook_secret_patterns = _load_hook_secret_patterns()
+
+
+def _load_optional_helper(file_name: str, module_name: str):
+    """선택적 helper(hook_journal, hook_switch)를 찾으면 싣고, 없으면 None 을 돌려준다.
+
+    이 둘은 훅의 동작을 바꾸지 않는 부속이므로 없거나 깨져도 훅은 그대로 동작해야
+    한다. 그래서 필수 helper 와 달리 예외를 밖으로 내지 않는다.
+    """
+    for helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
+        helper_path = helper_dir / file_name
+        try:
+            if not helper_path.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(module_name, helper_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:  # noqa: BLE001 - 부속 helper 는 훅을 깨뜨리지 않는다.
+            continue
+    return None
+
+
+_hook_journal = _load_optional_helper("hook_journal.py", "_context_guard_hook_journal")
+_hook_switch = _load_optional_helper("hook_switch.py", "_context_guard_hook_switch")
+
+
+def _nudge_switched_off() -> bool:
+    """세션 스위치(`context-guard hooks off nudge`)로 꺼져 있으면 True."""
+    if _hook_switch is None:
+        return False
+    try:
+        return bool(_hook_switch.is_disabled("nudge"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _journal(started, *, intervened: bool, session_id, input_bytes: int, detail: str | None = None) -> None:
+    """훅 저널에 한 줄 남긴다. 저널이 없으면 아무 일도 하지 않는다."""
+    if _hook_journal is None:
+        return
+    try:
+        _hook_journal.record(
+            "nudge",
+            started=started,
+            intervened=intervened,
+            session_id=session_id,
+            input_bytes=input_bytes,
+            detail=detail,
+        )
+    except Exception:  # noqa: BLE001
+        return
 redact_sensitive_hook_text = _hook_secret_patterns.redact_sensitive_hook_text
 
 STATE_DIR = Path(".context-guard")
-STATE_FILE_TEMPLATE = "failures-{session}.json"
+STATE_PATH = STATE_DIR / "failures-v2.json"
+STATE_LOCK_PATH = STATE_DIR / "failures-v2.lock"
+STATE_VERSION = 2
+STATE_TTL_SECONDS = 30 * 60
+MAX_EPISODES = 256
+MAX_EVENT_IDS = 512
+MAX_STATE_BYTES = 1_000_000
+MAX_COUNTER = (1 << 63) - 1
+STATE_LOCK_TIMEOUT_SECONDS = 2.0
+STATE_LOCK_POLL_SECONDS = 0.01
+CGW1_SENTINEL = "--context-guard-wrapper-v1"
+CGW1_COMMAND_SEARCH_DIFF = "command_search_diff"
+CGW1_SHELL_ARGV = ("bash", "-c")
+LEGACY_V0_MAX_LINES = "220"
+PROTOCOL_CGW1 = "cgw1"
+PROTOCOL_LEGACY_V0 = "legacy-v0"
+PROTOCOL_DIRECT = "direct"
+PROTOCOL_FOREIGN = "legacy-or-foreign"
+PROTOCOLS = frozenset({
+    PROTOCOL_CGW1,
+    PROTOCOL_LEGACY_V0,
+    PROTOCOL_DIRECT,
+    PROTOCOL_FOREIGN,
+})
+COUNTER_NAMES = frozenset({
+    "dedupe",
+    "conflict",
+    "episode_expired",
+    "event_expired",
+    "episode_evicted",
+    "event_evicted",
+    "tracking_started",
+    "nudge_emitted",
+    "failure_after_emit",
+    "success_reset",
+    "interrupted",
+    "missing_exit",
+    "ambiguous_exit",
+    "malformed_event",
+    "missing_session",
+    "missing_tool_id",
+})
+
+# Retained compatibility helpers are exercised by the legacy aggregate suite.
+# The v2 runtime below does not use their truncated fingerprints or tail list.
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
 STRATEGY_SWITCH_MIN_CONSECUTIVE = 3
@@ -85,24 +182,49 @@ class UnsafeStatePathError(OSError):
     """state path 가 symlink/비정규 파일/부적절한 경로 형태라 거부됨."""
 
 
-# additionalContext 는 모델에게 주입되므로 사용자에게 직접 명령하는 톤보다 모델이 행동을
-# 결정할 때 참고할 힌트 형태가 자연스럽다. 모델이 사용자에게 안내하도록 유도한다.
+class InvalidStateError(OSError):
+    """Persisted v2 state is malformed, unsupported, or oversized."""
+
+
+class StateLockTimeoutError(OSError):
+    """The bounded state lock deadline elapsed."""
+
+
+@dataclass(frozen=True)
+class CommandIdentity:
+    protocol: str
+    digest: str
+
+
+@dataclass(frozen=True)
+class TerminalEvent:
+    hook_event_name: str
+    outcome: str
+    session_digest: str
+    tool_id_digest: str
+    command_identity: CommandIdentity
+
+    @property
+    def episode_key(self) -> str:
+        components = (
+            self.session_digest,
+            self.command_identity.protocol,
+            self.command_identity.digest,
+        )
+        return sha256_text(json.dumps(components, separators=(",", ":"), ensure_ascii=True))
+
+
+# additionalContext 는 모델에게 주입되므로 한 줄로 줄인다. 무엇이 감지됐고, 무엇을 바꾸라는
+# 것이며, 오탐이면 어떻게 끄는지만 담는다. `/clear` 권유는 뺐다 — 작업 기억과 프롬프트
+# 캐시를 함께 버리게 하는 권유라 오탐 비용이 힌트의 이득보다 크다(외부 리뷰 합의).
 NUDGE_TEXT = (
-    "AI 힌트: 동일 Bash 명령이 이 세션에서 연속 두 번 실패했습니다. "
-    "이는 현재 접근 방식이 같은 방향으로 막혀 있고, 실패 시도가 누적될수록 컨텍스트가 오염되며 "
-    "prompt cache 도 매 retry 마다 재워밍됨을 의미합니다. "
-    "재시도 전에 사용자에게 `/clear` 또는 `/compact focus on …` 으로 세션을 정리한 뒤 "
-    "재현 명령·기대 결과·금지 사항을 더 좁혀 다시 prompt 하도록 안내하거나, "
-    "근본적으로 다른 방향(다른 모듈 / 검증 명령 / 더 작은 재현)을 제안하세요. "
-    "직전 출력에 artifact_receipt 또는 contextguard-artifact:<id> 핸들이 있으면, 전체 로그를 다시 붙여넣거나 "
-    "동일한 broad 명령을 재실행하기 전에 context-guard-artifact receipt/get/search 로 필요한 줄·패턴만 "
-    "정확히 rehydrate 하도록 우선 제안하세요."
+    "[context-guard] Same Bash command failed twice in this session. Change the approach "
+    "(different hypothesis, smaller reproducer, or query the stored artifact receipt) instead of "
+    "rerunning it. Ask the user before running: context-guard hooks off nudge (project-wide, 2h)"
 )
 STRATEGY_SWITCH_TEXT = (
-    " Strategy-switch signal: the same failure direction has now repeated at least three times. "
-    "Stop retrying the identical command path; summarize the invariant failure, choose a different hypothesis "
-    "or smaller reproducer, rehydrate exact artifact receipt slices when available, "
-    "and only rerun after changing code, inputs, or diagnostic scope."
+    " Repeated 3+ times: stop retrying the identical command path until code, inputs, or "
+    "diagnostic scope change."
 )
 
 
@@ -147,6 +269,223 @@ def normalize_command(command: str) -> str:
 
 def fingerprint(normalized: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _wrapper_prefixes() -> dict[str, tuple[str, ...]]:
+    """Return only the wrapper identities emitted beside this nudge helper."""
+    if Path(__file__).name == "failed_attempt_nudge.py":
+        return {
+            "sanitize": ("python3", str(SCRIPT_DIR / "sanitize_output.py")),
+            "trim": ("python3", str(SCRIPT_DIR / "trim_command_output.py")),
+        }
+    return {
+        "sanitize": (str(SCRIPT_DIR / "context-guard-sanitize-output"),),
+        "trim": (str(SCRIPT_DIR / "context-guard-trim-output"),),
+    }
+
+
+def _approved_python_runtime() -> str:
+    canonical = os.path.realpath(sys.executable)
+    if not canonical or not os.path.isabs(canonical) or not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved Python runtime is unavailable")
+    return canonical
+
+
+def _approved_bash_runtime() -> str:
+    found = shutil.which("bash", path=os.defpath)
+    if not found:
+        raise RuntimeError("approved Bash runtime is unavailable")
+    canonical = os.path.realpath(found)
+    if not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved Bash runtime is unavailable")
+    return canonical
+
+
+def _approved_env_runtime() -> str:
+    found = shutil.which("env", path=os.defpath)
+    if not found:
+        raise RuntimeError("approved env runtime is unavailable")
+    canonical = os.path.realpath(found)
+    if not os.path.isfile(canonical) or not os.access(canonical, os.X_OK):
+        raise RuntimeError("approved env runtime is unavailable")
+    return canonical
+
+
+def _runtime_shell_argv() -> tuple[str, ...]:
+    return (
+        _approved_env_runtime(),
+        "-u", "BASH_ENV",
+        "-u", "ENV",
+        "-u", "PYTHONHOME",
+        "-u", "PYTHONPATH",
+        "-u", "PYTHONSTARTUP",
+        "-u", "SHELLOPTS",
+        "-u", "BASHOPTS",
+        "-u", "PS4",
+        _approved_bash_runtime(),
+        "--noprofile",
+        "--norc",
+        "-p",
+        "-c",
+    )
+
+
+def _runtime_wrapper_prefixes() -> dict[str, tuple[str, ...]]:
+    adjacent = _wrapper_prefixes()
+    return {
+        kind: (_approved_python_runtime(), "-I", prefix[-1])
+        for kind, prefix in adjacent.items()
+    }
+
+
+def _argv(command: str) -> tuple[str, ...] | None:
+    try:
+        values = shlex.split(command, posix=True)
+    except (ValueError, TypeError):
+        return None
+    if not values or any("\x00" in value for value in values):
+        return None
+    return tuple(values)
+
+
+def _is_wrapper_shaped(argv: tuple[str, ...]) -> bool:
+    known = {
+        "sanitize_output.py",
+        "trim_command_output.py",
+        "context-guard-sanitize-output",
+        "context-guard-trim-output",
+    }
+    if not argv:
+        return False
+    first = os.path.basename(argv[0])
+    if first in known:
+        return True
+    return (
+        re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", first) is not None
+        and len(argv) > 1
+        and (
+            os.path.basename(argv[1]) in known
+            or (
+                len(argv) > 2
+                and argv[1] == "-I"
+                and os.path.basename(argv[2]) in known
+            )
+        )
+    )
+
+
+# 기본 Bash 래퍼가 큰 출력을 artifact 로 escrow 할 때 `--max-lines` 와 `--` 사이에 붙이는
+# digest 옵션들. 값이 있는 옵션은 허용 값 집합을, 값이 없는 옵션은 None 을 적는다.
+ESCROW_V1_OPTION_VALUES: dict[str, frozenset[str] | None] = {
+    "--digest": frozenset({"markdown", "json"}),
+    "--artifact-receipt": None,
+    "--head-lines": None,  # 값은 정수여야 하므로 아래에서 따로 검사한다
+    "--tail-lines": None,
+}
+ESCROW_V1_INT_OPTIONS = frozenset({"--head-lines", "--tail-lines"})
+
+
+def _escrow_v1_logical(
+    argv: tuple[str, ...], prefix: tuple[str, ...], shell_argv: tuple[str, ...]
+) -> str | None:
+    """escrow 래퍼 형태 `prefix --max-lines N <digest 옵션들> -- <shell> logical` 를 푼다.
+
+    v0 형태와 같은 fingerprint 를 내야 같은 논리 명령의 실패가 하나의 episode 로 묶인다.
+    옵션 허용 목록 밖의 토큰이 하나라도 있으면 풀지 않는다(foreign 으로 남긴다).
+    """
+    head = prefix + ("--max-lines", LEGACY_V0_MAX_LINES)
+    if len(argv) <= len(head) or argv[: len(head)] != head:
+        return None
+    rest = argv[len(head):]
+    try:
+        separator = rest.index("--")
+    except ValueError:
+        return None
+    options = rest[:separator]
+    if not options:
+        return None
+    index = 0
+    while index < len(options):
+        option = options[index]
+        if option not in ESCROW_V1_OPTION_VALUES:
+            return None
+        allowed = ESCROW_V1_OPTION_VALUES[option]
+        if option in ESCROW_V1_INT_OPTIONS or allowed is not None:
+            if index + 1 >= len(options):
+                return None
+            value = options[index + 1]
+            if option in ESCROW_V1_INT_OPTIONS:
+                if not value.isdigit():
+                    return None
+            elif value not in allowed:
+                return None
+            index += 2
+        else:
+            index += 1
+    tail = rest[separator + 1:]
+    if len(tail) != len(shell_argv) + 1 or tail[:-1] != shell_argv:
+        return None
+    logical = tail[-1]
+    if not logical or _is_wrapper_shaped(_argv(logical) or ()):
+        return None
+    return logical
+
+
+def command_identity(command: str) -> CommandIdentity:
+    """Structurally unwrap only the frozen current or allowlisted v0 shapes."""
+    argv = _argv(command)
+    if argv is None:
+        return CommandIdentity(PROTOCOL_FOREIGN, sha256_text(command))
+
+    prefixes = _wrapper_prefixes()
+    runtime_prefixes = _runtime_wrapper_prefixes()
+    current_shell_argv = _runtime_shell_argv()
+    for prefix, shell_argv in (
+        (runtime_prefixes["sanitize"], current_shell_argv),
+        (prefixes["sanitize"], CGW1_SHELL_ARGV),
+    ):
+        sanitize_cgw1 = prefix + (
+            CGW1_SENTINEL,
+            CGW1_COMMAND_SEARCH_DIFF,
+            "--",
+            *shell_argv,
+        )
+        if len(argv) == len(sanitize_cgw1) + 1 and argv[:-1] == sanitize_cgw1:
+            logical = argv[-1]
+            if logical and not _is_wrapper_shaped(_argv(logical) or ()):
+                return CommandIdentity(PROTOCOL_CGW1, sha256_text(logical))
+
+    # The frozen A1 producer still emits this exact v0 envelope for trim.
+    # The historical producer emitted it for sanitize as well, so both known
+    # adjacent wrapper identities remain allowlisted for one compatibility
+    # window. No other --/bash/-lc spelling is unwrapped.
+    for prefix_set, shell_argv in (
+        (prefixes, CGW1_SHELL_ARGV),
+        (runtime_prefixes, current_shell_argv),
+    ):
+        for prefix in prefix_set.values():
+            legacy_v0 = prefix + (
+                "--max-lines",
+                LEGACY_V0_MAX_LINES,
+                "--",
+                *shell_argv,
+            )
+            if len(argv) == len(legacy_v0) + 1 and argv[:-1] == legacy_v0:
+                logical = argv[-1]
+                if logical and not _is_wrapper_shaped(_argv(logical) or ()):
+                    return CommandIdentity(PROTOCOL_LEGACY_V0, sha256_text(logical))
+            logical = _escrow_v1_logical(argv, prefix, shell_argv)
+            if logical is not None:
+                return CommandIdentity(PROTOCOL_LEGACY_V0, sha256_text(logical))
+
+    protocol = PROTOCOL_FOREIGN if (
+        _is_wrapper_shaped(argv) or CGW1_SENTINEL in argv
+    ) else PROTOCOL_DIRECT
+    return CommandIdentity(protocol, sha256_text(command))
 
 
 def _base_open_flags() -> int:
@@ -408,6 +747,277 @@ def save_entries(path: Path, entries: list[dict]) -> None:
                 pass
 
 
+def _read_bytes_no_follow(path: Path, limit: int = MAX_STATE_BYTES) -> bytes:
+    fd = _open_regular_no_symlink(path)
+    chunks: list[bytes] = []
+    remaining = limit + 1
+    try:
+        while remaining > 0:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if len(data) > limit:
+        raise InvalidStateError(errno.EFBIG, "oversized v2 nudge state")
+    return data
+
+
+def _atomic_write_json(path: Path, value: object) -> None:
+    """Write private JSON durably using only directory-relative no-follow IO."""
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_STATE_BYTES:
+        raise InvalidStateError(errno.EFBIG, "v2 nudge state exceeds size bound")
+
+    parent_fd = -1
+    tmp_fd = -1
+    tmp_name = f".nudge-v2-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    try:
+        parent_fd = _ensure_directory_no_symlink(path.parent, create=True)
+        tmp_fd = os.open(
+            tmp_name,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | _no_follow_flag(),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        if not stat.S_ISREG(os.fstat(tmp_fd).st_mode):
+            raise UnsafeStatePathError(errno.EINVAL, "temporary state is not regular")
+        if hasattr(os, "fchmod"):
+            os.fchmod(tmp_fd, 0o600)
+        view = memoryview(encoded)
+        written = 0
+        while written < len(view):
+            count = os.write(tmp_fd, view[written:])
+            if count <= 0:
+                raise OSError(errno.EIO, "short state write")
+            written += count
+        os.fsync(tmp_fd)
+        os.close(tmp_fd)
+        tmp_fd = -1
+
+        try:
+            existing_fd = os.open(
+                path.name,
+                _base_open_flags() | _no_follow_flag(),
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            existing_fd = -1
+        else:
+            try:
+                if not stat.S_ISREG(os.fstat(existing_fd).st_mode):
+                    raise UnsafeStatePathError(errno.EINVAL, "state is not regular")
+            finally:
+                os.close(existing_fd)
+
+        _rename_state_entry(tmp_name, path.name, parent_fd)
+        tmp_name = ""
+        os.fsync(parent_fd)
+    finally:
+        if tmp_fd != -1:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+        if parent_fd != -1:
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+
+
+@contextmanager
+def state_lock(
+    path: Path = STATE_LOCK_PATH,
+    *,
+    timeout: float = STATE_LOCK_TIMEOUT_SECONDS,
+):
+    """Acquire a bounded private sibling lock without following symlinks."""
+    parent_fd = _ensure_directory_no_symlink(path.parent, create=True)
+    lock_fd = -1
+    try:
+        lock_fd = os.open(
+            path.name,
+            os.O_CREAT | os.O_RDWR | _no_follow_flag(),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            raise UnsafeStatePathError(errno.EINVAL, "state lock is not regular")
+        if hasattr(os, "fchmod"):
+            os.fchmod(lock_fd, 0o600)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise StateLockTimeoutError(
+                        errno.ETIMEDOUT,
+                        "v2 nudge state lock timed out",
+                    )
+                time.sleep(STATE_LOCK_POLL_SECONDS)
+        yield
+    finally:
+        if lock_fd != -1:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        os.close(parent_fd)
+
+
+def empty_state() -> dict:
+    return {
+        "version": STATE_VERSION,
+        "episodes": [],
+        "events": [],
+        "counters": {},
+    }
+
+
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _valid_timestamp(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        and float(value) >= 0.0
+    )
+
+
+def _validate_episode(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise InvalidStateError(errno.EINVAL, "invalid episode record")
+    required = {
+        "key",
+        "session",
+        "protocol",
+        "command",
+        "state",
+        "count",
+        "updated_at",
+    }
+    if set(value) != required:
+        raise InvalidStateError(errno.EINVAL, "invalid episode fields")
+    if not all(
+        isinstance(value[name], str) and _DIGEST_RE.fullmatch(value[name])
+        for name in ("key", "session", "command")
+    ):
+        raise InvalidStateError(errno.EINVAL, "invalid episode digest")
+    if not isinstance(value["protocol"], str) or value["protocol"] not in PROTOCOLS:
+        raise InvalidStateError(errno.EINVAL, "invalid episode protocol")
+    if not isinstance(value["state"], str) or value["state"] not in {"tracking", "emitted"}:
+        raise InvalidStateError(errno.EINVAL, "invalid episode state")
+    count = value["count"]
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_COUNTER:
+        raise InvalidStateError(errno.EINVAL, "invalid episode count")
+    if value["state"] == "tracking" and count != 1:
+        raise InvalidStateError(errno.EINVAL, "invalid tracking count")
+    if value["state"] == "emitted" and count < 2:
+        raise InvalidStateError(errno.EINVAL, "invalid emitted count")
+    if not _valid_timestamp(value["updated_at"]):
+        raise InvalidStateError(errno.EINVAL, "invalid episode timestamp")
+    return dict(value)
+
+
+def _validate_event(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise InvalidStateError(errno.EINVAL, "invalid event record")
+    required = {"id", "episode", "outcome", "updated_at"}
+    if set(value) != required:
+        raise InvalidStateError(errno.EINVAL, "invalid event fields")
+    if not (
+        isinstance(value["id"], str)
+        and _DIGEST_RE.fullmatch(value["id"])
+        and isinstance(value["episode"], str)
+        and _DIGEST_RE.fullmatch(value["episode"])
+    ):
+        raise InvalidStateError(errno.EINVAL, "invalid event digest")
+    if value["outcome"] not in {"failure", "success"}:
+        raise InvalidStateError(errno.EINVAL, "invalid event outcome")
+    if not _valid_timestamp(value["updated_at"]):
+        raise InvalidStateError(errno.EINVAL, "invalid event timestamp")
+    return dict(value)
+
+
+def validate_state(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != {
+        "version",
+        "episodes",
+        "events",
+        "counters",
+    }:
+        raise InvalidStateError(errno.EINVAL, "invalid v2 nudge state")
+    if value["version"] != STATE_VERSION:
+        raise InvalidStateError(errno.EINVAL, "unsupported v2 nudge state version")
+    if not isinstance(value["episodes"], list) or not isinstance(value["events"], list):
+        raise InvalidStateError(errno.EINVAL, "invalid v2 nudge collections")
+    if not isinstance(value["counters"], dict):
+        raise InvalidStateError(errno.EINVAL, "invalid v2 nudge counters")
+
+    episodes = [_validate_episode(item) for item in value["episodes"]]
+    events = [_validate_event(item) for item in value["events"]]
+    if len({item["key"] for item in episodes}) != len(episodes):
+        raise InvalidStateError(errno.EINVAL, "duplicate episode key")
+    if len({item["id"] for item in events}) != len(events):
+        raise InvalidStateError(errno.EINVAL, "duplicate event id")
+
+    counters: dict[str, int] = {}
+    for name, count in value["counters"].items():
+        if (
+            name not in COUNTER_NAMES
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 0 <= count <= MAX_COUNTER
+        ):
+            raise InvalidStateError(errno.EINVAL, "invalid v2 nudge counter")
+        if count:
+            counters[name] = count
+    return {
+        "version": STATE_VERSION,
+        "episodes": episodes,
+        "events": events,
+        "counters": counters,
+    }
+
+
+def load_state(path: Path = STATE_PATH) -> dict:
+    try:
+        raw = _read_bytes_no_follow(path)
+    except FileNotFoundError:
+        return empty_state()
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidStateError(errno.EINVAL, "invalid v2 nudge JSON") from exc
+    return validate_state(value)
+
+
+def save_state(state: dict, path: Path = STATE_PATH) -> None:
+    _atomic_write_json(path, validate_state(state))
+
+
 def safe_session_label(session_id: str | None) -> str | None:
     """session_id 를 파일명 안전 digest 로 변환. 없으면 None — 호출자가 hook 을 noop 한다."""
     if not session_id or not isinstance(session_id, str):
@@ -460,6 +1070,250 @@ def read_bounded_stdin_text(limit: int = MAX_HOOK_STDIN_BYTES) -> tuple[str | No
     return data.decode("utf-8", errors="replace"), False
 
 
+_MISSING = object()
+_AMBIGUOUS = object()
+
+
+def _alias(value: dict, snake: str, camel: str) -> object:
+    snake_value = value.get(snake, _MISSING)
+    camel_value = value.get(camel, _MISSING)
+    if snake_value is not _MISSING and camel_value is not _MISSING:
+        return snake_value if snake_value == camel_value else _AMBIGUOUS
+    return snake_value if snake_value is not _MISSING else camel_value
+
+
+def classify_terminal_event(payload: dict) -> tuple[TerminalEvent | None, str | None]:
+    """Return one valid terminal event or a bounded no-transition reason."""
+    tool_name = _alias(payload, "tool_name", "toolName")
+    if tool_name is _AMBIGUOUS:
+        return None, "malformed_event"
+    if tool_name != "Bash":
+        return None, None
+
+    hook_event_name = _alias(payload, "hook_event_name", "hookEventName")
+    if (
+        not isinstance(hook_event_name, str)
+        or hook_event_name not in {"PostToolUse", "PostToolUseFailure"}
+    ):
+        return None, "malformed_event"
+
+    tool_input = _alias(payload, "tool_input", "toolInput")
+    if not isinstance(tool_input, dict):
+        return None, "malformed_event"
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None, "malformed_event"
+
+    session_id = _alias(payload, "session_id", "sessionId")
+    if session_id is _AMBIGUOUS:
+        return None, "malformed_event"
+    if not isinstance(session_id, str) or not session_id:
+        return None, "missing_session"
+    tool_use_id = _alias(payload, "tool_use_id", "toolUseId")
+    if tool_use_id is _AMBIGUOUS:
+        return None, "malformed_event"
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return None, "missing_tool_id"
+
+    outcome: str
+    if hook_event_name == "PostToolUse":
+        tool_response = _alias(payload, "tool_response", "toolResponse")
+        if not isinstance(tool_response, dict):
+            return None, "malformed_event"
+        interrupted = tool_response.get("interrupted", False)
+        if not isinstance(interrupted, bool):
+            return None, "malformed_event"
+        if interrupted:
+            return None, "interrupted"
+        alternate_exit_fields = {"exitCode", "returncode"}.intersection(tool_response)
+        if alternate_exit_fields:
+            return None, "ambiguous_exit"
+        if "exit_code" not in tool_response:
+            return None, "missing_exit"
+        exit_code = tool_response["exit_code"]
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+            return None, "ambiguous_exit"
+        outcome = "success" if exit_code == 0 else "failure"
+    else:
+        error = payload.get("error")
+        is_interrupt = _alias(payload, "is_interrupt", "isInterrupt")
+        if is_interrupt is _AMBIGUOUS:
+            return None, "malformed_event"
+        if is_interrupt is _MISSING:
+            is_interrupt = False
+        if not isinstance(error, str) or not error:
+            return None, "malformed_event"
+        if not isinstance(is_interrupt, bool):
+            return None, "malformed_event"
+        lowered_error = error.casefold()
+        if is_interrupt or any(
+            marker in lowered_error
+            for marker in ("interrupt", "cancelled", "canceled")
+        ):
+            return None, "interrupted"
+        outcome = "failure"
+
+    return TerminalEvent(
+        hook_event_name=hook_event_name,
+        outcome=outcome,
+        session_digest=sha256_text(session_id),
+        tool_id_digest=sha256_text(tool_use_id),
+        command_identity=command_identity(command),
+    ), None
+
+
+def _increment_counter(state: dict, name: str, amount: int = 1) -> None:
+    if name not in COUNTER_NAMES or amount <= 0:
+        return
+    counters = state["counters"]
+    counters[name] = min(MAX_COUNTER, int(counters.get(name, 0)) + amount)
+
+
+def _prune_expired(state: dict, now: float) -> None:
+    episodes = [
+        item
+        for item in state["episodes"]
+        if now - float(item["updated_at"]) <= STATE_TTL_SECONDS
+    ]
+    events = [
+        item
+        for item in state["events"]
+        if now - float(item["updated_at"]) <= STATE_TTL_SECONDS
+    ]
+    _increment_counter(state, "episode_expired", len(state["episodes"]) - len(episodes))
+    _increment_counter(state, "event_expired", len(state["events"]) - len(events))
+    state["episodes"] = episodes
+    state["events"] = events
+
+
+def _enforce_lru(state: dict) -> None:
+    if len(state["episodes"]) > MAX_EPISODES:
+        ordered = sorted(
+            state["episodes"],
+            key=lambda item: (float(item["updated_at"]), item["key"]),
+        )
+        evict = len(ordered) - MAX_EPISODES
+        evicted_keys = {item["key"] for item in ordered[:evict]}
+        state["episodes"] = [
+            item for item in state["episodes"] if item["key"] not in evicted_keys
+        ]
+        _increment_counter(state, "episode_evicted", evict)
+    if len(state["events"]) > MAX_EVENT_IDS:
+        ordered = sorted(
+            state["events"],
+            key=lambda item: (float(item["updated_at"]), item["id"]),
+        )
+        evict = len(ordered) - MAX_EVENT_IDS
+        evicted_ids = {item["id"] for item in ordered[:evict]}
+        state["events"] = [
+            item for item in state["events"] if item["id"] not in evicted_ids
+        ]
+        _increment_counter(state, "event_evicted", evict)
+
+
+def _nudge_response(hook_event_name: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": hook_event_name,
+            "additionalContext": NUDGE_TEXT,
+        }
+    }
+
+
+def apply_payload(
+    state: dict,
+    payload: dict,
+    *,
+    now: float | None = None,
+) -> tuple[dict, dict]:
+    """Pure v2 FSM transition used by the locked runtime and protocol tests."""
+    state = validate_state(state)
+    timestamp = time.time() if now is None else float(now)
+    if not _valid_timestamp(timestamp):
+        raise ValueError("now must be a finite non-negative timestamp")
+    _prune_expired(state, timestamp)
+    _enforce_lru(state)
+
+    event, reason = classify_terminal_event(payload)
+    if event is None:
+        if reason is not None:
+            _increment_counter(state, reason)
+        return state, {}
+
+    existing_event = next(
+        (item for item in state["events"] if item["id"] == event.tool_id_digest),
+        None,
+    )
+    if existing_event is not None:
+        if (
+            existing_event["episode"] == event.episode_key
+            and existing_event["outcome"] == event.outcome
+        ):
+            _increment_counter(state, "dedupe")
+        else:
+            _increment_counter(state, "conflict")
+        return state, {}
+
+    state["events"].append({
+        "id": event.tool_id_digest,
+        "episode": event.episode_key,
+        "outcome": event.outcome,
+        "updated_at": timestamp,
+    })
+    episode = next(
+        (item for item in state["episodes"] if item["key"] == event.episode_key),
+        None,
+    )
+
+    response: dict = {}
+    if event.outcome == "success":
+        if episode is not None:
+            state["episodes"].remove(episode)
+            _increment_counter(state, "success_reset")
+    elif episode is None:
+        state["episodes"].append({
+            "key": event.episode_key,
+            "session": event.session_digest,
+            "protocol": event.command_identity.protocol,
+            "command": event.command_identity.digest,
+            "state": "tracking",
+            "count": 1,
+            "updated_at": timestamp,
+        })
+        _increment_counter(state, "tracking_started")
+    elif episode["state"] == "tracking":
+        episode["state"] = "emitted"
+        episode["count"] = 2
+        episode["updated_at"] = timestamp
+        _increment_counter(state, "nudge_emitted")
+        response = _nudge_response(event.hook_event_name)
+    else:
+        episode["count"] = min(MAX_COUNTER, int(episode["count"]) + 1)
+        episode["updated_at"] = timestamp
+        _increment_counter(state, "failure_after_emit")
+
+    _enforce_lru(state)
+    return validate_state(state), response
+
+
+def update_state_transaction(
+    payload: dict,
+    *,
+    now: float | None = None,
+    state_path: Path = STATE_PATH,
+    lock_path: Path = STATE_LOCK_PATH,
+) -> dict:
+    """Serialize one event and return output only after durable persistence."""
+    event, _reason = classify_terminal_event(payload)
+    if event is None and _reason is None:
+        return {}
+    with state_lock(lock_path):
+        state = load_state(state_path)
+        state, response = apply_payload(state, payload, now=now)
+        save_state(state, state_path)
+    return response
+
+
 def update_entries(entries: list[dict], fp: str, success: bool) -> list[dict]:
     """성공한 fingerprint 는 카운트 리셋. 실패는 append.
 
@@ -492,7 +1346,9 @@ def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-failed-nudge")
         return 0
+    started = _hook_journal.start_clock() if _hook_journal is not None else None
     raw_payload, oversized = read_bounded_stdin_text()
+    input_bytes = len(raw_payload.encode("utf-8", "replace")) if isinstance(raw_payload, str) else 0
     if oversized:
         sys.stderr.write("context-guard-failed-nudge: oversized hook JSON skipped\n")
         print("{}")
@@ -505,68 +1361,27 @@ def main() -> int:
     if not isinstance(payload, dict):
         print("{}")
         return 0
-
-    tool_name = payload.get("tool_name") or payload.get("toolName")
-    if tool_name != "Bash":
+    session_id = payload.get("session_id")
+    # 저널은 Bash 이벤트에만 남긴다. 다른 도구 호출은 상태 파일조차 만들지 않는다는
+    # 기존 계약(non-Bash → 디스크 무접촉)을 저널이 깨면 안 된다.
+    if payload.get("tool_name") != "Bash":
         print("{}")
         return 0
-
-    tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
-    tool_response = payload.get("tool_response") or payload.get("toolResponse") or {}
-    if not isinstance(tool_input, dict) or not isinstance(tool_response, dict):
+    if _nudge_switched_off():
+        _journal(started, intervened=False, session_id=session_id, input_bytes=input_bytes, detail="switched off")
         print("{}")
         return 0
-
-    command = tool_input.get("command")
-    if not isinstance(command, str) or not command.strip():
-        print("{}")
-        return 0
-
-    exit_code = extract_exit_code(tool_response)
-    if exit_code is None:
-        # exit_code 미확정 — 실패 여부를 모르므로 회귀 위험 방지 차원에서 noop.
-        print("{}")
-        return 0
-
-    session = safe_session_label(payload.get("session_id") or payload.get("sessionId"))
-    if session is None:
-        # session_id 가 없으면 cross-session 오염 위험으로 그냥 noop. 상태 파일도 만들지 않는다.
-        print("{}")
-        return 0
-
-    fp = fingerprint(normalize_command(command))
-    state_path = STATE_DIR / STATE_FILE_TEMPLATE.format(session=session)
-
     try:
-        entries = load_entries(state_path)
+        response = update_state_transaction(payload)
     except OSError as exc:
-        # state 읽기 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴 뒤 새 streak 으로 시작한다.
-        sys.stderr.write(f"context-guard-failed-nudge: state read skipped: {diagnostic_text(exc)}\n")
-        entries = []
-    success = exit_code == 0
-    entries = update_entries(entries, fp, success)
-    try:
-        save_entries(state_path, entries)
-    except OSError as exc:
-        # state 저장 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴다.
-        sys.stderr.write(f"context-guard-failed-nudge: state write skipped: {diagnostic_text(exc)}\n")
-
-    if success:
-        # 성공이면 nudge 는 절대 발화하지 않는다.
-        print("{}")
-        return 0
-
-    consecutive = count_consecutive_failures(entries, fp)
-    if consecutive < MIN_CONSECUTIVE:
-        print("{}")
-        return 0
-
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": NUDGE_TEXT + (STRATEGY_SWITCH_TEXT if consecutive >= STRATEGY_SWITCH_MIN_CONSECUTIVE else ""),
-        }
-    }
+        # Never emit from an uncommitted transition: a later retry must not
+        # produce repeated text after read/lock/durability failure.
+        sys.stderr.write(
+            "context-guard-failed-nudge: state update skipped: "
+            f"{diagnostic_text(exc)}\n"
+        )
+        response = {}
+    _journal(started, intervened=bool(response), session_id=session_id, input_bytes=input_bytes)
     print(json.dumps(response, ensure_ascii=False))
     return 0
 
