@@ -45,7 +45,9 @@ Before merge or publish, capture enough evidence that another maintainer can rep
   - `python3 scripts/prepublish_check.py`
   - `python3 scripts/release_smoke.py`
 - GitHub Actions check names and final status:
-  - `fast-pr (ubuntu-latest, 3.12)` on the reviewed PR
+  - `fast-pr (ubuntu-latest, 3.12)` on the reviewed PR — this job also compiles
+    every tracked module on the 3.11 floor, so a syntax-level 3.11 break fails
+    here instead of on the merged commit
   - `core-pr (ubuntu-latest, 3.12)` on the reviewed PR
   - `security-pr (ubuntu-latest, 3.12)` on the reviewed PR
   - `exhaustive-linux (3.11)` and `exhaustive-linux (3.12)` on the merged commit
