@@ -3362,10 +3362,12 @@ def _aim_at_new_token_source(summary: UsageSummary) -> dict[str, Any] | None:
                 "starts). There the figure tracks context size at that moment, not what a tool returned."
             ),
             (
-                "No tool hook can reduce these turns. Look at what invalidates or re-establishes the "
-                "prefix: idle gaps past the cache TTL, plugin or MCP catalog changes mid-session, "
-                "rule-file edits, compaction, and session starts. Read the incremental turns for "
-                "tool-level work."
+                "Trimming one tool result does not change these turns, because their size tracks "
+                "the whole context at that moment; a hook that keeps the context smaller across the "
+                "session does reduce what a later rewrite has to write. Look at what invalidates or "
+                "re-establishes the prefix: idle gaps past the cache TTL, plugin or MCP catalog "
+                "changes mid-session, rule-file edits, compaction, and session starts. Read the "
+                "incremental turns for tool-level work."
             ),
             "P1",
             {
