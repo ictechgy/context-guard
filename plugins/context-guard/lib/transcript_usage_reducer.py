@@ -21,6 +21,8 @@ import re
 from typing import Any, Iterable
 
 
+# 토큰 산출 규칙의 의미를 고정하는 문자열이다. 필드를 덧붙이기만 하는 변경에서는
+# 올리지 않는다. statusline 은 이 값이 자기 상수와 다르면 오류 없이 캐시 지표를 끈다.
 REDUCER_SCHEMA = "usage-reducer-v2"
 UINT63_MAX = (1 << 63) - 1
 FILE_IDENTITY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -203,6 +205,12 @@ class UsageSelection:
     # (thinking 행 + 텍스트 행) 선택은 마지막 행이 되지만, "이 턴 직전에 무엇이
     # 컨텍스트에 들어왔는가" 는 첫 행 시점에만 관측된다. 행 단위로 스냅샷을 찍는
     # 소비자가 그 시점을 되찾을 수 있도록 노출한다.
+    #
+    # 계약의 범위를 좁게 읽을 것. 이 값은 그룹에 들어온 *usage 후보 행* 중 최소
+    # 순번이지 응답의 첫 행이 아니다. usage 가 없는 선행 행은 후보가 아니라 빠진다.
+    # 그리고 message id 가 없어 행 해시로 묶인 그룹(used_no_id_fallback)에서는 완전히
+    # 동일한 행이 멀리 떨어져 다시 나타나도 한 그룹이 되므로, 그 경우 이 값은 "그 행이
+    # 처음 나온 위치" 일 뿐 이 턴의 직전 문맥이 아니다. 소비자는 그 플래그를 함께 볼 것.
     group_first_row_ordinal: int
 
 

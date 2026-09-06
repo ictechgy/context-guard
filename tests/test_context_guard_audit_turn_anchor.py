@@ -12,7 +12,6 @@ reads it; the audit lives behind a Gate-B freeze and changes separately.
 
 from __future__ import annotations
 
-import datetime as _dt
 import importlib.util
 import sys
 import unittest
@@ -155,7 +154,70 @@ class ReducerTimestampAnchorTests(unittest.TestCase):
         self.assertEqual(len(selections), 1)
         self.assertEqual(selections[0].group_first_row_ordinal, 4)
 
+    def test_anchor_follows_the_ordinal_when_timestamps_disagree_with_it(self) -> None:
+        """Separate the two axes, which every other fixture here conflates.
+
+        Elsewhere timestamp order and ordinal order agree, so "the ordinal of
+        the group's earliest-timestamped row" would satisfy the whole suite
+        without being the contract. Here they are deliberately opposed: the row
+        with the LOWER ordinal carries the LATER timestamp. Selection follows the
+        timestamp and lands on ordinal 4; the anchor is the lowest ordinal, which
+        is also 4 — while the timestamp-based reading would answer 9.
+        """
+        reducer = self.reducer_module.UsageReducer()
+        reducer.observe(
+            usage_row("msg_h", 11, "2026-09-06T00:05:00Z"),  # earliest timestamp
+            file_identity=FILE_IDENTITY,
+            row_ordinal=9,
+        )
+        reducer.observe(
+            usage_row("msg_h", 11, "2026-09-06T00:05:30Z"),  # latest timestamp
+            file_identity=FILE_IDENTITY,
+            row_ordinal=4,
+        )
+        selections = reducer.finalize().selections
+        self.assertEqual(len(selections), 1)
+        selection = selections[0]
+        self.assertEqual(selection.row_ordinal, 4, "selection follows the timestamp")
+        self.assertEqual(
+            selection.group_first_row_ordinal,
+            4,
+            "anchor is the lowest ordinal, not the earliest-timestamped row",
+        )
+
+    def test_anchor_ignores_a_late_timestamp_on_the_lowest_ordinal(self) -> None:
+        """The mirror image, so neither direction can pass by coincidence."""
+        reducer = self.reducer_module.UsageReducer()
+        reducer.observe(
+            usage_row("msg_i", 13, "2026-09-06T00:06:30Z"),  # latest timestamp
+            file_identity=FILE_IDENTITY,
+            row_ordinal=3,
+        )
+        reducer.observe(
+            usage_row("msg_i", 13, "2026-09-06T00:06:00Z"),  # earliest timestamp
+            file_identity=FILE_IDENTITY,
+            row_ordinal=8,
+        )
+        selection = reducer.finalize().selections[0]
+        self.assertEqual(selection.row_ordinal, 3, "selection follows the timestamp")
+        self.assertEqual(selection.group_first_row_ordinal, 3)
+
+    def test_no_id_fallback_anchors_within_its_own_group(self) -> None:
+        """Rows with no message id group by row digest, so only identical rows meet.
+
+        The anchor is then the first ordinal at which that exact row appeared,
+        which is a weaker statement than "what preceded this turn"; the field's
+        contract comment says so, and `used_no_id_fallback` marks the selection.
+        """
+        reducer = self.reducer_module.UsageReducer()
+        for ordinal in (6, 2):
+            row = usage_row("unused", 21, "2026-09-06T00:07:00Z")
+            del row["message"]["id"]
+            reducer.observe(row, file_identity=FILE_IDENTITY, row_ordinal=ordinal)
+        selection = reducer.finalize().selections[0]
+        self.assertTrue(selection.used_no_id_fallback)
+        self.assertEqual(selection.group_first_row_ordinal, 2)
+
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation
-    _ = _dt  # keep the import meaningful for readers of the fixtures above
     unittest.main()
