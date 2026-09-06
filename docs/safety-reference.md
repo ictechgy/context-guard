@@ -40,6 +40,40 @@ block's installed size as the break-even threshold your reply-length reduction h
 to clear. Byte counts here are observed; token effects are not, and no fixed
 saving is claimed.
 
+## Measured addressable set: Bash escrow
+
+A guardrail can only affect the volume it is positioned to see. This is what one
+local corpus said about the Bash escrow's reach. It is an observation on one
+machine, not a savings claim and not a general result.
+
+Corpus: 191 main-thread transcripts under `~/.claude/projects`, 38,594 turns
+carrying `cache_creation`, 270,694,948 `cache_creation` tokens, 31,502 Bash
+`tool_result` payloads. Each turn's `cache_creation` was attributed to the single
+tool result that arrived since the previous counted turn, deduplicated by
+assistant message id.
+
+| Bash result preceding the turn | turns | share of `cache_creation` |
+| --- | --- | --- |
+| over 30,000 characters | 0 | 0.000% |
+| 20,000–30,000 characters | 36 | 0.157% |
+| over 5,000 characters (all buckets) | 998 | 2.080% |
+| no tool result at all | 2,691 | 68.094% |
+
+Bash payload sizes in that corpus: p50 372, p95 3,846, p99 10,252, maximum
+29,019 characters. **No Bash result reached 30,000 characters**, which is the
+default `BASH_MAX_OUTPUT_LENGTH` where Claude Code spills to a file on its own.
+
+Two limits on reading this. The corpus is one person's machine, so it describes
+that workload and no other. And the escrow was active for part of it, which
+would censor the large tail — but only 18 of the 31,502 Bash results carry any
+ContextGuard marker (0.06%), so the distribution is close to an unmodified one.
+
+The largest bucket by far is turns with no new tool result at all: 68% of
+`cache_creation` arrives where no tool hook of any kind can intervene. Measure
+your own corpus with `context-guard-audit` before deciding what to enable; if
+your Bash output distribution looks like this one, the escrow's remaining reasons
+are secret masking before storage and cross-session handle retrieval, not volume.
+
 ## What to measure
 
 If you need a savings claim, measure it on your own tasks:
@@ -96,6 +130,25 @@ ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트�
 이 비용은 요청마다 선불로 확정되는 반면, 이득은 ContextGuard가 강제할 수 없는 확률적인 응답 길이 감소입니다. 턴 수가 적은 세션이나 이미 간결하게 답하는 에이전트에서는 블록이 절감분보다 더 들 수 있습니다. 훅 기반 가드레일은 성질이 다릅니다. 실제로 개입할 때만 비용이 들고, 측정된 최악의 경우도 작습니다. 임계값 이하 `Read`는 3바이트를 더하고, 대용량 읽기를 반복 시도해도 첫 경고 이후에는 누적되지 않고 오히려 줄어듭니다.
 
 토큰 효과를 노려 규칙 블록을 설치하기 전에 직접 측정하십시오. `context-guard-bench`로 블록이 있는 경우와 없는 경우를 동일 과제에서 비교하고, 블록의 설치 크기를 응답 길이 감소가 넘어야 하는 손익분기점으로 취급하십시오. 여기 적힌 바이트 수는 관측값이지만 토큰 효과는 관측값이 아니며, 고정된 절감률을 보장하지 않습니다.
+
+### Bash escrow 가 닿을 수 있는 범위 측정값
+
+가드레일은 자기가 볼 수 있는 양에만 영향을 줍니다. 아래는 한 로컬 코퍼스에서 Bash escrow 의 사정거리를 측정한 결과입니다. 한 대의 머신에서 나온 관측값이며, 절감 주장도 일반화된 결과도 아닙니다.
+
+코퍼스는 `~/.claude/projects` 아래 메인 스레드 트랜스크립트 191개, `cache_creation` 이 있는 턴 38,594개, `cache_creation` 합계 270,694,948 토큰, Bash `tool_result` 31,502건입니다. 각 턴의 `cache_creation` 은 직전에 집계된 턴 이후 도착한 단 하나의 도구 결과에 귀속했고, 어시스턴트 message id 로 중복을 제거했습니다.
+
+| 턴 직전의 Bash 결과 크기 | 턴 수 | `cache_creation` 점유 |
+| --- | --- | --- |
+| 30,000자 초과 | 0 | 0.000% |
+| 20,000~30,000자 | 36 | 0.157% |
+| 5,000자 초과 전체 | 998 | 2.080% |
+| 도구 결과가 아예 없음 | 2,691 | 68.094% |
+
+같은 코퍼스의 Bash 결과 크기는 p50 372, p95 3,846, p99 10,252, 최대 29,019자입니다. **어떤 Bash 결과도 30,000자에 닿지 않았습니다.** 그 값은 Claude Code 가 스스로 파일로 흘리기 시작하는 `BASH_MAX_OUTPUT_LENGTH` 기본값입니다.
+
+읽을 때 두 가지 한계가 있습니다. 코퍼스가 한 사람의 머신이라 그 작업 부하만 설명합니다. 그리고 escrow 가 일부 기간 켜져 있었다면 큰 쪽 꼬리가 잘렸을 수 있는데, Bash 결과 31,502건 중 ContextGuard 표식이 붙은 것은 18건(0.06%)뿐이라 분포는 거의 원본에 가깝습니다.
+
+가장 큰 버킷은 새 도구 결과가 아예 없는 턴입니다. `cache_creation` 의 68%가 어떤 도구 훅도 개입할 수 없는 곳에서 발생합니다. 무엇을 켤지 정하기 전에 `context-guard-audit` 으로 자기 코퍼스를 측정하십시오. Bash 출력 분포가 이것과 비슷하다면 escrow 에 남는 이유는 양이 아니라 저장 전 비밀 가림과 세션을 넘는 핸들 재조회입니다.
 
 ### 직접 측정하는 방법
 
