@@ -128,10 +128,11 @@ def _read_pid_when_written(path: Path, timeout: float = 5.0) -> int:
     """Wait for a child's pid file to hold a pid, not merely to exist.
 
     `open(path, "w")` creates the file before anything is written to it, so a
-    reader that waits on `Path.exists()` can win the race and read an empty
-    string. That is a flake, not a product defect: it surfaced on CI as
-    `ValueError: invalid literal for int() with base 10: ''` while the same
-    commit passed on a re-run. Wait for content that parses instead.
+    reader that waits on the path existing — `Path.is_file()` or
+    `Path.exists()` — can win the race and read an empty string. That is a
+    flake, not a product defect: it surfaced on CI as `ValueError: invalid
+    literal for int() with base 10: ''` while the same commit passed on a
+    re-run. Wait for a finished record instead.
     """
     deadline = time.monotonic() + timeout
     last = ""
@@ -143,8 +144,9 @@ def _read_pid_when_written(path: Path, timeout: float = 5.0) -> int:
         # The writers end the pid with a newline, so a trailing newline is what
         # makes "the write finished" observable. Without it a torn read of
         # "12345" could return 12 and look entirely valid.
-        if last.endswith("\n"):
-            return int(last.strip())
+        body = last.strip()
+        if last.endswith("\n") and body:
+            return int(body)
         time.sleep(0.01)
     raise AssertionError(f"pid file never became readable: {path} (last read {last!r})")
 
