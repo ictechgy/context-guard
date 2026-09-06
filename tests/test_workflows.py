@@ -90,12 +90,14 @@ class WorkflowSecurityTests(unittest.TestCase):
         syntax that 3.11 itself rejects.
         """
         jobs = workflow_job_blocks(read(".github/workflows/ci.yml"))
-        matrix = re.search(
-            r"(?ms)^\s+matrix:\n\s+python-version: \[(.*?)\]",
-            jobs["exhaustive-linux"],
-        )
-        self.assertIsNotNone(matrix)
-        versions = re.findall(r'"([\d.]+)"', matrix.group(1))
+        # Every version any exhaustive job runs, whether it comes from a matrix
+        # list or a scalar, so a new job below the floor cannot slip past.
+        exhaustive = sorted(name for name in jobs if name.startswith("exhaustive-"))
+        self.assertTrue(exhaustive)
+        versions: list[str] = []
+        for name in exhaustive:
+            for line in re.findall(r"python-version: (.+)", jobs[name]):
+                versions.extend(re.findall(r"(\d+\.\d+)", line))
         self.assertTrue(versions)
         floor = min(versions, key=lambda value: tuple(int(part) for part in value.split(".")))
 
@@ -110,13 +112,31 @@ class WorkflowSecurityTests(unittest.TestCase):
         # The surrounding fast-pr steps resolve `python` and assert it is the
         # hosted 3.12 runtime, so the floor must not take over PATH.
         self.assertEqual(gate.group(2), "false")
-        self.assertIn("steps.python-floor.outputs.python-path", fast_pr)
-        self.assertIn("PYTHONPYCACHEPREFIX", fast_pr)
-        compiled = re.search(r"(?ms)-m compileall -q\n(.*?)(?=^      - name:)", fast_pr)
-        self.assertIsNotNone(compiled)
-        targets = compiled.group(1).split()
-        for required in ("context-guard-kit", "scripts", "tests"):
-            self.assertIn(required, targets)
+        # Bind the compile call to the floor interpreter and the out-of-tree
+        # cache; a bare substring search would also match the explanatory
+        # comment above the step.
+        compile_step = re.search(
+            r"(?ms)^      - name: Compile every tracked module.*?"
+            r"PYTHONPYCACHEPREFIX: (.+)\n.*?"
+            r'run: >-\n\s+"\$\{\{ steps\.python-floor\.outputs\.python-path \}\}" -m compileall -q\n'
+            r"(.*?)(?=^      - name:)",
+            fast_pr,
+        )
+        self.assertIsNotNone(compile_step, "fast-pr has no floor compile step")
+        self.assertIn("runner.temp", compile_step.group(1))
+        targets = set(compile_step.group(2).split())
+        # The step name and the runbook both promise every tracked module, so
+        # each tree that ships or is imported under 3.11 stays pinned here.
+        self.assertEqual(
+            targets,
+            {
+                "context-guard-kit",
+                "plugins/context-guard",
+                "scripts",
+                "tests",
+                "packages/context-guard-receipt/python",
+            },
+        )
 
     def test_ci_partition_manifest_is_closed_nonempty_and_serializes_races(self):
         gate = read("scripts/ci_test_gate.py")
