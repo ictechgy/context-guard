@@ -95,6 +95,10 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "tests/test_standing_cost_documentation.py",
         # 디스패처 --help 의 deprecated 구획과 헬퍼 소스 표식이 갈라지지 않게 고정한다.
         "tests/test_cli_deprecation_surface.py",
+        # usage reducer: 응답 그룹의 첫 행 순번을 노출한다.
+        "context-guard-kit/transcript_usage_reducer.py",
+        "plugins/context-guard/lib/transcript_usage_reducer.py",
+        "tests/test_context_guard_audit_turn_anchor.py",
         # R3 문서 점진적 공개: README 에서 옮겨온 전체 가이드와 안전 경계 참조.
         "docs/guide.md",
         "docs/safety-reference.md",

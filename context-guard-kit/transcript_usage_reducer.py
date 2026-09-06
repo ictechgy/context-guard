@@ -199,6 +199,11 @@ class UsageSelection:
     model: str
     timestamp: _dt.datetime | None
     used_no_id_fallback: bool
+    # 선택된 행이 아니라 이 응답 그룹의 첫 행 순번. 한 응답이 여러 행으로 나뉘면
+    # (thinking 행 + 텍스트 행) 선택은 마지막 행이 되지만, "이 턴 직전에 무엇이
+    # 컨텍스트에 들어왔는가" 는 첫 행 시점에만 관측된다. 행 단위로 스냅샷을 찍는
+    # 소비자가 그 시점을 되찾을 수 있도록 노출한다.
+    group_first_row_ordinal: int
 
 
 @dataclass(frozen=True)
@@ -347,6 +352,11 @@ class UsageReducer:
                     model=selected.model,
                     timestamp=selected.timestamp,
                     used_no_id_fallback=selected.used_no_id_fallback,
+                    # observe() 는 호출자가 준 순번을 그대로 쓰므로 append 순서가
+                    # 순번 순서라는 보장이 없다. 최솟값으로 정한다.
+                    group_first_row_ordinal=min(
+                        candidate.row_ordinal for candidate in candidates
+                    ),
                 )
             )
 
