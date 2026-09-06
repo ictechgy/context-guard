@@ -31,7 +31,8 @@ All notable changes for the ContextGuard plugin are documented here.
   reports them as their own `cold_start` / `cache_rewrite` / `incremental`
   fields.
 
-  Historical entries below are left as they were published.
+  Historical entries below keep the text they were published with; where an
+  affected figure appears, a pointer to this correction was added beside it.
 
 ## [0.14.0] - 2026-09-05
 
