@@ -154,6 +154,11 @@ GEN25_B1_SUBJECT = "proof: reapply Gate-B nudge component gen25 turn attribution
 GEN25_B2_SUBJECT = "proof: reapply Gate-B usage component gen25 turn attribution anchor"
 GEN25_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen25 turn attribution anchor"
 
+GEN26_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen26 scope the prefix write advice"
+GEN26_B1_SUBJECT = "proof: reapply Gate-B nudge component gen26 scope the prefix write advice"
+GEN26_B2_SUBJECT = "proof: reapply Gate-B usage component gen26 scope the prefix write advice"
+GEN26_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen26 scope the prefix write advice"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -693,6 +698,22 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen26: 동결 범위는 그대로다. B2 의 권고 문구 한 곳만 바꾼다. "어떤 도구 훅도 줄일
+    # 수 없다" 는 무제한 부정이라, 세션 내내 컨텍스트를 작게 유지하는 훅이 나중 재작성
+    # 비용을 줄인다는 사실과 어긋났다.
+    Generation(
+        name="gen26",
+        bless_subject=GEN26_BLESS_SUBJECT,
+        b1_subject=GEN26_B1_SUBJECT,
+        b2_subject=GEN26_B2_SUBJECT,
+        shared_subject=GEN26_SHARED_SUBJECT,
+        b1_paths=GEN24_B1_PATHS,
+        b2_paths=GEN24_B2_PATHS,
+        shared_paths=GEN24_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN24_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -726,6 +747,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "d047d9eb29b3ca614fd9ed6cb0fa37743ddf77a34c735fdb703e00447656246a",
     "e8f4a88ccf351f5e694bc1c566c9978cab40ff91d968e9ca2d661b364ae82928",
     "bd21e82a97713df3d99a261e4d865bd5d18b525a93c1a808d89a18aea1862a94",
+    "32d45dc3c398e7dc0dd075b5dd0c784f9f2e22300fefecc3b6991b978e467092",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
