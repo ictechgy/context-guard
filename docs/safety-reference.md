@@ -46,9 +46,10 @@ A guardrail can only affect the volume it is positioned to see. This is what one
 local corpus said about the Bash escrow's reach. It is an observation on one
 machine, not a savings claim and not a general result.
 
-Corpus: 191 main-thread transcripts under `~/.claude/projects`, 38,594 turns
-carrying `cache_creation`, 270,694,948 `cache_creation` tokens, 31,502 Bash
-`tool_result` payloads. Each turn's `cache_creation` was attributed to the tool
+**Measurement A — 2026-09-05, main-thread only.** 191 transcripts under
+`~/.claude/projects`, 38,594 turns carrying `cache_creation`, 270,694,948
+`cache_creation` tokens, 31,502 Bash `tool_result` payloads. Every figure in the
+table and the percentiles below belongs to this run. Each turn's `cache_creation` was attributed to the tool
 result that arrived since the previous counted turn; when more than one arrived,
 the last one before the turn wins. Turns were deduplicated by assistant message
 id. The rows below partition every counted turn.
@@ -62,25 +63,31 @@ id. The rows below partition every counted turn.
 | a non-Bash tool result | 6,201 | 12.169% |
 | no tool result at all | 2,691 | 68.094% |
 
-Recorded Bash payload sizes: p50 372, p95 3,846, p99 10,252, maximum 29,019
-characters. **No recorded Bash result reached 30,000 characters**, which is the
-default `BASH_MAX_OUTPUT_LENGTH` where Claude Code spills to a file on its own.
+Recorded Bash payload sizes in measurement A: p50 372, p95 3,846, p99 10,252,
+maximum 29,019 characters.
 
-The share figures above are a snapshot taken on 2026-09-06; a local transcript
-directory grows while you use it, so re-running the same script on a later day
-gives different totals. The 30,000-character result does not depend on that
-snapshot, or on which files count as main-thread: re-run the same day over every
-transcript in the directory — 994 files, 51,603 Bash results, main-thread and
-subagent alike — the maximum was 29,409 characters and nothing exceeded 30,000
-in any slice.
+**Measurement B — 2026-09-06, every transcript.** A local transcript directory
+grows while you use it, so measurement A's totals are a snapshot and a later run
+gives different ones. Measurement B re-ran the size question one day later over
+the whole directory: 994 files and 51,603 Bash payloads, main-thread and subagent
+alike, maximum 29,409 characters. Sliced three ways — main-thread only (193
+files, 31,579 payloads, max 29,409), everything (994 / 51,603 / 29,409),
+subagent only (801 / 20,024 / 29,240) — **no Bash payload reached 30,000
+characters in any slice**, which is the default `BASH_MAX_OUTPUT_LENGTH` where
+Claude Code spills to a file on its own.
+
+So the two maxima describe two different corpora one day apart, and the
+30,000-character result survives both the snapshot date and the choice of what
+counts as main-thread.
 
 Three limits on reading this. The corpus is one person's machine, so it describes
 that workload and no other. The escrow was active for part of it and replaces an
 oversized payload with a digest, so recorded sizes are a lower bound on what the
-command actually produced — though only 18 of the 31,502 Bash results carry any
-ContextGuard marker (0.06%), so the distribution is close to an unmodified one.
-And the maximum is the statistic censoring would hit first, so read it as
-"nothing that reached the transcript was that large", not as a bound on output.
+command actually produced — though only 18 of measurement A's 31,502 Bash results carry
+any ContextGuard marker (0.06%), so the distribution is close to an unmodified one.
+And the maximum is the statistic censoring would hit first, so read each maximum
+as "nothing in that corpus reached the transcript larger than this", not as a
+bound on what the commands produced.
 
 By share of `cache_creation` the largest bucket is turns with no new tool result
 at all: 68% arrives where no tool hook of any kind can intervene. By turn count
@@ -150,7 +157,7 @@ ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트�
 
 가드레일은 자기가 볼 수 있는 양에만 영향을 줍니다. 아래는 한 로컬 코퍼스에서 Bash escrow 의 사정거리를 측정한 결과입니다. 한 대의 머신에서 나온 관측값이며, 절감 주장도 일반화된 결과도 아닙니다.
 
-코퍼스는 `~/.claude/projects` 아래 메인 스레드 트랜스크립트 191개, `cache_creation` 이 있는 턴 38,594개, `cache_creation` 합계 270,694,948 토큰, Bash `tool_result` 31,502건입니다. 각 턴의 `cache_creation` 은 직전에 집계된 턴 이후 도착한 도구 결과에 귀속했고, 둘 이상이 도착했으면 턴 직전의 마지막 것으로 귀속했습니다. 턴은 어시스턴트 message id 로 중복을 제거했습니다. 아래 표는 집계된 모든 턴을 빠짐없이 나눕니다.
+**측정 A — 2026-09-05, 메인 스레드만.** `~/.claude/projects` 아래 트랜스크립트 191개, `cache_creation` 이 있는 턴 38,594개, `cache_creation` 합계 270,694,948 토큰, Bash `tool_result` 31,502건입니다. 아래 표와 백분위 수치는 전부 이 실행의 것입니다. 각 턴의 `cache_creation` 은 직전에 집계된 턴 이후 도착한 도구 결과에 귀속했고, 둘 이상이 도착했으면 턴 직전의 마지막 것으로 귀속했습니다. 턴은 어시스턴트 message id 로 중복을 제거했습니다. 아래 표는 집계된 모든 턴을 빠짐없이 나눕니다.
 
 | 턴 직전에 있던 것 | 턴 수 | `cache_creation` 점유 |
 | --- | --- | --- |
@@ -161,11 +168,13 @@ ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트�
 | Bash 가 아닌 도구 결과 | 6,201 | 12.169% |
 | 도구 결과가 아예 없음 | 2,691 | 68.094% |
 
-기록된 Bash 결과 크기는 p50 372, p95 3,846, p99 10,252, 최대 29,019자입니다. **기록된 어떤 Bash 결과도 30,000자에 닿지 않았습니다.** 그 값은 Claude Code 가 스스로 파일로 흘리기 시작하는 `BASH_MAX_OUTPUT_LENGTH` 기본값입니다.
+측정 A 의 기록된 Bash 결과 크기는 p50 372, p95 3,846, p99 10,252, 최대 29,019자입니다.
 
-위의 점유 수치는 2026-09-06 시점의 스냅샷입니다. 로컬 트랜스크립트 디렉터리는 쓰는 동안 계속 자라므로 같은 스크립트를 다른 날 돌리면 합계가 달라집니다. 30,000자 결과는 그 스냅샷에도, 무엇을 메인 스레드로 셀지에도 의존하지 않습니다. 같은 날 디렉터리의 모든 트랜스크립트로 다시 돌리면(파일 994개, Bash 결과 51,603건, 메인 스레드와 서브에이전트 전부) 최대가 29,409자였고 어느 구간에서도 30,000자를 넘지 않았습니다.
+**측정 B — 2026-09-06, 전체 트랜스크립트.** 로컬 트랜스크립트 디렉터리는 쓰는 동안 계속 자라므로 측정 A 의 합계는 스냅샷이고 나중에 돌리면 달라집니다. 측정 B 는 하루 뒤 같은 크기 질문을 디렉터리 전체에 다시 물었습니다. 파일 994개, Bash payload 51,603건, 메인 스레드와 서브에이전트 전부, 최대 29,409자입니다. 세 가지로 나눠 보면 메인 스레드만(파일 193, payload 31,579, 최대 29,409), 전체(994 / 51,603 / 29,409), 서브에이전트만(801 / 20,024 / 29,240) 이고, **어느 구간에서도 30,000자에 닿은 Bash payload 가 없습니다.** 그 값은 Claude Code 가 스스로 파일로 흘리기 시작하는 `BASH_MAX_OUTPUT_LENGTH` 기본값입니다.
 
-읽을 때 세 가지 한계가 있습니다. 코퍼스가 한 사람의 머신이라 그 작업 부하만 설명합니다. escrow 가 일부 기간 켜져 있었고 큰 출력을 digest 로 치환하므로, 기록된 크기는 명령이 실제로 낸 양의 하한입니다. 다만 Bash 결과 31,502건 중 ContextGuard 표식이 붙은 것은 18건(0.06%)뿐이라 분포는 거의 원본에 가깝습니다. 그리고 검열이 가장 먼저 닿는 통계가 최댓값이므로, 최대 29,019자는 "트랜스크립트에 도달한 것 중 그보다 큰 것은 없었다" 로 읽어야지 출력 크기의 상한으로 읽으면 안 됩니다.
+즉 두 최대값은 하루 차이의 서로 다른 코퍼스를 설명하며, 30,000자 결과는 스냅샷 날짜에도 메인 스레드 정의에도 살아남습니다.
+
+읽을 때 세 가지 한계가 있습니다. 코퍼스가 한 사람의 머신이라 그 작업 부하만 설명합니다. escrow 가 일부 기간 켜져 있었고 큰 출력을 digest 로 치환하므로, 기록된 크기는 명령이 실제로 낸 양의 하한입니다. 다만 측정 A 의 Bash 결과 31,502건 중 ContextGuard 표식이 붙은 것은 18건(0.06%)뿐이라 분포는 거의 원본에 가깝습니다. 그리고 검열이 가장 먼저 닿는 통계가 최댓값이므로, 각 최대값은 "그 코퍼스에서 트랜스크립트에 도달한 것 중 그보다 큰 것은 없었다" 로 읽어야지 명령이 낸 출력 크기의 상한으로 읽으면 안 됩니다.
 
 `cache_creation` 점유 기준으로 가장 큰 버킷은 새 도구 결과가 아예 없는 턴입니다. 68%가 어떤 도구 훅도 개입할 수 없는 곳에서 발생합니다. 턴 수 기준으로 가장 큰 것은 평범한 소형 Bash 결과입니다. 무엇을 켤지 정하기 전에 `context-guard-audit` 으로 자기 코퍼스를 측정하십시오. Bash 출력 분포가 이것과 비슷하다면 escrow 에 남는 이유는 양이 아니라 저장 전 비밀 가림과 세션을 넘는 핸들 재조회입니다.
 
