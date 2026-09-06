@@ -22,6 +22,7 @@ import re
 import shlex
 import stat
 import struct
+import contextlib
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -853,6 +854,15 @@ class UsageSummary:
     # 직전 usage 턴 이후 tool_result 가 2개 이상이었던 턴 수(병렬 tool_use). 귀속은 마지막
     # 도구에만 하므로 이 수가 크면 by_preceding_tool 은 과소분배됐다.
     multi_result_turns: int = 0
+    # cache_read 와 cache_creation 의 관계로 턴을 셋으로 가른다. rows 의 행이 아니라
+    # 직교하는 필드로 둔다. 행으로 만들면 재작성 버킷이 1위가 되어 covers_all_turns 가
+    # 거짓이 되고 aim 권고가 그 버킷을 지목한다.
+    cold_start_turns: int = 0
+    cold_start_tokens: int = 0
+    cache_rewrite_turns: int = 0
+    cache_rewrite_tokens: int = 0
+    incremental_turns: int = 0
+    incremental_tokens: int = 0
     cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     positive_cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
@@ -1419,9 +1429,26 @@ def parse_json_line(line: str) -> Any:
     # deeply nested transcript payloads before our iterative walker sees them.
     # Raise the process limit enough for realistic hostile fixtures, while still
     # treating too-deep input as a skipped parse record instead of crashing.
+    #
+    # 이 한도는 프로세스 전역이다. 올린 채로 두면 같은 프로세스의 다른 코드가
+    # 적대적 입력으로 취급하던 깊이를 조용히 받아들이게 된다. 실제로 벤치마크의
+    # 스트림 파서가 2,000단 중첩을 거부하지 못해 CI 에서 실패했다. 복원은
+    # restored_recursion_limit() 이 scan() 을 감싸며 맡는다. 여기서 매 줄마다
+    # 복원하지 않는 이유는 이 함수가 줄 단위 핫 패스이기 때문이다.
     if sys.getrecursionlimit() < JSON_PARSE_RECURSION_LIMIT:
         sys.setrecursionlimit(JSON_PARSE_RECURSION_LIMIT)
     return json.loads(line)
+
+
+@contextlib.contextmanager
+def restored_recursion_limit() -> Iterator[None]:
+    """parse_json_line 이 올린 전역 재귀 한도를 블록이 끝나면 되돌린다."""
+    previous = sys.getrecursionlimit()
+    try:
+        yield
+    finally:
+        if sys.getrecursionlimit() != previous:
+            sys.setrecursionlimit(previous)
 
 
 NO_PRECEDING_TOOL_LABEL = "no_tool_result"
@@ -1464,22 +1491,43 @@ def _apply_usage_reduction(
                 summary.cache_creation_samples_truncated = True
             # 귀속은 "이 턴 직전에 컨텍스트에 들어온 도구 결과"에 한다. 사용자 프롬프트나
             # 시스템 변경으로 새 토큰이 생긴 턴은 no_tool_result 로 남겨 도구 탓을 하지 않는다.
-            preceding = (row_preceding_result or {}).get(selection.row_ordinal)
+            # 조회 기준은 선택된 행이 아니라 응답 그룹의 첫 행이다. 스냅샷은 그룹
+            # 경계에서만 초기화되므로 그 한 지점이 "이전 응답 이후 도착한 전부"를 담는다.
+            anchor = selection.group_first_row_ordinal
+            preceding = (row_preceding_result or {}).get(anchor)
+            results_since_turn = (row_preceding_results or {}).get(anchor, 0)
+            if results_since_turn == 0:
+                # 이 턴에는 새 도구 결과가 없었다. last_result 는 파일 시작에서만
+                # 초기화되므로 그대로 두면 앞 턴의 라벨을 물려받는다.
+                preceding = None
             label = preceding[0] if preceding is not None else NO_PRECEDING_TOOL_LABEL
             summary.cache_creation_by_preceding_tool[label] += created
             summary.cache_creation_turns_by_preceding_tool[label] += 1
-            if (row_preceding_results or {}).get(selection.row_ordinal, 0) > 1:
+            cache_read_tokens = selection.tokens.get("cache_read", 0)
+            if not isinstance(cache_read_tokens, int) or cache_read_tokens <= 0:
+                # 접두사를 처음 쓰는 턴. 세션 시작이나 컴팩션 직후가 여기 온다.
+                summary.cold_start_turns += 1
+                summary.cold_start_tokens += created
+            elif cache_read_tokens <= created:
+                # 캐시에 있던 접두사를 다시 쓴 턴. 값이 컨텍스트 크기를 따라가며
+                # 선행 결과 크기와 무관하고, 어떤 도구 훅도 줄일 수 없다.
+                summary.cache_rewrite_turns += 1
+                summary.cache_rewrite_tokens += created
+            else:
+                summary.incremental_turns += 1
+                summary.incremental_tokens += created
+            if results_since_turn > 1:
                 # 결과 여러 개가 한 턴에 들어왔는데 마지막 도구에만 귀속했다. 과소분배가
                 # 얼마나 되는지 독자가 볼 수 있게 턴 수를 따로 센다.
                 summary.multi_result_turns += 1
-            text_bytes = (row_preceding_text_bytes or {}).get(selection.row_ordinal, 0)
+            text_bytes = (row_preceding_text_bytes or {}).get(anchor, 0)
             if preceding is not None and text_bytes >= TOKEN_CALIBRATION_MIN_RESULT_BYTES:
                 cache_read = selection.tokens.get("cache_read", 0)
                 # 캐시가 만료된 턴은 cache_creation 이 컨텍스트 전체를 다시 쓴 값이라
                 # 결과 크기와 무관하다. cache_read 가 creation 보다 큰 턴(접두사 대부분이
                 # 캐시에서 읽힌 증분 턴)만 표본으로 쓰고, 나머지는 따로 센다.
                 if isinstance(cache_read, int) and cache_read > created:
-                    new_bytes = text_bytes + (row_preceding_assistant_bytes or {}).get(selection.row_ordinal, 0)
+                    new_bytes = text_bytes + (row_preceding_assistant_bytes or {}).get(anchor, 0)
                     if len(summary.calibration_samples) < TOKEN_CALIBRATION_MAX_SAMPLES:
                         summary.calibration_samples.append((label, new_bytes, created))
                     else:
@@ -1517,6 +1565,19 @@ def scan(
     show_commands: bool = False,
     limits: ScanLimits | None = None,
 ) -> UsageSummary:
+    # parse_json_line 이 전역 재귀 한도를 올리므로, 스캔이 끝나면 되돌린다.
+    # 안 되돌리면 같은 프로세스의 다른 코드가 적대적 깊이를 조용히 받아들인다.
+    with restored_recursion_limit():
+        return _scan(paths, show_paths=show_paths, show_commands=show_commands, limits=limits)
+
+
+def _scan(
+    paths: list[str],
+    *,
+    show_paths: bool,
+    show_commands: bool,
+    limits: "ScanLimits | None",
+) -> UsageSummary:
     limits = limits or ScanLimits()
     summary = UsageSummary()
     reducer = UsageReducer()
@@ -1527,9 +1588,10 @@ def scan(
     row_preceding_assistant_bytes: dict[int, int] = {}
     file_identities: dict[Path, str] = {}
     next_ordinal = 0
+    previous_group_key: tuple[Any, ...] | None = None
 
     def observe_row(file: Path, obj: Any, location: str) -> None:
-        nonlocal next_ordinal
+        nonlocal next_ordinal, previous_group_key
         if not isinstance(obj, dict):
             summary.skipped_records += 1
             reducer.note_invalid_row()
@@ -1553,15 +1615,39 @@ def scan(
         )
         if accepted:
             row_metadata[ordinal] = (file, query_source)
-            # usage 행(assistant)이 관측되기 *전*의 마지막 tool_result 가 이 턴의 선행 결과다.
-            row_preceding_result[ordinal] = summary.tool_result_bytes.last_result
             audit_state = summary.tool_result_bytes
+            # usage 행(assistant)이 관측되기 *전*의 마지막 tool_result 가 이 턴의 선행 결과다.
+            row_preceding_result[ordinal] = audit_state.last_result
             row_preceding_text_bytes[ordinal] = audit_state.text_bytes_since_turn
             row_preceding_results[ordinal] = audit_state.results_since_turn
             row_preceding_assistant_bytes[ordinal] = audit_state.assistant_bytes_since_turn
-            audit_state.text_bytes_since_turn = 0
-            audit_state.results_since_turn = 0
-            audit_state.assistant_bytes_since_turn = 0
+            # 초기화는 행마다가 아니라 *응답 그룹이 바뀔 때만* 한다. 한 응답이 여러 행으로
+            # 나뉘면(thinking 행 + 텍스트 행) reducer 는 마지막 행을 고르지만, 그 턴 직전에
+            # 무엇이 들어왔는지는 첫 행 시점에만 남는다. 경계에서만 초기화하면 그룹 첫 행의
+            # 스냅샷이 곧 "이전 응답이 시작된 이후 도착한 전부"가 되므로, 소비자는
+            # group_first_row_ordinal 한 곳만 읽으면 된다. 행마다 초기화하던 이전 방식은
+            # 그룹 중간에 도착한 tool_result 를 아무 턴에도 귀속시키지 못했다.
+            message = obj.get("message")
+            message_id = message.get("id") if isinstance(message, dict) else None
+            group_key = (
+                (file_identity, obj.get("sessionId"), message_id)
+                if isinstance(message_id, str) and message_id
+                # id 가 없는 행은 자기 자신이 한 그룹이다. reducer 는 완전히 동일한 행만
+                # 접지만, 이 코퍼스에서 id 없는 usage 행은 관측된 적이 없다.
+                else (file_identity, ordinal)
+            )
+            # 알려진 어긋남 하나. 같은 message id 가 다른 응답 사이를 두고 다시
+            # 나타나면 reducer 는 둘을 한 그룹으로 접고 앵커를 첫 등장에 두는데,
+            # 여기서는 재등장이 경계가 되어 창을 새로 연다. 그때 소비자는 첫 등장
+            # 시점의 창을 읽는다. 총합과 3분할은 영향받지 않고 라벨만 흔들린다.
+            # reducer 쪽 동작은 tests/test_context_guard_audit_turn_anchor.py 의
+            # test_the_same_id_reappearing_far_later_still_anchors_at_its_first_row
+            # 가 고정하므로, 둘이 조용히 갈라지지는 않는다.
+            if group_key != previous_group_key:
+                previous_group_key = group_key
+                audit_state.text_bytes_since_turn = 0
+                audit_state.results_since_turn = 0
+                audit_state.assistant_bytes_since_turn = 0
         if obj.get("type") == "assistant":
             # 이 어시스턴트 메시지(thinking, 텍스트, tool_use)는 다음 턴에 입력으로 다시
             # 보내져 그 턴의 cache_creation 에 들어간다. 보정 분자에 함께 넣지 않으면
@@ -1581,6 +1667,7 @@ def scan(
             break
         summary.files += 1
         summary.tool_result_bytes.start_file(file)
+        previous_group_key = None
         try:
             with open_regular_no_symlink(file) as handle:
                 size = os.fstat(handle.fileno()).st_size
@@ -2827,13 +2914,26 @@ def build_new_tokens_by_preceding_tool(summary: UsageSummary) -> dict[str, Any]:
         "covers_all_turns": True,
         "distribution_samples_truncated": summary.cache_creation_samples_truncated,
         "multi_result_turns": summary.multi_result_turns,
+        # rows 와 직교한다. 합계가 아니라 같은 턴들을 다른 축으로 가른 것이다.
+        "cold_start_turns": summary.cold_start_turns,
+        "cold_start_tokens": summary.cold_start_tokens,
+        "cache_rewrite_turns": summary.cache_rewrite_turns,
+        "cache_rewrite_tokens": summary.cache_rewrite_tokens,
+        "incremental_turns": summary.incremental_turns,
+        "incremental_tokens": summary.incremental_tokens,
         "rows": rows,
         "note": (
             "Each turn's cache_creation is attributed to the most recent tool_result that entered the "
             f"context before it; turns with no preceding tool_result are labelled {NO_PRECEDING_TOOL_LABEL!r} "
             "(user prompts, rule-file or tool-catalog changes). Turns that received several results "
             "(parallel tool_use) are attributed to the last one only; multi_result_turns counts them. "
-            "This is an ordering observation, not a causal proof."
+            "A response split over several transcript rows is read at its first row, because that is "
+            "where what preceded the turn was observed. "
+            "cold_start/cache_rewrite/incremental cut the same turns on a second, orthogonal axis: "
+            "a turn is cold_start when no prefix was read back, cache_rewrite when the prefix was read "
+            "but not more than was written, and incremental otherwise. Only incremental turns bill in "
+            "proportion to what a tool returned; the other two track context size, which no tool hook "
+            "reduces. This is an ordering observation, not a causal proof."
         ),
         "claim_boundary": {
             "provider_measured": True,
@@ -3217,6 +3317,9 @@ def recommendation(
 
 
 AIM_MIN_SHARE = 0.4
+# no_tool_result 가 1위일 때, 그 대부분이 접두사 재작성/콜드 스타트면 도구를 지목하지
+# 않는다. 규칙 파일이나 MCP 카탈로그를 보라는 조언이 그 경우 틀린 곳을 가리킨다.
+AIM_NON_INCREMENTAL_SHARE = 0.5
 AIM_MIN_TOKENS = 50_000
 AIM_ACTIONS: dict[str, str] = {
     "Read": "Keep the large-Read guard on and prefer context-guard-read-symbol or offset/limit ranges before whole-file reads.",
@@ -3244,10 +3347,45 @@ def _aim_at_new_token_source(summary: UsageSummary) -> dict[str, Any] | None:
     if lead["token_share"] < AIM_MIN_SHARE:
         return None
     label = lead["label"]
+    total = section["total_cache_creation_tokens"]
+    non_incremental = section["cache_rewrite_tokens"] + section["cold_start_tokens"]
+    non_incremental_share = non_incremental / total if total else 0.0
+    if label == NO_PRECEDING_TOOL_LABEL and non_incremental_share >= AIM_NON_INCREMENTAL_SHARE:
+        return recommendation(
+            "aim-at-new-token-source",
+            "Most new tokens come from prefix writes, not from tool results",
+            (
+                f"{_format_share(non_incremental_share)} of cache_creation tokens landed in "
+                f"{section['cache_rewrite_turns'] + section['cold_start_turns']:,} turns that wrote "
+                "the cached prefix rather than extending it "
+                f"({section['cache_rewrite_turns']:,} rewrites, {section['cold_start_turns']:,} cold "
+                "starts). There the figure tracks context size at that moment, not what a tool returned."
+            ),
+            (
+                "No tool hook can reduce these turns. Look at what invalidates or re-establishes the "
+                "prefix: idle gaps past the cache TTL, plugin or MCP catalog changes mid-session, "
+                "rule-file edits, compaction, and session starts. Read the incremental turns for "
+                "tool-level work."
+            ),
+            "P1",
+            {
+                "label": "prefix_write",
+                "turns": section["cache_rewrite_turns"] + section["cold_start_turns"],
+                "cache_creation_tokens": non_incremental,
+                "token_share": non_incremental_share,
+                "lead_row_label": label,
+                "attribution": "cache_read vs cache_creation per turn; observational, not causal",
+            },
+        )
     action = AIM_ACTIONS.get(label, f"Inspect what the {label} tool returns; its results precede most new tokens.")
+    title = (
+        "Most new tokens per turn arrive without a preceding tool result"
+        if label == NO_PRECEDING_TOOL_LABEL
+        else f"Most new tokens per turn follow {label} results"
+    )
     return recommendation(
         "aim-at-new-token-source",
-        f"Most new tokens per turn follow {label} results",
+        title,
         (
             f"{_format_share(lead['token_share'])} of cache_creation tokens landed in turns whose "
             f"preceding tool_result came from {label} (~{lead['tokens_per_turn']:,} tokens per such turn). "

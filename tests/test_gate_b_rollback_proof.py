@@ -1204,8 +1204,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen24(self) -> None:
-        """운영 레코드는 gen2~gen24을 append-only 순서로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_through_gen25(self) -> None:
+        """운영 레코드는 gen2~gen25을 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
             (
@@ -1233,11 +1233,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen22",
                 "gen23",
                 "gen24",
+                "gen25",
             ),
         )
         (
             gen1, gen2, gen3, gen4, gen5, gen6, gen7, gen8, gen9, gen10,
             gen11, gen12, gen13, gen14, gen15, gen16, gen17, gen18, gen19, gen20, gen21, gen22, gen23, gen24,
+            gen25,
         ) = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
@@ -1872,6 +1874,20 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "gen23": ["tests/test_context_guard_kit.py"],
                 # gen24 는 마커 소유 파일·미러·전용 테스트만 남기고 나머지를 동결에서 뺀다.
                 "gen24": [
+                    "context-guard-kit/context_guard_commands.py",
+                    "context-guard-kit/statusline.sh",
+                    "context-guard-kit/statusline_merged.sh",
+                    "context-guard-kit/transcript_usage_reducer.py",
+                    "plugins/context-guard/bin/context-guard-statusline",
+                    "plugins/context-guard/bin/context-guard-statusline-merged",
+                    "plugins/context-guard/lib/context_guard_commands.py",
+                    "plugins/context-guard/lib/transcript_usage_reducer.py",
+                    "scripts/release_smoke.py",
+                    "tests/test_context_guard_kit.py",
+                ],
+                # gen25 는 gen24 의 좁힌 집합을 그대로 물려받는다. 동결 범위는 같고
+                # B2(감사 + 미러)의 내용만 바뀐다.
+                "gen25": [
                     "context-guard-kit/context_guard_commands.py",
                     "context-guard-kit/statusline.sh",
                     "context-guard-kit/statusline_merged.sh",
