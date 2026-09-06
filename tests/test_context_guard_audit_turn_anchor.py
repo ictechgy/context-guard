@@ -198,23 +198,29 @@ class ReducerTimestampAnchorTests(unittest.TestCase):
             file_identity=FILE_IDENTITY,
             row_ordinal=8,
         )
-        selection = reducer.finalize().selections[0]
+        selections = reducer.finalize().selections
+        self.assertEqual(len(selections), 1)
+        selection = selections[0]
         self.assertEqual(selection.row_ordinal, 3, "selection follows the timestamp")
         self.assertEqual(selection.group_first_row_ordinal, 3)
 
     def test_no_id_fallback_anchors_within_its_own_group(self) -> None:
         """Rows with no message id group by row digest, so only identical rows meet.
 
-        The anchor is then the first ordinal at which that exact row appeared,
+        The anchor is then the lowest ordinal at which that exact row appeared,
         which is a weaker statement than "what preceded this turn"; the field's
         contract comment says so, and `used_no_id_fallback` marks the selection.
+        The fixture observes ordinal 6 before ordinal 2 so that "lowest" cannot
+        be read as "first observed".
         """
         reducer = self.reducer_module.UsageReducer()
         for ordinal in (6, 2):
             row = usage_row("unused", 21, "2026-09-06T00:07:00Z")
             del row["message"]["id"]
             reducer.observe(row, file_identity=FILE_IDENTITY, row_ordinal=ordinal)
-        selection = reducer.finalize().selections[0]
+        selections = reducer.finalize().selections
+        self.assertEqual(len(selections), 1)
+        selection = selections[0]
         self.assertTrue(selection.used_no_id_fallback)
         self.assertEqual(selection.group_first_row_ordinal, 2)
 
