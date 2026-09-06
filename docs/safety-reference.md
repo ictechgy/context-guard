@@ -66,6 +66,14 @@ Recorded Bash payload sizes: p50 372, p95 3,846, p99 10,252, maximum 29,019
 characters. **No recorded Bash result reached 30,000 characters**, which is the
 default `BASH_MAX_OUTPUT_LENGTH` where Claude Code spills to a file on its own.
 
+The share figures above are a snapshot taken on 2026-09-06; a local transcript
+directory grows while you use it, so re-running the same script on a later day
+gives different totals. The 30,000-character result does not depend on that
+snapshot, or on which files count as main-thread: re-run the same day over every
+transcript in the directory — 994 files, 51,603 Bash results, main-thread and
+subagent alike — the maximum was 29,409 characters and nothing exceeded 30,000
+in any slice.
+
 Three limits on reading this. The corpus is one person's machine, so it describes
 that workload and no other. The escrow was active for part of it and replaces an
 oversized payload with a digest, so recorded sizes are a lower bound on what the
@@ -154,6 +162,8 @@ ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트�
 | 도구 결과가 아예 없음 | 2,691 | 68.094% |
 
 기록된 Bash 결과 크기는 p50 372, p95 3,846, p99 10,252, 최대 29,019자입니다. **기록된 어떤 Bash 결과도 30,000자에 닿지 않았습니다.** 그 값은 Claude Code 가 스스로 파일로 흘리기 시작하는 `BASH_MAX_OUTPUT_LENGTH` 기본값입니다.
+
+위의 점유 수치는 2026-09-06 시점의 스냅샷입니다. 로컬 트랜스크립트 디렉터리는 쓰는 동안 계속 자라므로 같은 스크립트를 다른 날 돌리면 합계가 달라집니다. 30,000자 결과는 그 스냅샷에도, 무엇을 메인 스레드로 셀지에도 의존하지 않습니다. 같은 날 디렉터리의 모든 트랜스크립트로 다시 돌리면(파일 994개, Bash 결과 51,603건, 메인 스레드와 서브에이전트 전부) 최대가 29,409자였고 어느 구간에서도 30,000자를 넘지 않았습니다.
 
 읽을 때 세 가지 한계가 있습니다. 코퍼스가 한 사람의 머신이라 그 작업 부하만 설명합니다. escrow 가 일부 기간 켜져 있었고 큰 출력을 digest 로 치환하므로, 기록된 크기는 명령이 실제로 낸 양의 하한입니다. 다만 Bash 결과 31,502건 중 ContextGuard 표식이 붙은 것은 18건(0.06%)뿐이라 분포는 거의 원본에 가깝습니다. 그리고 검열이 가장 먼저 닿는 통계가 최댓값이므로, 최대 29,019자는 "트랜스크립트에 도달한 것 중 그보다 큰 것은 없었다" 로 읽어야지 출력 크기의 상한으로 읽으면 안 됩니다.
 
