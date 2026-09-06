@@ -149,6 +149,11 @@ GEN24_B1_SUBJECT = "proof: reapply Gate-B nudge component gen24 narrow freeze to
 GEN24_B2_SUBJECT = "proof: reapply Gate-B usage component gen24 narrow freeze to marker owners"
 GEN24_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen24 narrow freeze to marker owners"
 
+GEN25_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen25 turn attribution anchor"
+GEN25_B1_SUBJECT = "proof: reapply Gate-B nudge component gen25 turn attribution anchor"
+GEN25_B2_SUBJECT = "proof: reapply Gate-B usage component gen25 turn attribution anchor"
+GEN25_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen25 turn attribution anchor"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -672,6 +677,22 @@ GENERATIONS: tuple[Generation, ...] = (
         gate_b_markers=GEN1_GATE_B_MARKERS,
         residual_edits=frozenset(),
     ),
+    # gen25: 동결 범위는 gen24 그대로다. B2(감사 + 미러)의 내용만 바뀐다 — 턴 귀속을
+    # 응답 그룹의 첫 행에 맞추고, 새 결과가 없는 턴이 앞 턴의 라벨을 물려받지 않게 한다.
+    # B1(nudge)과 shared(setup)의 reapply 는 bless 직전 내용과 같은 no-op 이다.
+    Generation(
+        name="gen25",
+        bless_subject=GEN25_BLESS_SUBJECT,
+        b1_subject=GEN25_B1_SUBJECT,
+        b2_subject=GEN25_B2_SUBJECT,
+        shared_subject=GEN25_SHARED_SUBJECT,
+        b1_paths=GEN24_B1_PATHS,
+        b2_paths=GEN24_B2_PATHS,
+        shared_paths=GEN24_SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN24_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset(),
+    ),
 )
 
 # F-7 append-only anchor. Each digest binds one complete, canonical Generation
@@ -704,6 +725,7 @@ GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
     "99791d5bdc02ddd4d411f1486885d3ea214ac75c6171e299b58daed3f3a244ce",
     "d047d9eb29b3ca614fd9ed6cb0fa37743ddf77a34c735fdb703e00447656246a",
     "e8f4a88ccf351f5e694bc1c566c9978cab40ff91d968e9ca2d661b364ae82928",
+    "bd21e82a97713df3d99a261e4d865bd5d18b525a93c1a808d89a18aea1862a94",
 )
 GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
