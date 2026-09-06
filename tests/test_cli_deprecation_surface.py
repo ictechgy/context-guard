@@ -20,8 +20,18 @@ ROOT = Path(__file__).resolve().parents[1]
 KIT = ROOT / "context-guard-kit"
 PLUGIN_BIN = ROOT / "plugins" / "context-guard" / "bin"
 
-# A helper declares its own status; the dispatcher only mirrors it.
-DEPRECATED_MARKER = "[deprecated]"
+# A helper declares its own status; the dispatcher only mirrors it. Anchor the
+# marker to the two places a helper actually declares one — the leading comment
+# of a shell entrypoint and the argparse description of a Python one — so that a
+# changelog line, a docstring aside, or a string deliberately pasted somewhere
+# harmless cannot register as a declaration.
+DEPRECATED_DECLARATION = re.compile(
+    r"""(?mx)
+    ^[ \t]{0,4}\#[ \t]*\[deprecated\]     # shell: leading comment line
+    | description \s* = \s* \(? \s*       # python: argparse description
+      ["'] \[deprecated\]
+    """
+)
 
 
 def load_cli():
@@ -38,12 +48,14 @@ def helper_declares_deprecated(helper_name: str) -> bool:
     """True when the shipped helper marks itself deprecated.
 
     Read the packaged copy under plugins/context-guard/bin, because that is the
-    file the npm package and the marketplace plugin actually install.
+    file the npm package and the marketplace plugin actually install. Editing the
+    kit source without refreshing this copy is a separate failure that
+    `scripts/sync_plugin_copies.py --check` already catches in the fast PR gate.
     """
     path = PLUGIN_BIN / helper_name
     if not path.is_file():
         raise AssertionError(f"packaged helper is missing: {helper_name}")
-    return DEPRECATED_MARKER in path.read_text(encoding="utf-8", errors="replace")
+    return DEPRECATED_DECLARATION.search(path.read_text(encoding="utf-8", errors="replace")) is not None
 
 
 class CliDeprecationSurfaceTests(unittest.TestCase):
