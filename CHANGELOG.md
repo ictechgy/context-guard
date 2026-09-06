@@ -17,13 +17,19 @@ All notable changes for the ContextGuard plugin are documented here.
   directory grows while you use it, so these are the shape of the correction
   rather than fixed figures; the method is in `docs/safety-reference.md`.
 
-  **The escrow default itself survives, on a different figure.** Turns divide on
-  a second axis: whether the cached prefix was written or extended. Restricted to
-  the incremental turns — the only ones that bill in proportion to what a tool
-  returned — Bash still precedes about 69% of new tokens. The prefix-write turns,
-  about 77% of `cache_creation`, are not something any tool hook can reduce, and the
-  audit now reports them as their own `cold_start` / `cache_rewrite` /
-  `incremental` fields and says so in its recommendation.
+  **What the corrected table does and does not say about the escrow default.**
+  Turns divide on a second axis: whether the cached prefix was written or
+  extended. Among the incremental turns, where `cache_creation` grows roughly
+  with what just entered the context, Bash still ranks first at about 69%. That
+  is a ranking on one corpus, not a measured saving, and it is the narrower claim
+  the default now rests on.
+
+  The prefix-write turns are about 77% of `cache_creation`. Nothing that only
+  trims a single tool result changes those turns, because their size tracks the
+  whole context at that moment — though a hook that keeps the context smaller
+  over a session does reduce what a later rewrite has to write. The audit now
+  reports them as their own `cold_start` / `cache_rewrite` / `incremental`
+  fields.
 
   Historical entries below are left as they were published.
 
