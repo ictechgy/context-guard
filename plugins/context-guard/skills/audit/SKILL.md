@@ -27,7 +27,7 @@ fi
 Report:
 
 - observed token buckets: input, output, cache_read, cache_creation;
-- new tokens per turn (cache_creation distribution) and the "by preceding tool_result" table: this is the quantity billed under prompt caching, so lead with the tool that precedes most of it;
+- new tokens per turn (cache_creation distribution) and the "by preceding tool_result" table: this is the quantity billed under prompt caching. Read the `cold_start` / `cache_rewrite` / `incremental` fields beside it before naming a tool: turns that rewrote the cached prefix track context size, not what a tool returned, and no hook reduces them. Lead with a tool only when the incremental turns point at one;
 - model distribution;
 - query_source distribution: main, subagent, auxiliary;
 - top transcript files and commands observed;

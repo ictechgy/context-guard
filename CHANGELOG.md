@@ -4,7 +4,28 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
-_No unreleased changes._
+- **Corrected: the 81.5% figure below is wrong, and the fix that revealed it has
+  landed.** The 0.13.0 entry justifies making the Bash escrow the default with
+  "81.5% of new tokens per turn landing right after a Bash result". That table
+  had two defects. `last_result` was reset only per file, so a turn with no new
+  tool result inherited the previous turn's label; and the per-turn snapshot was
+  taken on every accepted row and cleared each time, while the usage reducer
+  selects the last row of a response group, so a multi-row response read an
+  already-cleared snapshot. Both are fixed. On the same kind of local corpus the
+  corrected table reads `no_tool_result` about 72% and Bash about 18%, and
+  `multi_result_turns` goes from roughly 108 to roughly 2,150. A local transcript
+  directory grows while you use it, so these are the shape of the correction
+  rather than fixed figures; the method is in `docs/safety-reference.md`.
+
+  **The escrow default itself survives, on a different figure.** Turns divide on
+  a second axis: whether the cached prefix was written or extended. Restricted to
+  the incremental turns — the only ones that bill in proportion to what a tool
+  returned — Bash still precedes about 69% of new tokens. The prefix-write turns,
+  about 77% of `cache_creation`, are not something any tool hook can reduce, and the
+  audit now reports them as their own `cold_start` / `cache_rewrite` /
+  `incremental` fields and says so in its recommendation.
+
+  Historical entries below are left as they were published.
 
 ## [0.14.0] - 2026-09-05
 
@@ -53,7 +74,8 @@ savings figure; the new audit sections exist so you can measure your own.
   command; in-budget output passes through untouched whether the command
   succeeded or failed. Local transcripts showed 81.5% of new tokens per turn
   landing right after a Bash result, so this is the surface the default now
-  covers. `--artifact-receipt` therefore means escrow-on-overflow; use
+  covers. (That figure was later found to be an artifact of two attribution
+  defects; see the correction under Unreleased.) `--artifact-receipt` therefore means escrow-on-overflow; use
   `--digest-always` to force a receipt for small output.
 - **Audit attributes new tokens to the preceding tool.** `new_tokens_per_turn`
   gains `by_preceding_tool` (which tool's result preceded each turn's
