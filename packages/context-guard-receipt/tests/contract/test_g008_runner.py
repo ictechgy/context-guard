@@ -124,6 +124,33 @@ def _process_is_alive(pid: int) -> bool:
     return True
 
 
+def _read_pid_when_written(path: Path, timeout: float = 5.0) -> int:
+    """Wait for a child's pid file to hold a pid, not merely to exist.
+
+    `open(path, "w")` creates the file before anything is written to it, so a
+    reader that waits on the path existing — `Path.is_file()` or
+    `Path.exists()` — can win the race and read an empty string. That is a
+    flake, not a product defect: it surfaced on CI as `ValueError: invalid
+    literal for int() with base 10: ''` while the same commit passed on a
+    re-run. Wait for a finished record instead.
+    """
+    deadline = time.monotonic() + timeout
+    last = ""
+    while time.monotonic() < deadline:
+        try:
+            last = path.read_text(encoding="ascii")
+        except (FileNotFoundError, UnicodeDecodeError):
+            last = ""
+        # The writers end the pid with a newline, so a trailing newline is what
+        # makes "the write finished" observable. Without it a torn read of
+        # "12345" could return 12 and look entirely valid.
+        body = last.strip()
+        if last.endswith("\n") and body:
+            return int(body)
+        time.sleep(0.01)
+    raise AssertionError(f"pid file never became readable: {path} (last read {last!r})")
+
+
 def _wait_for_process_exit(pid: int, timeout: float = 3.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -947,14 +974,13 @@ class G008RunnerContractTests(unittest.TestCase):
                 with self.assertRaises(KeyboardInterrupt):
                     harness.run(
                         "import os,time; "
-                        "open('child.pid','w').write(str(os.getpid())); "
+                        "open('child.pid','w').write(str(os.getpid()) + chr(10)); "
                         "time.sleep(30)"
                     )
             finally:
                 interrupter.join(timeout=5.0)
 
-            self.assertTrue(pid_path.is_file())
-            child_pid = int(pid_path.read_text(encoding="ascii"))
+            child_pid = _read_pid_when_written(pid_path)
             try:
                 os.kill(child_pid, 0)
             except ProcessLookupError:
@@ -1029,7 +1055,7 @@ class G008RunnerContractTests(unittest.TestCase):
             child_code = (
                 "import os,signal,sys,time; "
                 "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
-                "open(sys.argv[1],'w').write(str(os.getpid())); "
+                "open(sys.argv[1],'w').write(str(os.getpid()) + chr(10)); "
                 "time.sleep(30)"
             )
             wrapper_code = (
@@ -1064,8 +1090,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 if wrapper.poll() is not None:
                     break
                 time.sleep(0.01)
-            self.assertTrue(pid_path.is_file())
-            child_pid = int(pid_path.read_text(encoding="ascii"))
+            child_pid = _read_pid_when_written(pid_path)
             wrapper.send_signal(signal.SIGTERM)
             time.sleep(0.05)
             if wrapper.poll() is None:
@@ -1361,7 +1386,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 "  except OSError: pass\n"
                 " signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
                 " with open(sys.argv[1],'w') as stream:\n"
-                "  stream.write(str(os.getpid())); stream.flush(); os.fsync(stream.fileno())\n"
+                "  stream.write(str(os.getpid()) + chr(10)); stream.flush(); os.fsync(stream.fileno())\n"
                 " time.sleep(30)\n"
                 " os._exit(0)\n"
                 "deadline=time.monotonic()+3\n"
@@ -1375,15 +1400,16 @@ class G008RunnerContractTests(unittest.TestCase):
                     arguments=(str(pid_path),),
                     limits=module.RunnerLimits(timeout_seconds=0.4),
                 )
-                self.assertTrue(pid_path.is_file())
-                detached_pid = int(pid_path.read_text(encoding="ascii"))
+                detached_pid = _read_pid_when_written(pid_path)
                 self.assertEqual(result.error_code, module.RunnerErrorCode.TIMEOUT)
                 self.assertIsNone(result.receipt)
                 self.assertEqual(harness.factory_calls, 0)
                 self.assertTrue(_wait_for_process_exit(detached_pid))
             finally:
                 if detached_pid is None and pid_path.is_file():
-                    detached_pid = int(pid_path.read_text(encoding="ascii"))
+                    # Best effort during cleanup: the child may have died mid-write.
+                    raw = pid_path.read_text(encoding="ascii").strip()
+                    detached_pid = int(raw) if raw.isdigit() else None
                 if detached_pid is not None:
                     _kill_test_process_group(detached_pid)
 
@@ -1403,7 +1429,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 "  except OSError: pass\n"
                 " signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
                 " with open(sys.argv[1],'w') as stream:\n"
-                "  stream.write(str(os.getpid())); stream.flush(); os.fsync(stream.fileno())\n"
+                "  stream.write(str(os.getpid()) + chr(10)); stream.flush(); os.fsync(stream.fileno())\n"
                 " time.sleep(30)\n"
                 " os._exit(0)\n"
                 "time.sleep(30)\n"
@@ -1442,8 +1468,7 @@ class G008RunnerContractTests(unittest.TestCase):
                     if wrapper.poll() is not None:
                         break
                     time.sleep(0.01)
-                self.assertTrue(pid_path.is_file())
-                detached_pid = int(pid_path.read_text(encoding="ascii"))
+                detached_pid = _read_pid_when_written(pid_path)
                 time.sleep(0.2)
                 wrapper.send_signal(signal.SIGTERM)
                 stdout, stderr = wrapper.communicate(timeout=5.0)
@@ -1456,7 +1481,9 @@ class G008RunnerContractTests(unittest.TestCase):
                     wrapper.kill()
                     wrapper.communicate(timeout=5.0)
                 if detached_pid is None and pid_path.is_file():
-                    detached_pid = int(pid_path.read_text(encoding="ascii"))
+                    # Best effort during cleanup: the child may have died mid-write.
+                    raw = pid_path.read_text(encoding="ascii").strip()
+                    detached_pid = int(raw) if raw.isdigit() else None
                 if detached_pid is not None:
                     _kill_test_process_group(detached_pid)
 
