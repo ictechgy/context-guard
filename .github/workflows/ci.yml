@@ -45,6 +45,24 @@ jobs:
           tests.test_bash_reference_v1.BashReferenceV1Tests.test_github_runner_node_runtime_is_policy_eligible
       - name: Verify synchronized package sources
         run: python scripts/sync_plugin_copies.py --check
+      # The exhaustive matrix runs the 3.11 floor only on push, so a 3.12-only
+      # construct used to reach main before anything rejected it. A newer
+      # interpreter cannot stand in: ast.parse(feature_version=(3, 11)) accepts
+      # syntax 3.11 refuses, so this step binds a real 3.11 without taking over
+      # PATH for the 3.12 steps around it.
+      - name: Set up the Python floor for the syntax gate
+        id: python-floor
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+          update-environment: false
+      - name: Compile every tracked module on the Python floor
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/python-floor-pycache
+        run: >-
+          "${{ steps.python-floor.outputs.python-path }}" -m compileall -q
+          context-guard-kit plugins/context-guard scripts tests
+          packages/context-guard-receipt/python
       - name: Release cascade preflight (warnings only)
         run: python scripts/release_preflight.py --base "origin/${{ github.base_ref }}"
       - name: Run fast closed security gate

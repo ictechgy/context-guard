@@ -70,6 +70,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request'", jobs["fast-pr"])
         self.assertIn("python scripts/ci_test_gate.py fast", jobs["fast-pr"])
         self.assertIn("scripts/prepublish_check.py --skip-tests", jobs["fast-pr"])
+        self.assertIn("-m compileall -q", jobs["fast-pr"])
         self.assertIn("github.event_name == 'pull_request'", jobs["core-pr"])
         self.assertIn("python scripts/ci_test_gate.py core", jobs["core-pr"])
         for partition in ("provider-free", "provider-live", "history", "serial"):
@@ -79,6 +80,43 @@ class WorkflowSecurityTests(unittest.TestCase):
             self.assertIn("timeout-minutes:", jobs[name])
         self.assertIn("python scripts/prepublish_check.py", jobs["exhaustive-linux"])
         self.assertIn("python scripts/prepublish_check.py", jobs["exhaustive-macos"])
+
+    def test_fast_pr_compiles_on_the_lowest_exhaustive_python_before_merge(self):
+        """A 3.12-only construct must fail on the PR, not after it reaches main.
+
+        The exhaustive matrix is push-only, so before this gate existed the
+        floor interpreter first saw a change after merge. A newer interpreter
+        cannot substitute for it: ast.parse(feature_version=(3, 11)) accepts
+        syntax that 3.11 itself rejects.
+        """
+        jobs = workflow_job_blocks(read(".github/workflows/ci.yml"))
+        matrix = re.search(
+            r"(?ms)^\s+matrix:\n\s+python-version: \[(.*?)\]",
+            jobs["exhaustive-linux"],
+        )
+        self.assertIsNotNone(matrix)
+        versions = re.findall(r'"([\d.]+)"', matrix.group(1))
+        self.assertTrue(versions)
+        floor = min(versions, key=lambda value: tuple(int(part) for part in value.split(".")))
+
+        fast_pr = jobs["fast-pr"]
+        gate = re.search(
+            r'(?ms)^      - name: Set up the Python floor.*?python-version: "([\d.]+)".*?'
+            r"update-environment: (\w+)",
+            fast_pr,
+        )
+        self.assertIsNotNone(gate, "fast-pr has no pinned Python floor step")
+        self.assertEqual(gate.group(1), floor)
+        # The surrounding fast-pr steps resolve `python` and assert it is the
+        # hosted 3.12 runtime, so the floor must not take over PATH.
+        self.assertEqual(gate.group(2), "false")
+        self.assertIn("steps.python-floor.outputs.python-path", fast_pr)
+        self.assertIn("PYTHONPYCACHEPREFIX", fast_pr)
+        compiled = re.search(r"(?ms)-m compileall -q\n(.*?)(?=^      - name:)", fast_pr)
+        self.assertIsNotNone(compiled)
+        targets = compiled.group(1).split()
+        for required in ("context-guard-kit", "scripts", "tests"):
+            self.assertIn(required, targets)
 
     def test_ci_partition_manifest_is_closed_nonempty_and_serializes_races(self):
         gate = read("scripts/ci_test_gate.py")
