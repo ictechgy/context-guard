@@ -418,12 +418,27 @@ def usage_row_with_cache(cache_creation: int, cache_read: int, ordinal: int) -> 
 class TokenCalibration(unittest.TestCase):
     """bytes/4 대리값을 관측 usage 와 대조하는 reconcile 절을 고정한다."""
 
-    def _corpus(self, *, turns: int, result_bytes: int, created: int, cache_read: int = 1_000_000) -> list[dict]:
+    def _corpus(
+        self,
+        *,
+        turns: int,
+        result_bytes: int,
+        created: int,
+        cache_read: int = 1_000_000,
+        id_offset: int = 0,
+    ) -> list[dict]:
+        """턴 `turns` 개짜리 코퍼스.
+
+        `id_offset` 은 두 코퍼스를 한 파일에 이어 붙일 때 필요하다. usage 행의
+        message id 는 `msg_{ordinal}` 이라, 같은 범위를 두 번 쓰면 reducer 가 두
+        턴을 한 응답 그룹으로 접어 절반이 사라진다.
+        """
         rows = []
         for index in range(turns):
-            rows.append(assistant_row(tool_use(f"u{index}", "Bash", command="ls")))
-            rows.append(user_row(tool_result(f"u{index}", "x" * result_bytes)))
-            rows.append(usage_row_with_cache(created, cache_read, index))
+            ordinal = index + id_offset
+            rows.append(assistant_row(tool_use(f"u{ordinal}", "Bash", command="ls")))
+            rows.append(user_row(tool_result(f"u{ordinal}", "x" * result_bytes)))
+            rows.append(usage_row_with_cache(created, cache_read, ordinal))
         return rows
 
     def test_insufficient_samples_keeps_the_proxy_unverified(self) -> None:
@@ -443,7 +458,11 @@ class TokenCalibration(unittest.TestCase):
 
     def test_small_results_and_cache_rewrites_are_not_samples(self) -> None:
         rows = self._corpus(turns=40, result_bytes=100, created=2_000)  # 작은 결과: 표본 아님
-        rows += self._corpus(turns=40, result_bytes=8_000, created=2_000, cache_read=0)  # 캐시 재작성: 제외
+        # id_offset 없이 이어 붙이면 80 개 usage 행이 message id 40 개로 접혀
+        # 두 코퍼스가 겹친다. 아래 단언이 오랫동안 그 충돌 덕에 통과해 왔다.
+        rows += self._corpus(
+            turns=40, result_bytes=8_000, created=2_000, cache_read=0, id_offset=40
+        )  # 캐시 재작성: 제외
         section = full_report(rows)["tool_result_bytes"]["token_calibration"]
         self.assertEqual(section["samples"], 0)
         self.assertEqual(section["excluded_cache_rewrite_turns"], 40)
