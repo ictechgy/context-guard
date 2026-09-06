@@ -93,6 +93,8 @@ PROVIDER_FREE_SUPPORT_PATHS = frozenset(
         "scripts/release_preflight.py",
         "tests/test_release_automation.py",
         "tests/test_standing_cost_documentation.py",
+        # 디스패처 --help 의 deprecated 구획과 헬퍼 소스 표식이 갈라지지 않게 고정한다.
+        "tests/test_cli_deprecation_surface.py",
         # R3 문서 점진적 공개: README 에서 옮겨온 전체 가이드와 안전 경계 참조.
         "docs/guide.md",
         "docs/safety-reference.md",

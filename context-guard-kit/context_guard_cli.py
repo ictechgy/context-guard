@@ -163,6 +163,21 @@ def load_helper_subcommands() -> dict[str, tuple[str, ...]]:
 
 HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = load_helper_subcommands()
 
+# 각 헬퍼는 자기 소스에 "[deprecated]" 를 이미 달고 있지만, 디스패처가 그 파일을
+# 읽지 않으므로(매니페스트는 데이터로만 읽고 헬퍼는 import 하지 않는다) 목록을 여기
+# 상수로 둔다. 두 곳이 갈라지지 않게 tests/test_cli_deprecation_surface.py 가 헬퍼
+# 소스의 표식과 이 집합이 정확히 일치하는지 검사한다.
+DEPRECATED_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "compress",
+        "filter",
+        "pack",
+        "statusline",
+        "statusline-merged",
+        "tool-prune",
+    }
+)
+
 
 def _script_dir() -> Path:
     return Path(__file__).resolve().parent
@@ -371,7 +386,14 @@ def project_version() -> str:
 
 def print_help() -> None:
     version = project_version()
-    commands = "\n".join(f"  {name}" for name in sorted(HELPER_SUBCOMMANDS))
+    names = sorted(HELPER_SUBCOMMANDS)
+    commands = "\n".join(f"  {name}" for name in names if name not in DEPRECATED_SUBCOMMANDS)
+    deprecated = "\n".join(f"  {name}" for name in names if name in DEPRECATED_SUBCOMMANDS)
+    deprecated_block = (
+        f"Deprecated, still shipped (see docs/guide.md before using):\n{deprecated}\n\n"
+        if deprecated
+        else ""
+    )
     sys.stdout.write(
         f"ContextGuard {version}\n"
         f"\n"
@@ -386,6 +408,7 @@ def print_help() -> None:
         f"Common subcommands:\n"
         f"{commands}\n"
         f"\n"
+        f"{deprecated_block}"
         f"Run '{COMMAND_NAME} <subcommand> --help' for helper-specific options.\n"
         f"Installing ContextGuard never writes configuration; use 'setup' explicitly.\n"
     )
