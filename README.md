@@ -1,5 +1,13 @@
 # ContextGuard
 
+> **Development discontinued on 2026-09-08.** The maintainer has decided to
+> stop further development and does not recommend new installations. General
+> token or cost savings were not established. The product's own overhead was
+> observed, and some workloads showed increased input volume; those
+> observations led to this decision. They do not establish that the product
+> increases cost or is ineffective in every environment. Existing source code
+> and research are preserved for reference.
+
 ContextGuard is a local-first context-management toolkit for AI coding and tool-using agents. It starts with a Claude Code plugin: install it once, enable it explicitly per project, and roll it back when needed. It trims noisy output, guides agents toward symbol-level reads, flags repeated failures, redacts secret-like patterns, and measures usage — and the same guardrails are reusable by other agents through local helper commands and advisory brief-mode snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
